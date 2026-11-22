@@ -939,6 +939,7 @@ impl PromptInput {
             && !(self.attachments.is_empty()
                 && (crate::commands::is_resume_command(&self.content)
                     || crate::commands::is_accounts_command(&self.content)
+                    || crate::commands::is_custom_api_command(&self.content)
                     || crate::commands::reset_command(&self.content).is_some()))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());

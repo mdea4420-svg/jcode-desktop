@@ -9,6 +9,8 @@ use jcode_desktop_accounts_ui::connection;
 use connection::{ConnectionStatus, ConnectionStatuses};
 #[path = "panel_login_accounts.rs"]
 mod accounts;
+#[path = "panel_custom_api.rs"]
+mod custom_api;
 use jcode_desktop_accounts_ui::catalog;
 #[path = "panel_provider_picker.rs"]
 mod provider_picker;
@@ -56,6 +58,7 @@ pub(super) struct LoginState {
     /// Failure reasons from the most recent live test, by provider id.
     live_errors: HashMap<String, String>,
     live_tasks: Vec<Task<()>>,
+    custom_api: Option<custom_api::CustomApiEditor>,
 }
 
 impl Drop for LoginState {
@@ -77,6 +80,9 @@ enum LoginUpdate {
 impl Panel {
     pub(super) fn login_input_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
         let state = self.login.as_ref()?;
+        if let Some(editor) = &state.custom_api {
+            return Some(editor.base_url.focus_handle(cx));
+        }
         if state.provider.is_none() {
             return Some(state.search.focus_handle(cx));
         }
@@ -186,6 +192,7 @@ impl Panel {
             live_test_all: false,
             live_errors: HashMap::new(),
             live_tasks: Vec::new(),
+            custom_api: None,
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -245,6 +252,7 @@ impl Panel {
                     accounts: crate::accounts::fetch(),
                     logins: jcode_base::auth::account_pool::oauth_logins(),
                     pool: jcode_base::auth::account_pool::AccountPool::load(),
+                    custom: crate::custom_providers::list(),
                     default_route,
                     default_key: None,
                 }
@@ -387,12 +395,20 @@ impl Panel {
     }
 
     pub(crate) fn login_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        if crate::commands::is_custom_api_command(content) {
+            self.open_custom_api_editor(None, cx);
+            return true;
+        }
         let mut words = content.split_whitespace();
         if words.next() != Some("/login") {
             return false;
         }
         self.open_login_picker(cx);
         if let Some(provider) = words.next() {
+            if provider == "custom" && words.next().is_none() {
+                self.open_custom_api_editor(None, cx);
+                return true;
+            }
             if words.next().is_some() {
                 self.login.as_mut().unwrap().error =
                     Some("Choose a provider below to sign in.".into());
@@ -769,7 +785,9 @@ impl Panel {
             && state.focus_pending
         {
             state.focus_pending = false;
-            if state.provider.is_none() {
+            if let Some(editor) = &state.custom_api {
+                editor.base_url.focus_handle(cx).focus(window, cx);
+            } else if state.provider.is_none() {
                 state.search.focus_handle(cx).focus(window, cx);
             } else if state
                 .provider
@@ -858,6 +876,8 @@ impl Panel {
                             ),
                         ),
                 );
+        } else if let Some(editor) = &state.custom_api {
+            body = body.child(self.render_custom_api_editor(editor, cx));
         } else if let Some(provider) = state.provider {
             body = body.child(
                 div()
@@ -883,14 +903,15 @@ impl Panel {
             }
             body = body.child(self.render_login_steps(state, provider, cx));
         } else if !remote {
+            let search_query = state.search.read(cx).content.to_string();
             let providers = catalog::filtered_providers(
                 &state.providers,
-                &state.search.read(cx).content,
+                &search_query,
                 state.statuses.as_ref(),
                 state.status_loading,
                 state.usage.as_ref(),
             );
-            if providers.is_empty() {
+            if providers.is_empty() && !self.custom_api_matches_query(&search_query) {
                 body = body.child(
                     div()
                         .debug_selector(|| "login-search-empty".into())
@@ -912,17 +933,31 @@ impl Panel {
                 .occlude()
                 .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && !event.is_held {
-                        this.close_login_picker(cx);
-                        if this.is_accounts_panel() {
-                            cx.emit(AccountsPanelClosed);
+                        if this
+                            .login
+                            .as_ref()
+                            .is_some_and(|state| state.custom_api.is_some())
+                        {
+                            this.close_custom_api_editor(cx);
                         } else {
-                            this.focus_input(window, cx);
+                            this.close_login_picker(cx);
+                            if this.is_accounts_panel() {
+                                cx.emit(AccountsPanelClosed);
+                            } else {
+                                this.focus_input(window, cx);
+                            }
                         }
                         cx.stop_propagation();
                     }
                 }))
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "enter" && !event.is_held {
+                    if event.keystroke.key == "enter"
+                        && !event.is_held
+                        && this
+                            .login
+                            .as_ref()
+                            .is_none_or(|state| state.custom_api.is_none())
+                    {
                         this.submit_login(cx);
                         cx.stop_propagation();
                     }
@@ -947,7 +982,10 @@ impl Panel {
                                 .child("Accounts"),
                         )
                         .when(
-                            state.provider.is_none() && !state.complete && !remote,
+                            state.provider.is_none()
+                                && state.custom_api.is_none()
+                                && !state.complete
+                                && !remote,
                             |el| {
                                 let running = state.live_test_all;
                                 el.child(
@@ -988,7 +1026,10 @@ impl Panel {
                         ),
                 )
                 .when(
-                    state.provider.is_none() && !state.complete && !remote,
+                    state.provider.is_none()
+                        && state.custom_api.is_none()
+                        && !state.complete
+                        && !remote,
                     |el| {
                         el.child(
                             div()
@@ -1336,6 +1377,49 @@ mod tests {
             assert!(panel.items.is_empty());
         });
         assert!(vcx.debug_bounds("login-paste").is_some());
+    }
+
+    #[gpui::test]
+    fn custom_api_editor_opens_via_slash_api_and_keeps_secret_out_of_snapshots(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("custom-api-test".into(), None, None, bridge, cx));
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            assert!(panel.login_command("/api", cx));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("custom-api-editor").is_some());
+        assert!(vcx.debug_bounds("custom-api-save").is_some());
+
+        panel.update(vcx, |panel, cx| {
+            let editor = panel.login.as_mut().unwrap().custom_api.as_mut().unwrap();
+            editor
+                .base_url
+                .update(cx, |input, cx| input.set_content("https://api.siliconflow.cn".into(), cx));
+            editor
+                .default_model
+                .update(cx, |input, cx| input.set_content("deepseek-ai/DeepSeek-V3".into(), cx));
+            editor
+                .api_key
+                .update(cx, |input, cx| input.set_secret("sk-private-third-party-key".into(), cx));
+            let snapshot = serde_json::to_string(&panel.snapshot(cx)).unwrap();
+            assert!(!snapshot.contains("sk-private-third-party-key"));
+        });
+
+        let save = vcx.debug_bounds("custom-api-save").unwrap();
+        vcx.simulate_click(save.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "custom-api-test")
+        );
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "custom-api-test" && model == "siliconflow:deepseek-ai/DeepSeek-V3")
+        );
+        assert!(vcx.debug_bounds("login-done").is_some());
     }
 }
 

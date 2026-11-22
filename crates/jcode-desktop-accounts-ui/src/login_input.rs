@@ -99,6 +99,12 @@ impl LoginInput {
         cx.notify();
         text
     }
+    pub fn set_secret(&mut self, value: String, cx: &mut Context<Self>) {
+        self.secret.clear();
+        self.secret.replace(0..0, &value);
+        self.last_layout = None;
+        cx.notify();
+    }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.secret.clear();
         self.last_layout = None;

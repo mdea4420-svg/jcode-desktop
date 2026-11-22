@@ -220,6 +220,11 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/logout", "Log out of a provider"),
     RegisteredCommand::public("/account", "Open the combined account picker"),
     RegisteredCommand::public("/accounts", "Alias for /account"),
+    RegisteredCommand::public(
+        "/api",
+        "Add or manage custom OpenAI-compatible third-party API endpoints",
+    ),
+    RegisteredCommand::public("/custom-api", "Alias for /api"),
     RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
     RegisteredCommand::public("/debug-visual", "Toggle visual debug overlay"),
     RegisteredCommand::public("/screenshot-mode", "Hide identifying interface metadata"),
@@ -273,6 +278,11 @@ pub(crate) fn is_resume_command(content: &str) -> bool {
 /// Both account aliases open Desktop's native picker, not a runtime prompt.
 pub(crate) fn is_accounts_command(content: &str) -> bool {
     matches!(content.trim(), "/account" | "/accounts")
+}
+
+/// Opens Accounts directly on the custom third-party OpenAI-compatible API form.
+pub(crate) fn is_custom_api_command(content: &str) -> bool {
+    matches!(content.trim(), "/api" | "/custom-api")
 }
 
 /// Target of a `/reset` command typed in the composer.

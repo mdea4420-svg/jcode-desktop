@@ -18,6 +18,7 @@ pub(super) struct AccountsData {
     pub accounts: Option<Vec<Account>>,
     pub logins: Vec<OAuthLogin>,
     pub pool: AccountPool,
+    pub custom: Vec<crate::custom_providers::CustomProviderSummary>,
     /// Saved `default_provider`, the source of truth for the Default chip.
     pub default_route: Option<String>,
     /// The account that route resolves to, computed with the rows.
@@ -460,6 +461,7 @@ pub(super) fn offline_data() -> AccountsData {
             login("claude", "claude-otter", "jeremy@personal.dev", true),
         ],
         pool: AccountPool::default(),
+        custom: crate::custom_providers::offline_summaries(),
         default_route: None,
         default_key: None,
     }
@@ -1182,6 +1184,10 @@ impl Panel {
                 .collect::<Vec<_>>(),
         );
         let mut out = Vec::new();
+        let query = state.search.read(cx).content.to_string();
+        if let Some(custom_section) = self.render_custom_api_section(&query, cx) {
+            out.push(custom_section);
+        }
         if !groups.pooled.is_empty() || !groups.manual.is_empty() {
             out.push(self.render_account_group(
                 "login-group-auto",

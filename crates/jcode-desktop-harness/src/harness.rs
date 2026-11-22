@@ -573,6 +573,43 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
+/// Start `jcode serve` even when a long-lived `jcode-harness-api-bridge` is
+/// still listening on `api_socket` after the idle daemon exited.
+fn ensure_local_runtime_with_daemon(
+    options: &LaunchOptions,
+    progress: &dyn Fn(&str),
+) -> jcode_sdk::Result<()> {
+    let legacy = jcode_sdk::api::legacy_socket_path();
+    if options.api_socket.is_none() && !jcode_sdk::socket_accepts(&legacy) {
+        progress("starting jcode runtime...");
+        let jcode = options
+            .binary
+            .clone()
+            .unwrap_or_else(|| crate::platform::companion_executable("jcode"));
+        let mut command = std::process::Command::new(&jcode);
+        command
+            .arg("serve")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        }
+        command.spawn().map_err(|error| {
+            jcode_sdk::Error::new(
+                jcode_sdk::ErrorKind::LaunchFailed,
+                format!("could not start the jcode runtime: {error}"),
+            )
+        })?;
+        jcode_sdk::wait_for_socket(&legacy, "jcode runtime", options.start_timeout)?;
+    }
+    jcode_sdk::ensure_runtime(options, progress)
+}
+
 fn start_local_runtime(updates: UpdateSender) {
     // A self-dev reload deliberately takes the runtime socket away for a short
     // time. Keep this bridge (and therefore the GPUI/Wayland process) alive
@@ -591,7 +628,7 @@ fn start_local_runtime(updates: UpdateSender) {
         };
         let started = {
             let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
-            jcode_sdk::ensure_runtime(&options, &|status| {
+            ensure_local_runtime_with_daemon(&options, &|status| {
                 let _ = updates.send(Update::Status(status.to_string()));
             })
         };

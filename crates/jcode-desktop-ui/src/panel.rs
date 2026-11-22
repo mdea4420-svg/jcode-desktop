@@ -1814,6 +1814,19 @@ impl Panel {
                             return;
                         }
                         if images.is_empty()
+                            && crate::commands::is_custom_api_command(&content)
+                            && let Some(panel) = weak.upgrade()
+                        {
+                            _window.dispatch_action(
+                                Box::new(crate::ui_actions::OpenAccounts {
+                                    source: panel.entity_id(),
+                                    login_command: Some("/api".into()),
+                                }),
+                                app,
+                            );
+                            return;
+                        }
+                        if images.is_empty()
                             && (crate::commands::is_accounts_command(&content)
                                 || content.trim() == "/subscribe")
                             && let Some(panel) = weak.upgrade()
