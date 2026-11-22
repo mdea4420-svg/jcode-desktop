@@ -417,6 +417,31 @@ mod tests {
     }
 
     #[test]
+    fn gateway_channels_stay_visible_but_makers_do_not() {
+        let mut magpie = route("codex/gpt-6.2-sol", "openai-compatible", 0);
+        magpie.provider = "magpie".into();
+        let mut other = route("cpr-fast/gpt-6.2-sol", "openai-compatible", 0);
+        other.provider = "magpie".into();
+        let maker = route("openai/gpt-6.2-sol", "openai-compatible", 0);
+        let mut routed = route("acme/gpt-6.2-sol", "openrouter", 0);
+        routed.provider = "OpenRouter".into();
+        let details = from_routes(&[magpie, other, maker, routed]);
+        let title = |model: &str| {
+            let spec = details
+                .iter()
+                .find(|(_, detail)| detail.model == model)
+                .map(|(spec, _)| spec.clone())
+                .unwrap();
+            pretty_title(&spec, &details)
+        };
+        assert!(title("codex/gpt-6.2-sol").ends_with(" · codex"));
+        assert!(title("cpr-fast/gpt-6.2-sol").ends_with(" · cpr-fast"));
+        assert_ne!(title("codex/gpt-6.2-sol"), title("cpr-fast/gpt-6.2-sol"));
+        assert!(!title("openai/gpt-6.2-sol").contains('·'));
+        assert!(!title("acme/gpt-6.2-sol").contains('·'));
+    }
+
+    #[test]
     fn groups_keep_auth_routes_distinct_and_canonicalize_aliases() {
         let routes = [
             route("atlas", "openai-oauth", 2),
@@ -635,11 +660,49 @@ pub(super) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>)
         .get(model)
         .map_or(model, |detail| detail.model.as_str());
     let pretty = jcode_provider_core::model_names::pretty_picker_model_name(raw);
-    if pretty.is_empty() {
+    let pretty = if pretty.is_empty() {
         raw.to_string()
     } else {
         pretty
+    };
+    match channel_namespace(raw, details.get(model)) {
+        Some(channel) => format!("{pretty} · {channel}"),
+        None => pretty,
     }
+}
+
+/// Namespaces that name a model's maker. OpenRouter-style `openai/gpt-x`
+/// ids drop these, since the row logo already shows the maker.
+const MODEL_MAKERS: &[&str] = &[
+    "anthropic", "openai", "google", "x-ai", "xai", "mistralai", "mistral", "deepseek",
+    "deepseek-ai", "moonshotai", "qwen", "z-ai", "zai", "zhipuai", "minimax", "meta-llama",
+    "meta", "nvidia", "microsoft", "cohere", "amazon", "nousresearch", "perplexity",
+];
+
+/// A gateway's upstream channel, such as `codex` in `codex/gpt-6.2-sol` behind
+/// an OpenAI-compatible router. The picker title otherwise drops the
+/// namespace, which makes the same model on different channels identical.
+fn channel_namespace<'a>(raw: &'a str, detail: Option<&ModelDetails>) -> Option<&'a str> {
+    if detail.is_some_and(|detail| provider_logo(&detail.provider, &detail.api_method) == "openrouter")
+    {
+        return None;
+    }
+    let mut bare = jcode_provider_core::explicit_model_provider_prefix(raw)
+        .map_or(raw, |(_, _, bare)| bare);
+    // Profile prefixes (`magpie:codex/gpt-x`) are named by the group header.
+    while let Some((head, rest)) = bare.split_once(':') {
+        if head.is_empty()
+            || rest.is_empty()
+            || !head.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            break;
+        }
+        bare = rest;
+    }
+    let (namespace, _) = bare.rsplit_once('/')?;
+    let channel = namespace.rsplit('/').next().unwrap_or(namespace).trim();
+    (!channel.is_empty() && !MODEL_MAKERS.contains(&channel.to_ascii_lowercase().as_str()))
+        .then_some(channel)
 }
 
 pub(super) fn grouped_rows(
