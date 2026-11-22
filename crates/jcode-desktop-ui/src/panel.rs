@@ -1963,6 +1963,10 @@ impl Panel {
                     handled
                 })
             });
+            if !this.surface_focused {
+                this.input
+                    .update(cx, |input, cx| input.set_command_menu_active(false, cx));
+            }
             if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
                 && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
             {
@@ -4417,6 +4421,8 @@ impl Panel {
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.surface_focused != focused {
             self.surface_focused = focused;
+            self.input
+                .update(cx, |input, cx| input.set_command_menu_active(focused, cx));
             cx.notify();
         }
         if focused && self.finished_unseen {

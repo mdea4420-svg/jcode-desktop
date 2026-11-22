@@ -2,6 +2,49 @@
 use super::*;
 
 #[gpui::test]
+fn slash_menu_follows_the_selected_chat_without_losing_its_draft(cx: &mut gpui::TestAppContext) {
+    cx.update(crate::bind_workspace_keys);
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("First", cx);
+        workspace.push_test_panel("Second", cx);
+        workspace
+    });
+    workspace.update_in(vcx, |w, window, cx| w.focus_active(window, cx));
+    vcx.run_until_parked();
+    vcx.simulate_input("/");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+
+    vcx.simulate_keystrokes("super-l");
+    vcx.run_until_parked();
+    assert_eq!(workspace.read_with(vcx, |w, _| w.active), 1);
+    assert!(
+        vcx.debug_bounds("panel-0").is_some(),
+        "old chat is still mounted"
+    );
+    assert!(
+        vcx.debug_bounds("slash-command-overlay").is_none(),
+        "a background chat must not paint its slash menu over the active chat"
+    );
+    vcx.simulate_input("second draft");
+    vcx.simulate_keystrokes("super-h");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.active, 0);
+        assert_eq!(
+            w.slots[0].panel.read(cx).input.read(cx).content.as_ref(),
+            "/"
+        );
+        assert_eq!(
+            w.slots[1].panel.read(cx).input.read(cx).content.as_ref(),
+            "second draft"
+        );
+    });
+    assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+}
+
+#[gpui::test]
 fn folder_panels_share_a_level_body_without_individual_tabs(cx: &mut gpui::TestAppContext) {
     cx.update(crate::bind_workspace_keys);
     let (workspace, vcx) = cx.add_window_view(|_, cx| {

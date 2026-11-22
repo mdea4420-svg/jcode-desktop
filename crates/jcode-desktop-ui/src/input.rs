@@ -186,6 +186,7 @@ pub struct PromptInput {
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
     command_models: Vec<String>,
     command_completion: bool,
+    command_menu_active: bool,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
@@ -549,6 +550,7 @@ impl PromptInput {
             on_overlay_cancel: None,
             command_models: Vec::new(),
             command_completion: true,
+            command_menu_active: true,
             command_selection: 0,
             model_details: HashMap::new(),
             applied_model_routes: None,
@@ -685,6 +687,14 @@ impl PromptInput {
     pub(crate) fn without_command_completion(mut self) -> Self {
         self.command_completion = false;
         self
+    }
+
+    /// Background panes keep their slash drafts, but must not paint a window-level popup.
+    pub(crate) fn set_command_menu_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.command_menu_active != active {
+            self.command_menu_active = active;
+            cx.notify();
+        }
     }
 
     pub fn with_on_change(mut self, on_change: impl Fn(&str, &mut App) + 'static) -> Self {
@@ -2220,7 +2230,8 @@ impl Render for PromptInput {
         if self.command_selection >= suggestions.len() {
             self.command_selection = 0;
         }
-        let command_visible = self.command_completion
+        let command_visible = self.command_menu_active
+            && self.command_completion
             && (!suggestions.is_empty() || self.content.trim_start().starts_with("/model "));
         let menu_duration = jcode_desktop_motion::policy(
             crate::transition::Transition::Menu,
