@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::code;
 use crate::hooks::{self, EVENTS};
 use crate::manifest::{Plugin, Source, discover, sanitize_name};
 use crate::paths::{Layout, command_token};
@@ -147,8 +148,71 @@ fn same_path(a: &Path, b: &Path) -> bool {
         || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
 }
 
+/// Describe enabled code plugins with Node and generate their panel applets.
+fn sync_code(layout: &Layout, plugins: &mut [Plugin], report: &mut SyncReport) {
+    let mut applets = BTreeSet::new();
+    let has_code = plugins
+        .iter()
+        .any(|plugin| plugin.enabled && plugin.main_script().is_some());
+    let node = code::node();
+    if has_code && node.is_none() {
+        report
+            .warnings
+            .push("Node.js was not found on PATH (set JCODE_NODE); code plugins are skipped".into());
+    }
+    if let (true, Some(node)) = (has_code, node.as_deref()) {
+        if let Err(error) = code::ensure_host(layout) {
+            report.warnings.push(format!("plugin host: {error:#}"));
+        }
+        for plugin in plugins
+            .iter_mut()
+            .filter(|plugin| plugin.enabled && plugin.main_script().is_some())
+        {
+            match code::describe(layout, plugin, node) {
+                Ok(description) => plugin.code = Some(description),
+                Err(error) => report.warnings.push(format!("{error:#}")),
+            }
+            let has_panels = plugin.code.as_ref().is_some_and(|code| !code.panels.is_empty());
+            let id = format!("plugin-{}", plugin.name);
+            if let (true, Some(argv)) = (has_panels, code::argv(node, layout, plugin, "applet", &[&id])) {
+                let manifest = serde_json::json!({"id": id, "command": argv, "autostart": true});
+                let path = code::applet_dir(layout, &plugin.name).join("applet.json");
+                let text = serde_json::to_string_pretty(&manifest).unwrap_or_default();
+                if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                    match write_atomic(&path, text.as_bytes()) {
+                        Ok(()) => report.changed = true,
+                        Err(error) => report.warnings.push(format!("{}: {error:#}", plugin.name)),
+                    }
+                }
+                applets.insert(id);
+            }
+        }
+    }
+    // Generated applets of disabled or removed plugins.
+    if let Ok(entries) = std::fs::read_dir(code::applets_root(layout)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("plugin-") && !applets.contains(&name) {
+                let _ = std::fs::remove_dir_all(entry.path());
+                report.changed = true;
+            }
+        }
+    }
+}
+
 fn sync_mcp(layout: &Layout, plugins: &[Plugin], state: &mut State, report: &mut SyncReport) -> anyhow::Result<()> {
     let mut desired = serde_json::Map::new();
+    if let Some(node) = code::node() {
+        for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
+            let has_tools = plugin.code.as_ref().is_some_and(|code| !code.tools.is_empty());
+            if let (true, Some(argv)) = (has_tools, code::argv(&node, layout, plugin, "mcp", &[])) {
+                desired.insert(
+                    format!("{}-tools", plugin.name),
+                    serde_json::json!({"command": argv[0], "args": argv[1..]}),
+                );
+            }
+        }
+    }
     for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
         match plugin.mcp_servers() {
             Ok(servers) => {
@@ -233,6 +297,13 @@ fn sync_hooks(
             }
             Err(error) => report.warnings.push(format!("{}: {error:#}", plugin.name)),
         }
+        if let Some(code) = &plugin.code {
+            used.extend(
+                code.events
+                    .iter()
+                    .filter_map(|event| EVENTS.iter().find(|known| *known == event).copied()),
+            );
+        }
     }
     report.hook_events = used.iter().map(|event| event.to_string()).collect();
     let path = layout.config_toml();
@@ -270,13 +341,14 @@ fn sync_hooks(
 /// another fails; failures are returned as warnings.
 pub fn sync(layout: &Layout, options: &SyncOptions) -> SyncReport {
     let mut state = State::load(layout);
-    let (plugins, errors) = discover(layout, &state);
+    let (mut plugins, errors) = discover(layout, &state);
     let mut report = SyncReport {
         plugins: plugins.len(),
         enabled: plugins.iter().filter(|plugin| plugin.enabled).count(),
         warnings: errors,
         ..Default::default()
     };
+    sync_code(layout, &mut plugins, &mut report);
     sync_skills(layout, &plugins, &mut state, &mut report);
     if let Err(error) = sync_mcp(layout, &plugins, &mut state, &mut report) {
         report.warnings.push(format!("MCP: {error:#}"));

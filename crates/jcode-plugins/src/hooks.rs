@@ -85,6 +85,9 @@ pub struct HookEntry {
     pub matcher: Option<String>,
     pub command: String,
     pub timeout: Option<Duration>,
+    /// Run this program directly instead of `command` through a shell
+    /// (code plugins: the Node host).
+    pub argv: Option<Vec<String>>,
 }
 
 impl HookEntry {
@@ -119,6 +122,7 @@ fn parse_group(
         matcher,
         command: command.to_string(),
         timeout,
+        argv: None,
     };
     match group {
         Value::String(command) => out.push(entry(command, None, None)),
@@ -318,29 +322,50 @@ fn git_bash() -> Option<PathBuf> {
 
 /// Run one hook command with a timeout, feeding `stdin`.
 pub fn run(entry: &HookEntry, invocation: &Invocation, stdin: &[u8], default_timeout: Duration) -> Output {
-    let (program, mut args) = shell();
-    let bash = !program.eq_ignore_ascii_case("cmd");
-    let root = if bash {
-        entry.root.to_string_lossy().replace('\\', "/")
+    let (program, args) = if let Some(argv) = entry.argv.as_ref().filter(|argv| !argv.is_empty()) {
+        (argv[0].clone(), argv[1..].to_vec())
     } else {
-        entry.root.to_string_lossy().into_owned()
+        let (program, mut args) = shell();
+        let bash = !program.eq_ignore_ascii_case("cmd");
+        let root = if bash {
+            entry.root.to_string_lossy().replace('\\', "/")
+        } else {
+            entry.root.to_string_lossy().into_owned()
+        };
+        args.push(
+            entry
+                .command
+                .replace("${CLAUDE_PLUGIN_ROOT}", &root)
+                .replace("${JCODE_PLUGIN_ROOT}", &root),
+        );
+        (program, args)
     };
-    let command = entry
-        .command
-        .replace("${CLAUDE_PLUGIN_ROOT}", &root)
-        .replace("${JCODE_PLUGIN_ROOT}", &root);
-    args.push(command);
     let mut process = Command::new(&program);
     process
         .args(&args)
         .env("CLAUDE_PLUGIN_ROOT", &entry.root)
         .env("JCODE_PLUGIN_ROOT", &entry.root)
         .env("JCODE_PLUGIN_NAME", &entry.plugin)
+        .env("JCODE_HOOK_EVENT", &invocation.event)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(cwd) = &invocation.cwd {
-        process.current_dir(cwd).env("CLAUDE_PROJECT_DIR", cwd);
+        process
+            .current_dir(cwd)
+            .env("CLAUDE_PROJECT_DIR", cwd)
+            .env("JCODE_HOOK_CWD", cwd);
+    }
+    // Normally inherited from jcode already; set explicitly so every runner
+    // (and tests) sees the same invocation.
+    for (key, value) in [
+        ("JCODE_HOOK_TOOL_NAME", &invocation.tool_name),
+        ("JCODE_HOOK_SESSION_ID", &invocation.session_id),
+        ("JCODE_HOOK_SOURCE", &invocation.source),
+    ] {
+        if !value.is_empty() {
+            process.env(key, value);
+        }
     }
     let mut child = match process.spawn() {
         Ok(child) => child,
@@ -631,6 +656,7 @@ mod tests {
             matcher: Some("bash".into()),
             command: command.into(),
             timeout: None,
+            argv: None,
         };
         let invocation = |event: &str| Invocation {
             event: event.into(),

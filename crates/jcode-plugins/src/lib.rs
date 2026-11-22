@@ -21,6 +21,7 @@
 //! through one dispatcher entry per event (`jcode-plugins hook <event>`),
 //! which fans out to every enabled plugin and translates Claude Code hooks.
 
+pub mod code;
 pub mod commands;
 pub mod hooks;
 pub mod manifest;

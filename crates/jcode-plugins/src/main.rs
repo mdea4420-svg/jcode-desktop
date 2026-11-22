@@ -15,7 +15,7 @@ USAGE:
   jcode-plugins disable <name>            Disable a plugin, then sync
   jcode-plugins install <path|git-url>    Copy or clone a plugin into ~/.jcode/plugins
   jcode-plugins uninstall <name>          Delete a plugin from ~/.jcode/plugins
-  jcode-plugins new <name>                Create a starter plugin
+  jcode-plugins new <name> [--code]       Create a starter plugin (--code: JavaScript plugin)
   jcode-plugins sync                      Apply enabled plugins to the jcode config
   jcode-plugins run </command args>       Print the prompt a plugin command expands to
   jcode-plugins hook <event>              (internal) hook dispatcher used by jcode
@@ -119,7 +119,7 @@ fn run(args: &[String]) -> anyhow::Result<ExitCode> {
             // fall back to "allow" (exit 0) like jcode's own fail-open hooks.
             let state = State::load(&layout);
             let (plugins, _) = discover(&layout, &state);
-            let entries: Vec<_> = plugins
+            let mut entries: Vec<_> = plugins
                 .iter()
                 .filter(|plugin| plugin.enabled)
                 .filter_map(|plugin| hooks::plugin_hooks(plugin).ok())
@@ -127,6 +127,7 @@ fn run(args: &[String]) -> anyhow::Result<ExitCode> {
                 .filter(|(hook_event, _)| *hook_event == event)
                 .map(|(_, entry)| entry)
                 .collect();
+            entries.extend(jcode_plugins::code::hook_entries(&layout, &plugins, event));
             if entries.is_empty() {
                 return Ok(ExitCode::SUCCESS);
             }
@@ -209,7 +210,11 @@ fn run(args: &[String]) -> anyhow::Result<ExitCode> {
             print_sync(&jcode_plugins::sync(&layout, &options()));
         }
         ("new", Some(name)) => {
-            let root = scaffold::create(&layout.plugins_dir, name)?;
+            let root = if args.iter().any(|arg| arg == "--code") {
+                scaffold::create_code(&layout.plugins_dir, name)?
+            } else {
+                scaffold::create(&layout.plugins_dir, name)?
+            };
             println!("Created {}", root.display());
             print_sync(&jcode_plugins::sync(&layout, &options()));
         }
@@ -219,9 +224,19 @@ fn run(args: &[String]) -> anyhow::Result<ExitCode> {
             let (plugins, _) = discover(&layout, &state);
             let catalog = Catalog::build(&plugins, |_| false);
             let line = args[1..].join(" ");
-            match catalog.expand(&line) {
-                Some(prompt) => println!("{prompt}"),
-                None => anyhow::bail!("no enabled plugin command matches `{line}`"),
+            let Some((command, rest)) = catalog.find(&line) else {
+                anyhow::bail!("no enabled plugin command matches `{line}`");
+            };
+            if command.code {
+                let plugin = find(&plugins, &command.plugin)?;
+                let cwd = std::env::current_dir().ok();
+                let reply = jcode_plugins::code::run_command(&layout, plugin, &command.name, rest, cwd.as_deref())?;
+                if let Some(error) = reply.error {
+                    anyhow::bail!("{error}");
+                }
+                println!("{}", reply.prompt.or(reply.message).unwrap_or_default());
+            } else {
+                println!("{}", command.expand(rest));
             }
         }
         _ => {

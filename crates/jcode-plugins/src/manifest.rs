@@ -59,6 +59,8 @@ pub struct Manifest {
     pub hooks: Option<Value>,
     /// A path to an MCP config file, or the servers object inline.
     pub mcp_servers: Option<Value>,
+    /// A JavaScript module that registers commands, tools, events and panels.
+    pub main: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +72,8 @@ pub struct Plugin {
     pub source: Source,
     pub enabled: bool,
     pub manifest: Manifest,
+    /// For code plugins: what the main module registered at the last sync.
+    pub code: Option<crate::code::Description>,
 }
 
 /// Lowercase letters, digits, `-`, `_` and `.`; anything else becomes `-`.
@@ -119,7 +123,15 @@ impl Plugin {
             source,
             enabled: false,
             manifest,
+            code: None,
         })
+    }
+
+    /// The code plugin's main module, when declared and present.
+    pub fn main_script(&self) -> Option<PathBuf> {
+        let main = self.manifest.main.as_deref()?;
+        let path = self.resolve(main);
+        path.is_file().then_some(path)
     }
 
     fn dirs(&self, list: &Option<PathList>, default: &str) -> Vec<PathBuf> {
@@ -318,6 +330,9 @@ pub fn discover(layout: &Layout, state: &State) -> (Vec<Plugin>, Vec<String>) {
                     continue;
                 }
                 plugin.enabled = state.is_enabled(&plugin.name, source);
+                if plugin.main_script().is_some() {
+                    plugin.code = crate::code::cached(layout, &plugin.name);
+                }
                 plugins.push(plugin);
             }
             Err(error) => errors.push(format!("{error:#}")),

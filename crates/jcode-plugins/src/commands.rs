@@ -19,6 +19,9 @@ pub struct PluginCommand {
     pub argument_hint: Option<String>,
     pub body: String,
     pub root: PathBuf,
+    /// Registered by a code plugin: run with [`crate::code::run_command`]
+    /// instead of expanding `body`.
+    pub code: bool,
 }
 
 /// Split optional `---` front matter into simple `key: value` pairs.
@@ -116,6 +119,7 @@ fn collect(dir: &Path, prefix: &str, plugin: &Plugin, out: &mut Vec<PluginComman
             argument_hint: fields.get("argument-hint").cloned(),
             body: body.to_string(),
             root: plugin.root.clone(),
+            code: false,
         });
     }
 }
@@ -124,6 +128,17 @@ pub fn load(plugin: &Plugin) -> Vec<PluginCommand> {
     let mut commands = Vec::new();
     for dir in plugin.command_dirs() {
         collect(&dir, "", plugin, &mut commands);
+    }
+    if let Some(code) = &plugin.code {
+        commands.extend(code.commands.iter().map(|command| PluginCommand {
+            plugin: plugin.name.clone(),
+            name: command.name.to_ascii_lowercase().replace(' ', "-"),
+            description: command.description.clone(),
+            argument_hint: command.argument_hint.clone(),
+            body: String::new(),
+            root: plugin.root.clone(),
+            code: true,
+        }));
     }
     commands
 }
@@ -206,9 +221,12 @@ impl Catalog {
         Some((&self.commands[*index], args))
     }
 
-    /// The prompt for a composer line, if it names a plugin command.
+    /// The prompt for a composer line, if it names a template command. Code
+    /// commands are found with [`Catalog::find`] and run instead.
     pub fn expand(&self, input: &str) -> Option<String> {
-        self.find(input).map(|(command, args)| command.expand(args))
+        self.find(input)
+            .filter(|(command, _)| !command.code)
+            .map(|(command, args)| command.expand(args))
     }
 }
 
@@ -237,6 +255,7 @@ mod tests {
             argument_hint: None,
             body: "Fix issue $1 in $2.\nAll: $ARGUMENTS\nRoot: ${CLAUDE_PLUGIN_ROOT}".into(),
             root: PathBuf::from("/plug"),
+            code: false,
         };
         assert_eq!(
             command.expand("42 \"src/a b.rs\""),
