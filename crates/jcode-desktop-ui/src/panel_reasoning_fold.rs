@@ -156,6 +156,22 @@ mod tests {
     }
 
     #[test]
+    fn folded_thoughts_leave_the_selection_document() {
+        let item = Item::Reasoning("a long private thought".into());
+        let segments = |expanded| {
+            super::super::text_document::segments_with_display(
+                &item,
+                2,
+                false,
+                expanded,
+                &collapsed(),
+            )
+        };
+        assert!(segments(false).is_empty());
+        assert!(!segments(true).is_empty());
+    }
+
+    #[test]
     fn preview_skips_markup_and_blank_lines() {
         assert_eq!(preview("\n\n## Plan the **fix**\n- step"), "Plan the fix");
         let long = "x".repeat(PREVIEW_CHARS + 5);

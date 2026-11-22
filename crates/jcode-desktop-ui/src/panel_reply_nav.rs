@@ -323,6 +323,67 @@ mod tests {
         assert_eq!(turns[2].reply.as_deref(), Some("Reply three"));
     }
 
+    #[gpui::test]
+    fn navigator_rows_and_steps_scroll_to_prompts(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new(
+                "reply-nav".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(700.), px(600.)));
+        panel.update(vcx, |panel, cx| {
+            for turn in 0..3 {
+                panel.items.push(Item::User(format!("Prompt {turn}")));
+                for line in 0..30 {
+                    panel
+                        .items
+                        .push(Item::Assistant(format!("Turn {turn} response {line}")));
+                }
+            }
+            panel.stick_to_bottom = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let prompt_rows: Vec<usize> = panel.update(vcx, |panel, cx| {
+            panel
+                .transcript_derived(cx)
+                .prompt_rows
+                .iter()
+                .map(|(row, _)| *row)
+                .collect()
+        });
+        assert_eq!(prompt_rows.len(), 3);
+
+        let toggle = vcx.debug_bounds("reply-nav-toggle").expect("toggle shown");
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reply-navigator").is_some());
+        let first = vcx.debug_bounds("reply-nav-row-0").expect("first turn row");
+        vcx.simulate_click(first.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert!(!panel.reply_nav_open);
+            assert!(!panel.stick_to_bottom);
+            assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, prompt_rows[0]);
+        });
+
+        panel.update(vcx, |panel, cx| panel.step_prompt(1, cx));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, prompt_rows[1]);
+        });
+        panel.update(vcx, |panel, cx| panel.step_prompt(-1, cx));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.transcript_list.logical_scroll_top().item_ix, prompt_rows[0]);
+        });
+    }
+
     #[test]
     fn stepping_moves_between_prompt_rows() {
         let rows = [2, 10, 30];

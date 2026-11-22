@@ -61,6 +61,9 @@ fn display_thinking_modes_filter_rows_without_mutating_history(cx: &mut gpui::Te
             );
             display.thinking_display = crate::config::ThinkingDisplay::Full;
             assert_eq!(panel.transcript_render_rows_with_display(&display).len(), 3);
+            // Collapsed keeps every row; folding is presentation only.
+            display.thinking_display = crate::config::ThinkingDisplay::Collapsed;
+            assert_eq!(panel.transcript_render_rows_with_display(&display).len(), 3);
         });
     });
 }
