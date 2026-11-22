@@ -87,6 +87,49 @@ argument-hint: [路径]
 - MCP：`.mcp.json` 里的服务器会合并进 `~/.jcode/mcp.json`，名字是 `<插件>-<服务器>`。
 - 面板：`applets/` 和 `~/.jcode/applets` 的格式完全一样，Desktop 启动时自动加载。
 
+## 代码插件（pi 风格）
+
+在 `plugin.json` 里写上 `"main": "index.mjs"`，插件就可以用 JavaScript 注册功能。需要本机装有 Node.js（`node` 在 PATH 里，或者用环境变量 `JCODE_NODE` 指定路径）。
+
+生成一个示例：`/plugins new my-code code`，或者 `jcode-plugins new my-code --code`。会附带 `jcode.d.ts`，编辑器里有自动补全。
+
+```js
+/** @param {import("./jcode").Jcode} jcode */
+export default function (jcode) {
+  // 斜杠命令：返回字符串就作为提示词发出；返回 { message } 只在聊天里显示，不发给 AI
+  jcode.command("standup", { description: "总结最近的提交" },
+    (args) => `总结最近 ${args || 1} 天的 git log`);
+
+  // 给 AI 用的工具（自动注册成 MCP 服务器 <插件>-tools，新会话可用）
+  jcode.tool("word_count", {
+    description: "统计字数",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+  }, ({ text }) => String(text.split(/\s+/).length));
+
+  // 事件：pre_tool 返回 { block: "原因" } 就拦截；pre_tool_transform 返回 { input } 改写参数；
+  // post_tool_feedback 返回文字会附加到工具结果；其余事件只观察
+  jcode.on("pre_tool", (e) => {
+    if (e.tool === "bash" && /rm -rf \//.test(e.input.command)) return { block: "危险命令" };
+  });
+
+  // Desktop 面板：侧边栏会出现一个启动按钮（launcher 也可以是 "startup"、"command" 或 { shortcut: "super-shift-k" }）
+  jcode.panel("counter", {
+    title: "计数器",
+    state: { count: 0 },
+    render: (state, ui) => ui.stack([
+      ui.heading(`点了 ${state.count} 次`),
+      ui.button("加一", "add", {}, { variant: "primary" }),
+    ], { padding: "md" }),
+    actions: { add: (args, state) => ({ ...state, count: state.count + 1 }) },
+  });
+}
+```
+
+- 每个入口都通过 `.runtime/host.mjs` 用 Node 运行：命令在你执行时运行；工具由 jcode 作为 MCP 服务器启动；事件由钩子分发器调用；面板作为 Applet 常驻。
+- 每次同步时，会用 Node 读取插件注册了哪些功能，记录在 `.runtime/<插件>.json`。所以改了 `index.mjs` 之后要运行 `/plugins reload`。新面板需要重启 Desktop 才会出现。
+- 面板组件：`ui.stack/row/card/scroll/text/heading/caption/markdown/code/divider/button/chip/input/toggle/select/list/item/keyValue/table/progress/empty/error`。`input`、`toggle`、`select` 绑定到 state 里的同名键，用户输入的值会随下一次动作一起传回来。
+- `index.ts` 需要 Node 23.6 以上（可以直接运行 TypeScript）；低于这个版本请用 `.mjs`。
+
 ## 同步是怎么工作的
 
 Desktop 启动时（或者运行 `jcode-plugins sync` 时）会把启用的插件写进 jcode 的配置：
