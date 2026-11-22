@@ -10,6 +10,7 @@ members = [
     "crates/jcode-desktop-ui-core",
     "crates/jcode-desktop-updater",
     "crates/jcode-desktop-voice",
+    "crates/jcode-plugins",
 ]
 resolver = "2"
 
@@ -32,6 +33,7 @@ jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 jcode-desktop-ui-core = { path = "crates/jcode-desktop-ui-core" }
 jcode-desktop-updater = { path = "crates/jcode-desktop-updater" }
 jcode-desktop-voice = { path = "crates/jcode-desktop-voice" }
+jcode-plugins = { path = "crates/jcode-plugins" }
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance used by host and UI.
