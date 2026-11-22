@@ -188,6 +188,8 @@ pub enum ThinkingDisplay {
     #[default]
     Full,
     Current,
+    /// Settled thoughts fold to a one-line disclosure. Live thinking stays full.
+    Collapsed,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -265,7 +267,8 @@ impl DisplayConfig {
                     "off" => ThinkingDisplay::Off,
                     "full" => ThinkingDisplay::Full,
                     "current" => ThinkingDisplay::Current,
-                    _ => return Err("Expected off, full, or current.".into()),
+                    "collapsed" => ThinkingDisplay::Collapsed,
+                    _ => return Err("Expected off, full, current, or collapsed.".into()),
                 }
             }
             "diff_display" => {

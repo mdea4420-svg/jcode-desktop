@@ -32,7 +32,7 @@ fn display_key(command: &str) -> Option<&'static str> {
 fn setting_choices(key: &str) -> &'static str {
     match key {
         "alignment" => "left|center|right",
-        "thinking_display" => "off|full|current",
+        "thinking_display" => "off|full|current|collapsed",
         "diff_display" => "off|inline|full|pinned|file",
         _ => "on|off|toggle",
     }

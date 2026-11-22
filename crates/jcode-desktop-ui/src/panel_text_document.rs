@@ -50,6 +50,9 @@ impl TranscriptTextDocument {
                 Item::Stopped(_) | Item::CacheMiss(_) => {
                     expanded_tools.contains(&format!("notice:{}", row.index))
                 }
+                Item::Reasoning(_) => {
+                    !super::reasoning_fold::is_folded(&display, row.index, expanded_tools)
+                }
                 _ => false,
             };
             let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);
@@ -187,6 +190,10 @@ pub(super) fn segments_with_display(
             return markdown::selection_segments(visible, index, false, true);
         }
         Item::Assistant(text) => return markdown::selection_segments(text, index, false, false),
+        // A folded thought paints only its pill, which is not selectable text.
+        Item::Reasoning(_)
+            if display.thinking_display == crate::config::ThinkingDisplay::Collapsed
+                && !tool_expanded => {}
         Item::Reasoning(text) => return markdown::selection_segments(text, index, true, false),
         Item::Tool {
             call_id,

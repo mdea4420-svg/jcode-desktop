@@ -107,6 +107,10 @@ mod preview;
 mod prompt;
 #[path = "panel_queue.rs"]
 mod queue;
+#[path = "panel_reasoning_fold.rs"]
+mod reasoning_fold;
+#[path = "panel_reply_nav.rs"]
+pub(crate) mod reply_nav;
 #[path = "panel_recovery.rs"]
 mod recovery;
 #[cfg(test)]
@@ -551,6 +555,8 @@ pub struct Panel {
     awaiting_persisted: bool,
     /// Tool rows the user expanded, keyed by call id.
     expanded_tools: HashSet<String>,
+    /// Whether the reply navigator list is open (Alt+O).
+    reply_nav_open: bool,
     /// Retain closing cards until their fade finishes, and allow smooth reversal.
     tool_detail_motion: HashMap<String, crate::transition::AnimatedValue>,
     prompt_queue: queue::PromptQueue,
@@ -1011,6 +1017,7 @@ impl Panel {
             provisional_task: None,
             awaiting_persisted: false,
             expanded_tools: HashSet::new(),
+            reply_nav_open: false,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
             pending_users: VecDeque::new(),
@@ -3511,7 +3518,11 @@ impl Panel {
             }
             // Filter presentation only, never persisted items.
             if matches!(item, Item::Reasoning(_))
-                && display.thinking_display != crate::config::ThinkingDisplay::Full
+                && !matches!(
+                    display.thinking_display,
+                    crate::config::ThinkingDisplay::Full
+                        | crate::config::ThinkingDisplay::Collapsed
+                )
             {
                 continue;
             }
@@ -3773,7 +3784,13 @@ impl Panel {
                 .into_any_element(),
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
-            // Never truncate it: there is deliberately no disclosure control.
+            // Never truncate it by default. `/thinking collapsed` opts into a
+            // fold for settled thoughts only.
+            Item::Reasoning(text)
+                if reasoning_fold::is_folded(&display, index, &self.expanded_tools) =>
+            {
+                self.render_reasoning_fold(index, text, cx)
+            }
             Item::Reasoning(text) => div()
                 .debug_selector(|| "reasoning-inline".into())
                 .font_family(Theme::global().FONT_AI)
@@ -3800,6 +3817,11 @@ impl Panel {
                         .into_any_element()
                     },
                 ))
+                .when(
+                    display.thinking_display == crate::config::ThinkingDisplay::Collapsed
+                        && index < usize::MAX / 2,
+                    |el| el.flex().flex_col().child(self.render_reasoning_unfold_control(index, cx)),
+                )
                 .into_any_element(),
             Item::Todos(payload) => render_todo_card_with_style(
                 payload,
@@ -5083,6 +5105,17 @@ impl Render for Panel {
                 panel.jump_to_latest(cx);
             }))
             .on_action(
+                cx.listener(|panel, _: &reply_nav::ToggleReplyNavigator, _, cx| {
+                    panel.toggle_reply_navigator(cx);
+                }),
+            )
+            .on_action(cx.listener(|panel, _: &reply_nav::PreviousPrompt, _, cx| {
+                panel.step_prompt(-1, cx);
+            }))
+            .on_action(cx.listener(|panel, _: &reply_nav::NextPrompt, _, cx| {
+                panel.step_prompt(1, cx);
+            }))
+            .on_action(
                 cx.listener(|panel, _: &shortcuts::BackgroundRunningTool, _, cx| {
                     panel.background_running_tool_if_any(cx);
                 }),
@@ -5242,6 +5275,8 @@ impl Render for Panel {
                         el.child(self.render_composer_dock(input_bounds.clone(), window, cx))
                     })
                     .child(startup::input_marker(body_bounds.clone()))
+                    .children(self.render_reply_nav_toggle(&prompt_rows, cx))
+                    .children(self.render_reply_navigator(&prompt_rows, cx))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
                     .child(self.tail_growth_observer(cx))
