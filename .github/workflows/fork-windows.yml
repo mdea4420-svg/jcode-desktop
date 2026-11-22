@@ -161,10 +161,16 @@ jobs:
         run: |
           cargo build --release --target $env:TARGET --bin jcode-desktop
           if ($LASTEXITCODE) { throw 'Desktop build failed' }
+          cargo build --release --target $env:TARGET -p jcode-plugins --bin jcode-plugins
+          if ($LASTEXITCODE) { throw 'Plugin manager build failed' }
+          cargo test --release --target $env:TARGET -p jcode-plugins
+          if ($LASTEXITCODE) { throw 'Plugin manager tests failed' }
           New-Item dist -ItemType Directory -Force | Out-Null
-          Copy-Item "target/$env:TARGET/release/jcode-desktop.exe" dist/jcode-desktop.exe
-          $hash = (Get-FileHash dist/jcode-desktop.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  jcode-desktop.exe" | Set-Content dist/SHA256SUMS
+          $sums = foreach ($exe in 'jcode-desktop.exe', 'jcode-plugins.exe') {
+            Copy-Item "target/$env:TARGET/release/$exe" "dist/$exe"
+            "$((Get-FileHash "dist/$exe" -Algorithm SHA256).Hash.ToLower())  $exe"
+          }
+          $sums | Set-Content dist/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: jcode-desktop-fork-windows
@@ -177,8 +183,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          notes="jcode-desktop.exe built from \`$BRANCH\` on upstream \`$BASE\`. Replace the exe in your Jcode Desktop folder, or run scripts/fork/update-fork.ps1."
+          notes="jcode-desktop.exe and jcode-plugins.exe built from \`$BRANCH\` on upstream \`$BASE\`. Copy both into your Jcode Desktop folder, or run scripts/fork/update-fork.ps1."
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$BRANCH" \
             --title "Jcode Desktop $VERSION (plugins)" --notes "$notes" --latest \
-            dist/jcode-desktop.exe dist/SHA256SUMS
+            dist/jcode-desktop.exe dist/jcode-plugins.exe dist/SHA256SUMS

@@ -1,0 +1,6 @@
+{
+  "name": "safety-guard",
+  "version": "0.1.0",
+  "description": "Blocks destructive shell commands and adds /review and /commit",
+  "author": { "name": "jcode-desktop fork" }
+}

@@ -46,11 +46,20 @@ if (-not $Force -and (Test-Path $marker) -and ((Get-Content $marker -Raw).Trim()
 
 $download = Join-Path ([IO.Path]::GetTempPath()) "jcode-fork-$release"
 Remove-Item $download -Recurse -Force -ErrorAction SilentlyContinue
-gh release download $release --repo $Repo --dir $download --pattern jcode-desktop.exe --pattern SHA256SUMS
+gh release download $release --repo $Repo --dir $download --pattern '*.exe' --pattern SHA256SUMS
 if ($LASTEXITCODE) { throw "Download of $release failed" }
-$expected = ((Get-Content (Join-Path $download 'SHA256SUMS') -Raw).Trim() -split '\s+')[0].ToLower()
-$actual = (Get-FileHash (Join-Path $download 'jcode-desktop.exe') -Algorithm SHA256).Hash.ToLower()
-if ($expected -ne $actual) { throw "Checksum mismatch for $release" }
+# Every downloaded exe must be listed in SHA256SUMS with a matching hash.
+$sums = @{}
+foreach ($line in Get-Content (Join-Path $download 'SHA256SUMS')) {
+  $parts = $line.Trim() -split '\s+'
+  if ($parts.Count -ge 2) { $sums[$parts[1]] = $parts[0].ToLower() }
+}
+$files = Get-ChildItem $download -Filter '*.exe' | Select-Object -ExpandProperty Name
+if ($files -notcontains 'jcode-desktop.exe') { throw "$release has no jcode-desktop.exe" }
+foreach ($file in $files) {
+  $actual = (Get-FileHash (Join-Path $download $file) -Algorithm SHA256).Hash.ToLower()
+  if ($sums[$file] -ne $actual) { throw "Checksum mismatch for $file in $release" }
+}
 
 $running = Get-Process jcode-desktop -ErrorAction SilentlyContinue |
   Where-Object { $_.Path -and ((Resolve-Path $_.Path).Path -eq (Resolve-Path $exe).Path) }
@@ -66,7 +75,7 @@ if ($running) {
 $official = Join-Path $InstallDir 'jcode-desktop.official.exe'
 if (-not (Test-Path $official) -and -not (Test-Path $marker)) { Copy-Item $exe $official }
 Copy-Item $exe (Join-Path $InstallDir 'jcode-desktop.prev.exe') -Force
-Copy-Item (Join-Path $download 'jcode-desktop.exe') $exe -Force
+foreach ($file in $files) { Copy-Item (Join-Path $download $file) (Join-Path $InstallDir $file) -Force }
 Set-Content $marker $release
 Remove-Item $download -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Installed $release into $InstallDir"
