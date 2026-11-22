@@ -201,12 +201,19 @@ impl Workspace {
         if crate::harness::screenshot_mode() || cfg!(test) {
             return;
         }
+        crate::plugins::start();
         let Some(dir) = crate::applet_runtime::applets_dir() else {
             return;
         };
         crate::bundled_applets::refresh_installed(&dir);
         let runtime = crate::applet_runtime::get(cx);
-        for applet in crate::applet_runtime::discover(&dir) {
+        let plugin_applets = crate::plugins::applet_dirs()
+            .into_iter()
+            .flat_map(|dir| crate::applet_runtime::discover(&dir));
+        for applet in crate::applet_runtime::discover(&dir)
+            .into_iter()
+            .chain(plugin_applets)
+        {
             if applet.autostart
                 && let Err(error) = runtime.start(&applet)
             {

@@ -105,6 +105,8 @@ mod login;
 mod preview;
 #[path = "panel_prompt.rs"]
 mod prompt;
+#[path = "panel_plugins.rs"]
+mod plugins;
 #[path = "panel_queue.rs"]
 mod queue;
 #[path = "panel_reasoning_fold.rs"]
@@ -2039,6 +2041,7 @@ impl Panel {
             || self.handle_recovery_command(trimmed, cx)
             || self.handle_runtime_command(trimmed, cx)
             || self.handle_desktop_command(trimmed, cx)
+            || self.handle_plugins_command(trimmed, cx)
         {
             self.stick_to_bottom = true;
             self.transcript_list.scroll_to_end();
@@ -2067,6 +2070,9 @@ impl Panel {
         }
         if let Some(prompt) = jcode_desktop_model::command_workflows::workflow_prompt(trimmed) {
             self.submit_or_queue(prompt, Vec::new(), true, cx);
+            return true;
+        }
+        if self.handle_plugin_slash_command(trimmed, cx) {
             return true;
         }
         if self.login_command(trimmed, cx) {

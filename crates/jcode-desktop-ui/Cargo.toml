@@ -20,6 +20,7 @@ jcode-desktop-motion.workspace = true
 jcode-desktop-ui-core.workspace = true
 jcode-desktop-updater.workspace = true
 jcode-desktop-voice.workspace = true
+jcode-plugins.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
 jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }

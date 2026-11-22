@@ -59,6 +59,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/btw", "Ask a side question in the side panel"),
     RegisteredCommand::public("/ssh", "Connect to a remote machine using system SSH"),
     RegisteredCommand::public("/git", "Show git status for the session working directory"),
+    RegisteredCommand::public(
+        "/plugins",
+        "List, enable, disable or create plugins (commands, skills, hooks, MCP, applets)",
+    ),
     RegisteredCommand::public("/colors", "List or change Desktop color themes"),
     RegisteredCommand::hidden("/color", "Alias for /colors"),
     RegisteredCommand::public("/hotkeys", "List registered Desktop hotkeys and contexts"),

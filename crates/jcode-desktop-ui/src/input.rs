@@ -343,7 +343,13 @@ fn command_suggestions_with_efforts(
             .collect();
     }
     let query = trimmed.to_ascii_lowercase();
-    let mut commands = registered_command_entries()
+    let entries: Vec<(String, String)> = registered_command_entries()
+        .map(|(name, help)| (name.to_string(), help.to_string()))
+        .chain(crate::plugins::command_entries())
+        .collect();
+    let mut commands = entries
+        .iter()
+        .map(|(name, help)| (name.as_str(), help.as_str()))
         .filter_map(|(command, help)| {
             let command_lower = command.to_ascii_lowercase();
             let help_lower = help.to_ascii_lowercase();

@@ -10,6 +10,7 @@ mod bundled_applets;
 mod changelog;
 mod clipboard_image;
 mod commands;
+mod plugins;
 mod diff_block;
 mod diff_review_content;
 mod diff_view;
