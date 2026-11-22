@@ -10,6 +10,12 @@ use std::path::Path;
 pub const RELEASE_VERSION: &str = env!("JCODE_DESKTOP_VERSION");
 
 pub fn release_version() -> Option<semver::Version> {
+    // Fork builds (`JCODE_DESKTOP_FORK` set at compile time) are not published
+    // releases. Without a release version the official updater and the
+    // newer-install redirect stay off, so they never replace this build.
+    if option_env!("JCODE_DESKTOP_FORK").is_some() {
+        return None;
+    }
     jcode_desktop_updater::parse_version(RELEASE_VERSION).ok()
 }
 

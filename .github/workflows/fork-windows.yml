@@ -1,0 +1,184 @@
+name: Fork Windows build
+
+# Builds this fork's jcode-desktop.exe on top of the latest upstream stable
+# release and publishes it as a GitHub release of this repository.
+#
+# - push to `plugins`: rebuild the plugins branch.
+# - schedule: rebase onto the newest upstream `desktop-vX.Y.Z` tag (in CI only,
+#   nothing is pushed) and build when that combination has no release yet.
+#   A rebase conflict fails the run, which emails the repository owner.
+# - workflow_dispatch: same as schedule, optionally pinned to a tag, or forced.
+
+on:
+  push:
+    branches: [plugins]
+    paths-ignore: ["**.md", "docs/**"]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Upstream stable tag to build on (empty = newest desktop-vX.Y.Z)
+        required: false
+        default: ""
+      force:
+        description: Build even if a release for this combination exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-windows
+  cancel-in-progress: false
+
+env:
+  BRANCH: plugins
+  UPSTREAM: https://github.com/1jehuang/jcode-desktop.git
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      base: ${{ steps.plan.outputs.base }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_INPUT: ${{ inputs.base }}
+          FORCE: ${{ inputs.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM"
+          git fetch -q upstream --tags --force
+          stable='^desktop-v[0-9]+\.[0-9]+\.[0-9]+$'
+          base="${BASE_INPUT:-$(git tag -l 'desktop-v*' | grep -E "$stable" | sort -V | tail -1)}"
+          [[ "$base" =~ $stable ]] || { echo "Invalid base tag: $base" >&2; exit 1; }
+          current=$(git describe --tags --abbrev=0 --match 'desktop-v*' --exclude '*-beta*' HEAD)
+          if [[ "$current" != "$base" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            # Fail early and cheaply when the plugins no longer apply.
+            git rebase -q --onto "$base" "$current" HEAD
+          fi
+          version="${base#desktop-v}"
+          tag="fork-v${version}-$(git rev-parse --short=8 "origin/$BRANCH")"
+          build=true
+          if [[ "$GITHUB_EVENT_NAME" != push && "$FORCE" != true ]] \
+            && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            build=false
+          fi
+          echo "Base $base (branch on $current), release $tag, build=$build"
+          {
+            echo "base=$base"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 180
+    env:
+      BASE: ${{ needs.plan.outputs.base }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.BRANCH }}
+          path: jcode-desktop
+          fetch-depth: 0
+      - name: Rebase plugins onto the upstream release
+        working-directory: jcode-desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM"
+          git fetch -q upstream --tags --force
+          current=$(git describe --tags --abbrev=0 --match 'desktop-v*' --exclude '*-beta*' HEAD)
+          if [[ "$current" != "$BASE" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git rebase -q --onto "$BASE" "$current" HEAD
+          fi
+          git log --oneline -n 8
+      - name: Find the pinned Jcode runtime
+        id: runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref=$(python - <<'EOF'
+          import re
+          text = open("jcode-desktop/.github/workflows/cross-platform-release.yml", encoding="utf-8").read()
+          print(re.search(r"repository: 1jehuang/jcode\s*\n\s*ref: ([0-9a-f]{40})", text).group(1))
+          EOF
+          )
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: ${{ steps.runtime.outputs.ref }}
+          path: jcode
+          submodules: recursive
+      - name: Configure MSVC build environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: amd64
+      # .cargo/config.toml routes rustc through a POSIX shell wrapper that
+      # native Windows cannot execute.
+      - name: Disable POSIX rustc wrapper
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_BUILD_RUSTC_WRAPPER='
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ env.TARGET }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: jcode-desktop
+          cache-on-failure: true
+          key: fork-${{ env.TARGET }}
+      - name: Build jcode-desktop.exe
+        working-directory: jcode-desktop
+        shell: pwsh
+        env:
+          JCODE_DESKTOP_VERSION: ${{ env.VERSION }}
+          # Turns off the official updater so it never replaces this build.
+          JCODE_DESKTOP_FORK: "1"
+        run: |
+          cargo build --release --target $env:TARGET --bin jcode-desktop
+          if ($LASTEXITCODE) { throw 'Desktop build failed' }
+          New-Item dist -ItemType Directory -Force | Out-Null
+          Copy-Item "target/$env:TARGET/release/jcode-desktop.exe" dist/jcode-desktop.exe
+          $hash = (Get-FileHash dist/jcode-desktop.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  jcode-desktop.exe" | Set-Content dist/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jcode-desktop-fork-windows
+          path: jcode-desktop/dist/*
+          if-no-files-found: error
+      - name: Publish release
+        working-directory: jcode-desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="jcode-desktop.exe built from \`$BRANCH\` on upstream \`$BASE\`. Replace the exe in your Jcode Desktop folder, or run scripts/fork/update-fork.ps1."
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$BRANCH" \
+            --title "Jcode Desktop $VERSION (plugins)" --notes "$notes" --latest \
+            dist/jcode-desktop.exe dist/SHA256SUMS
