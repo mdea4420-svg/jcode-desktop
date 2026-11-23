@@ -6,6 +6,7 @@
 
 pub mod command_workflows;
 pub mod diff;
+pub mod extensions;
 pub mod diff_model;
 pub mod friendly_error;
 pub mod learning;

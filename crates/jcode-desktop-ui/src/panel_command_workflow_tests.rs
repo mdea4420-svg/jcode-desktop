@@ -22,16 +22,23 @@ fn workflow_stop_cancels_immediately_and_status_is_read_only(cx: &mut gpui::Test
 }
 
 #[gpui::test]
-fn skills_is_a_runtime_operation_not_a_model_turn(cx: &mut gpui::TestAppContext) {
+fn skills_args_stay_a_runtime_operation_not_a_model_turn(cx: &mut gpui::TestAppContext) {
+    // Bare `/skills` opens the Extensions overlay; arguments keep the runtime
+    // command so the session can list its loaded skills.
     let (bridge, commands) = crate::harness::spawn_recording();
     let panel = cx.new(|cx| Panel::new("skills-session".into(), None, None, bridge, cx));
     panel.update(cx, |panel, cx| {
         assert!(panel.handle_slash_command("/skills", cx));
         assert!(panel.pending_users.is_empty());
         assert!(!panel.items.iter().any(|item| matches!(item, Item::User(_))));
+        assert!(panel.extensions.is_some());
+        assert!(commands.try_recv().is_err());
+        panel.close_extensions(cx);
+        assert!(panel.handle_slash_command("/skills check", cx));
+        assert!(panel.extensions.is_none());
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::Skills, args }) if session_id == "skills-session" && args.is_empty())
+        matches!(commands.try_recv(), Ok(Command::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::Skills, args }) if session_id == "skills-session" && args == ["check"])
     );
 }
 

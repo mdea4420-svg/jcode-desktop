@@ -63,6 +63,8 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/plugins",
         "List, enable, disable or create plugins (commands, skills, hooks, MCP, applets)",
     ),
+    RegisteredCommand::public("/extensions", "Manage MCP servers, skills and plugins"),
+    RegisteredCommand::public("/mcp", "Manage MCP servers (add, edit, enable, test)"),
     RegisteredCommand::public("/colors", "List or change Desktop color themes"),
     RegisteredCommand::hidden("/color", "Alias for /colors"),
     RegisteredCommand::public("/hotkeys", "List registered Desktop hotkeys and contexts"),
@@ -152,7 +154,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/context", "Show the full session context snapshot"),
     RegisteredCommand::public(
         "/skills",
-        "Show loaded skills and jcode-endorsed recommendations",
+        "Manage skills (bare) or show loaded skills (`/skills <args>`)",
     ),
     RegisteredCommand::public("/version", "Show current version"),
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),

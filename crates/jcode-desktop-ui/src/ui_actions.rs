@@ -26,6 +26,14 @@ pub(crate) struct OpenAccounts {
     pub login_command: Option<String>,
 }
 
+/// Open the Extensions overlay (MCP / Skills / Plugins tabs) on a panel.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenExtensions {
+    pub source: gpui::EntityId,
+    pub tab: jcode_desktop_model::extensions::ExtensionTab,
+}
+
 /// Open the read-only usage reset review for one provider, from `/reset`.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

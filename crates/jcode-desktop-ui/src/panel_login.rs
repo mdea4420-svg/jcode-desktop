@@ -163,6 +163,7 @@ impl Panel {
             search.set_submission_enabled(false, cx);
             search
         });
+        self.extensions = None;
         self.login = Some(LoginState {
             selection_only: false,
             client,

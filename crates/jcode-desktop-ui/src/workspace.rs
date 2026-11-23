@@ -153,8 +153,8 @@ mod default_directory_tests;
 // Actions that panels dispatch to the workspace live in a leaf module so the
 // panel layer does not depend on this one.
 pub(crate) use crate::ui_actions::{
-    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume, PublishDesktop,
-    ToggleOnboardingSimulator,
+    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenExtensions, OpenResume,
+    PublishDesktop, ToggleOnboardingSimulator,
 };
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -3340,6 +3340,32 @@ impl Workspace {
             return;
         };
         source.update(cx, |panel, cx| panel.toggle_model_picker(window, cx));
+    }
+
+    /// The active slot's panel, for action-dispatch tests.
+    #[cfg(test)]
+    pub(crate) fn test_active_panel(&self) -> Option<Entity<Panel>> {
+        self.slots.get(self.active).map(|slot| slot.panel.clone())
+    }
+
+    /// Forward `OpenExtensions` to the slot that dispatched it (sidebar
+    /// button sends the active panel's id).
+    fn open_extensions(
+        &mut self,
+        request: &OpenExtensions,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self
+            .slots
+            .iter()
+            .find(|slot| !slot.closing && slot.panel.entity_id() == request.source)
+            .map(|slot| slot.panel.clone())
+        else {
+            return;
+        };
+        let tab = request.tab;
+        source.update(cx, |panel, cx| panel.open_extensions(tab, cx));
     }
 
     fn open_accounts(
@@ -6606,6 +6632,62 @@ impl Workspace {
                                         )
                                         .child(
                                             div()
+                                                .id("sidebar-extensions")
+                                                .debug_selector(|| "sidebar-extensions".into())
+                                                .flex_none()
+                                                .border_1()
+                                                .border_color(Theme::global().PANEL_BORDER)
+                                                .px_2()
+                                                .py_1()
+                                                .rounded_t_md()
+                                                .h(px(30.0))
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .text_color(Theme::global().TEXT_DIM)
+                                                .hover(|el| {
+                                                    el.bg(Theme::global().HEADER_BG)
+                                                        .text_color(Theme::global().TEXT)
+                                                })
+                                                .tooltip(|_, cx| {
+                                                    cx.new(|_| {
+                                                        remotes::HeaderTooltip(
+                                                            "Extensions — MCP, skills, plugins"
+                                                                .into(),
+                                                        )
+                                                    })
+                                                    .into()
+                                                })
+                                                .on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(|this, _, window, cx| {
+                                                        let Some(panel) = this
+                                                            .slots
+                                                            .get(this.active)
+                                                            .filter(|slot| !slot.closing)
+                                                            .map(|slot| slot.panel.clone())
+                                                        else {
+                                                            return;
+                                                        };
+                                                        window.dispatch_action(
+                                                            Box::new(OpenExtensions {
+                                                                source: panel.entity_id(),
+                                                                tab: jcode_desktop_model::extensions::ExtensionTab::Last,
+                                                            }),
+                                                            cx,
+                                                        );
+                                                    }),
+                                                )
+                                                .child(
+                                                    gpui::svg()
+                                                        .data(include_bytes!(
+                                                            "../../../assets/icons/plug.svg"
+                                                        ).as_slice())
+                                                        .size(px(12.0)),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
                                                 .id("sidebar-open-folder")
                                                 .debug_selector(|| "sidebar-open-folder".into())
                                                 .flex_none()
@@ -8613,6 +8695,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))
             .on_action(cx.listener(Self::open_model_window_or_picker))
+            .on_action(cx.listener(Self::open_extensions))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))

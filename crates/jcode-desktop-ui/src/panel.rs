@@ -101,6 +101,14 @@ mod image_preview;
 mod latest;
 #[path = "panel_login.rs"]
 mod login;
+#[path = "panel_extensions.rs"]
+mod extensions;
+#[path = "panel_extensions_mcp.rs"]
+mod extensions_mcp;
+#[path = "panel_extensions_plugins.rs"]
+mod extensions_plugins;
+#[path = "panel_extensions_skills.rs"]
+mod extensions_skills;
 #[path = "panel_model_browser.rs"]
 mod model_browser;
 #[path = "panel_preview.rs"]
@@ -612,6 +620,7 @@ pub struct Panel {
     recovery_picker_open: bool,
     model_picker_open: bool,
     model_browser: Option<model_browser::ModelBrowserState>,
+    extensions: Option<extensions::ExtensionsState>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
@@ -1054,6 +1063,7 @@ impl Panel {
             recovery_picker_open: false,
             model_picker_open: false,
             model_browser: None,
+            extensions: None,
             focus_pending: false,
             transcript_only: false,
             login: None,
@@ -1984,6 +1994,9 @@ impl Panel {
                     .update(cx, |input, cx| input.set_command_menu_active(false, cx));
             }
             this.apply_screenshot_model_entry(cx);
+            if let Some(tab) = extensions::screenshot_tab() {
+                this.open_extensions(tab, cx);
+            }
             if this.is_pending_session() {
                 this.status = "Starting session · you can type now".into();
                 this.input
@@ -2012,6 +2025,7 @@ impl Panel {
         let trimmed = content.trim();
         if self.handle_special_command(trimmed, cx)
             || self.handle_recovery_command(trimmed, cx)
+            || self.handle_extensions_command(trimmed, cx)
             || self.handle_runtime_command(trimmed, cx)
             || self.handle_desktop_command(trimmed, cx)
             || self.handle_plugins_command(trimmed, cx)
@@ -2321,6 +2335,7 @@ impl Panel {
         }
         self.recovery_picker_open = false;
         self.model_browser = None;
+        self.extensions = None;
         self.model_picker_open = true;
         let models = self.available_models.clone();
         let input = self.input.clone();
@@ -5411,6 +5426,7 @@ impl Render for Panel {
             .children(self.render_diff_review(cx))
             .children(self.render_login_picker(window, cx))
             .children(self.render_model_browser(window, cx))
+            .children(self.render_extensions(window, cx))
             .into_any_element();
 
         // Inline mode retains the existing chat layout and event ancestry.

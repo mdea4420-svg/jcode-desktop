@@ -70,6 +70,7 @@ impl Panel {
             return;
         }
         self.login = None;
+        self.extensions = None;
         self.recovery_picker_open = false;
         if self.model_picker_open {
             self.close_model_picker(cx);

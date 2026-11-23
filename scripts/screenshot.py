@@ -121,6 +121,8 @@ def main():
                         help="open the compact /model popup with offline routes")
     parser.add_argument("--model-manage", action="store_true",
                         help="open the model browser in Providers manage mode")
+    parser.add_argument("--extensions", choices=("mcp", "skills", "plugins", "form"),
+                        help="open the Extensions overlay on the given tab (form = MCP edit form)")
     parser.add_argument("--model-browser", action="store_true",
                         help="open the large model browser dialog with offline routes")
     parser.add_argument("--model-query",
@@ -532,6 +534,9 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_FAVORITES"] = "magpie:codex/gpt-6.2-sol"
         if args.model_query:
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_QUERY"] = args.model_query
+        if args.extensions:
+            env["JCODE_DESKTOP_SCREENSHOT_EXTENSIONS"] = args.extensions
+            env["JCODE_DESKTOP_SCREENSHOT_MCP_TEST"] = "filesystem"
         if args.model_manage:
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_MANAGE"] = "1"
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_HIDDEN"] = (
@@ -600,7 +605,7 @@ def main():
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
                 if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps
                         or args.changelog or args.model_menu or args.model_browser
-                        or args.transcript == "reasoning-busy"):
+                        or args.extensions or args.transcript == "reasoning-busy"):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
