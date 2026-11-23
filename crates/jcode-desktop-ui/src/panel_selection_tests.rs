@@ -366,6 +366,8 @@ fn finish_drag_copy(
 
 #[gpui::test]
 fn continuous_selection_spans_prompt_response_tool_and_final_answer(cx: &mut gpui::TestAppContext) {
+    // Selection must span the intermediate rows, so keep steps unfolded.
+    crate::config::set_display("steps_display", "expanded").unwrap();
     cx.update(crate::input::bind_keys);
     let (panel, vcx) = cx.add_window_view(|_, cx| {
         let mut panel = Panel::new(

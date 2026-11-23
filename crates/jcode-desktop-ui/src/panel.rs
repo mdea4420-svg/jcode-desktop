@@ -121,6 +121,8 @@ mod plugins;
 mod queue;
 #[path = "panel_reasoning_fold.rs"]
 pub(crate) mod reasoning_fold;
+#[path = "panel_steps_fold.rs"]
+pub(crate) mod steps_fold;
 #[path = "panel_reply_nav.rs"]
 pub(crate) mod reply_nav;
 #[path = "panel_recovery.rs"]
@@ -305,6 +307,11 @@ pub enum Item {
     /// a tool call. Only ever a derived render row, never stored in `items`.
     #[serde(skip)]
     Applet(String),
+    /// A turn's steps-control row: the folded summary pill or the "Hide
+    /// steps" control above an expanded block. Only ever a derived render
+    /// row, never stored in `items`.
+    #[serde(skip)]
+    StepsFold(steps_fold::StepsFold),
 }
 
 #[derive(Clone)]
@@ -1032,7 +1039,13 @@ impl Panel {
             provisional_items: 0,
             provisional_task: None,
             awaiting_persisted: false,
-            expanded_tools: HashSet::new(),
+            expanded_tools: if crate::harness::screenshot_mode()
+                && fixture.as_deref() == Some("steps-expanded")
+            {
+                HashSet::from([steps_fold::expansion_key(0)])
+            } else {
+                HashSet::new()
+            },
             reply_nav_open: false,
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
@@ -3610,7 +3623,13 @@ impl Panel {
             previous_role = role.or(previous_role);
         }
 
-        rows
+        steps_fold::apply(
+            &self.items,
+            rows,
+            display,
+            &self.expanded_tools,
+            self.current_turn_start(),
+        )
     }
 
     /// Compact elapsed time: ticking while a tool runs, final duration after.
@@ -3690,6 +3709,7 @@ impl Panel {
                 .into_any_element();
         }
         match item {
+            Item::StepsFold(fold) => self.render_steps_fold(fold, cx),
             Item::Applet(instance) => {
                 let selection = self.applet_selection.clone();
                 crate::applet_surface::card(instance, true, &selection, window, cx)
@@ -5130,7 +5150,7 @@ impl Render for Panel {
             }))
             .on_action(
                 cx.listener(|panel, _: &reasoning_fold::ToggleAllThinking, _, cx| {
-                    panel.toggle_all_thinking(cx);
+                    panel.toggle_all_steps(cx);
                 }),
             )
             .on_action(
@@ -5541,6 +5561,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Stopped(_)
         | Item::CacheMiss(_)
         | Item::Applet(_)
+        | Item::StepsFold(_)
         | Item::Error(_) => None,
     }
 }
@@ -7294,6 +7315,9 @@ mod tests {
 
     #[gpui::test]
     fn transcript_rows_stay_compact_and_preserve_sources(cx: &mut gpui::TestAppContext) {
+        // Row bookkeeping, not fold behavior: keep step rows unfolded so the
+        // assertions below see the raw row layout.
+        crate::config::set_display("steps_display", "expanded").unwrap();
         assert!(
             std::mem::size_of::<TranscriptRenderRow>() <= 6 * std::mem::size_of::<usize>(),
             "settled rows must not reserve storage for the largest transcript Item"
@@ -7345,6 +7369,9 @@ mod tests {
 
     #[gpui::test]
     fn reasoning_rows_never_get_role_captions(cx: &mut gpui::TestAppContext) {
+        // This test checks speaker labels on plain rows, not the
+        // steps-control row folded turns add.
+        crate::config::set_display("steps_display", "expanded").unwrap();
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7381,6 +7408,7 @@ mod tests {
             }
             assert_eq!(thoughts, 4);
         });
+        crate::config::set_display("steps_display", "collapsed").unwrap();
     }
 
     #[gpui::test]
@@ -8624,7 +8652,9 @@ mod tests {
             .expect("panel exists");
 
         // The same items JCODE_DESKTOP_DEMO_TRANSCRIPT=1 seeds, minus the
-        // env-var gate so the test is hermetic.
+        // env-var gate so the test is hermetic. Steps stay expanded so every
+        // shape still paints.
+        crate::config::set_display("steps_display", "expanded").unwrap();
         panel.update(vcx, |panel, cx| {
             *panel.items = demo_item_fixtures();
             assert!(panel.items.len() >= 6, "demo covers every item shape");
@@ -9868,6 +9898,58 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             Item::Assistant("Thinking now appears as subtle inline text and folds into a pill once each answer finishes.".into()),
             Item::User("Nice. Can I still expand one when I need it?".into()),
             Item::Reasoning("Yes — the fold pill expands a thought in place, `alt-t` toggles them all, and an expanded thought offers a compact **Hide thinking** pill. While this turn runs, its thinking stays open; when the answer lands it folds like the one above.".into()),
+        ];
+    }
+    if crate::harness::screenshot_mode()
+        && matches!(fixture.as_deref(), Some("steps" | "steps-expanded"))
+    {
+        let webfetch = |call_id: &str, url: &str, error: Option<&str>| Item::Tool {
+            call_id: call_id.into(),
+            name: "webfetch".into(),
+            input: format!(r#"{{"url":"{url}"}}"#),
+            output: error
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "200 OK — fetched 18 KB of markdown".into()),
+            done: true,
+            error: error.map(|e| e.to_string()),
+        };
+        return vec![
+            Item::User("帮我查一下 steps 折叠在 jcode desktop 里是怎么实现的".into()),
+            Item::Reasoning(
+                "用户在问这个 fork 的工作过程折叠。先搜一下上游有没有类似设计。".into(),
+            ),
+            Item::Tool {
+                call_id: "s1".into(),
+                name: "websearch".into(),
+                input: r#"{"query":"jcode desktop fold tool calls transcript"}"#.into(),
+                output: "3 results — upstream issue #482, Claude changelog, forum post".into(),
+                done: true,
+                error: None,
+            },
+            webfetch("f1", "https://example.com/changelog", Some("404 Not Found")),
+            Item::CacheMiss(cache_miss::CacheMissNotice {
+                reason: "provider restart".into(),
+                harness_caused: false,
+                documented_cause: None,
+                missed_tokens: 35_000,
+                message: "KV cache miss: ~35K tokens resent to provider".into(),
+            }),
+            Item::Reasoning("第一次抓取 404 了，换一个镜像再试，顺便对比一下行为。".into()),
+            webfetch("f2", "https://mirror.example.com/changelog", None),
+            Item::Tool {
+                call_id: "s2".into(),
+                name: "websearch".into(),
+                input: r#"{"query":"worked for 2m 12 steps UI"}"#.into(),
+                output: "5 results — design notes, two implementations".into(),
+                done: true,
+                error: None,
+            },
+            Item::Assistant("找到一些线索了，继续确认一下细节。".into()),
+            webfetch("f3", "https://mirror.example.com/design-notes", None),
+            Item::Assistant(
+                "确认了实现方式：每个回合结束后，把中间的思考、工具调用、通知折叠成一行「Worked for 1m 24s · 6 tool calls · 2 thoughts」的 pill，点开就能展开。".into(),
+            ),
+            Item::ResponseStats(response_stats::fixture()),
         ];
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("reasoning") {

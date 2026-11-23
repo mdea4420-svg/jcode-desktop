@@ -6632,62 +6632,6 @@ impl Workspace {
                                         )
                                         .child(
                                             div()
-                                                .id("sidebar-extensions")
-                                                .debug_selector(|| "sidebar-extensions".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
-                                                .tooltip(|_, cx| {
-                                                    cx.new(|_| {
-                                                        remotes::HeaderTooltip(
-                                                            "Extensions — MCP, skills, plugins"
-                                                                .into(),
-                                                        )
-                                                    })
-                                                    .into()
-                                                })
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _, window, cx| {
-                                                        let Some(panel) = this
-                                                            .slots
-                                                            .get(this.active)
-                                                            .filter(|slot| !slot.closing)
-                                                            .map(|slot| slot.panel.clone())
-                                                        else {
-                                                            return;
-                                                        };
-                                                        window.dispatch_action(
-                                                            Box::new(OpenExtensions {
-                                                                source: panel.entity_id(),
-                                                                tab: jcode_desktop_model::extensions::ExtensionTab::Last,
-                                                            }),
-                                                            cx,
-                                                        );
-                                                    }),
-                                                )
-                                                .child(
-                                                    gpui::svg()
-                                                        .data(include_bytes!(
-                                                            "../../../assets/icons/plug.svg"
-                                                        ).as_slice())
-                                                        .size(px(12.0)),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
                                                 .id("sidebar-open-folder")
                                                 .debug_selector(|| "sidebar-open-folder".into())
                                                 .flex_none()
@@ -11658,6 +11602,39 @@ mod tests {
         assert!(frame.selected_tab.is_some());
         assert!(frame.active_panel.is_some());
         assert_eq!(workspace.read_with(vcx, |w, _| w.active_row), 0);
+    }
+
+    /// The Extensions button lives in the machine-switcher icon row so it is
+    /// visible — and clickable — in both sidebar layouts.
+    #[gpui::test]
+    fn sidebar_extensions_button_works_in_both_layout_modes(cx: &mut gpui::TestAppContext) {
+        for mode in [
+            crate::config::LayoutMode::Normal,
+            crate::config::LayoutMode::FolderTabs,
+        ] {
+            cx.update(crate::bind_workspace_keys);
+            let (bridge, _commands) = crate::harness::spawn_recording();
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.set_test_bridge(bridge);
+                workspace.push_test_panel("extensions-sidebar", cx);
+                workspace.layout_mode = mode;
+                workspace
+            });
+            vcx.update(|window, cx| {
+                workspace.update(cx, |workspace, cx| workspace.focus_active(window, cx));
+            });
+            vcx.run_until_parked();
+            let button = vcx
+                .debug_bounds("sidebar-extensions")
+                .unwrap_or_else(|| panic!("sidebar-extensions must be visible in {mode:?}"));
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("extensions").is_some(),
+                "clicking sidebar-extensions must open the overlay in {mode:?}"
+            );
+        }
     }
 
     #[gpui::test]

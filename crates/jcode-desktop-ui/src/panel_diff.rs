@@ -1175,6 +1175,8 @@ mod tests {
     fn rich_review_retains_file_modes_and_escape_after_code_selection(
         cx: &mut gpui::TestAppContext,
     ) {
+        // The tool row must stay visible; this test is not about step folding.
+        crate::config::set_display("steps_display", "expanded").unwrap();
         cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
@@ -1245,6 +1247,8 @@ mod tests {
 
     #[gpui::test]
     fn diff_click_tree_copy_and_escape_preserve_chat(cx: &mut gpui::TestAppContext) {
+        // The tool row must stay visible; this test is not about step folding.
+        crate::config::set_display("steps_display", "expanded").unwrap();
         cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =

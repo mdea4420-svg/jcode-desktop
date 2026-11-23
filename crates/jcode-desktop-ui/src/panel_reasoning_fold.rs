@@ -73,6 +73,10 @@ pub(super) fn preview(text: &str) -> String {
     preview.replace("**", "").replace('`', "")
 }
 
+fn line_word(count: usize) -> &'static str {
+    if count == 1 { "line" } else { "lines" }
+}
+
 impl Panel {
     /// The settled thought at `index`, kept expanded until folded again.
     fn expand_reasoning(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -165,7 +169,7 @@ impl Panel {
                 div()
                     .flex_none()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(format!("Thinking · {lines} lines")),
+                    .child(format!("Thinking · {lines} {}", line_word(lines))),
             )
             .child(
                 div()
@@ -370,8 +374,10 @@ mod tests {
         );
     }
 
+    /// `alt-t` toggles whole-turn steps now; the per-thought toggle lives on
+    /// `/thinking toggle`.
     #[gpui::test]
-    fn alt_t_expands_then_folds_every_thought(cx: &mut gpui::TestAppContext) {
+    fn thinking_toggle_expands_then_folds_every_thought(cx: &mut gpui::TestAppContext) {
         let (panel, vcx) = fold_fixture(cx);
         panel.update(vcx, |panel, cx| {
             *panel.items = vec![
@@ -386,16 +392,14 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
         assert!(vcx.debug_bounds("reasoning-fold-4").is_some());
-        vcx.update(|window, cx| {
-            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
-            focus.dispatch_action(&ToggleAllThinking, window, cx);
+        panel.update(vcx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/thinking toggle", cx));
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("reasoning-fold-1").is_none());
         assert!(vcx.debug_bounds("reasoning-fold-4").is_none());
-        vcx.update(|window, cx| {
-            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
-            focus.dispatch_action(&ToggleAllThinking, window, cx);
+        panel.update(vcx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/thinking toggle", cx));
         });
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("reasoning-fold-1").is_some());

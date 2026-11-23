@@ -127,6 +127,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/thinking-display",
         "Show/fold the model's thinking text (off/full/current/collapsed/toggle)",
     ),
+    RegisteredCommand::public(
+        "/steps",
+        "Fold each turn's tool calls, thoughts, and notices into one pill (collapsed/expanded/toggle)",
+    ),
     RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
     RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),
     RegisteredCommand::public("/cancel", "Cancel the current prompt or operation"),

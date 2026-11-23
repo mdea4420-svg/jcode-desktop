@@ -291,6 +291,13 @@ impl Panel {
         };
         state.reload();
         seed_screenshot_test_result(&mut state);
+        if std::env::var("JCODE_DESKTOP_SCREENSHOT_EXTENSIONS").as_deref()
+            == Ok("skills-bottom")
+        {
+            state
+                .scroll
+                .set_offset(gpui::point(gpui::px(0.), gpui::px(-100_000.)));
+        }
         self.extensions = Some(state);
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_EXTENSIONS").as_deref() == Ok("form") {
             self.mcp_form_open(Some("filesystem"), cx);
@@ -590,6 +597,9 @@ impl Panel {
                                         .debug_selector(|| "extensions-body".into())
                                         .flex_1()
                                         .min_h_0()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
                                         .child(body),
                                 )
                                 .child(
@@ -608,15 +618,16 @@ impl Panel {
 
 // ---------------------------------------------------------- screenshot ----
 
-/// `JCODE_DESKTOP_SCREENSHOT_EXTENSIONS=<mcp|skills|plugins|form>`: which tab
-/// the overlay opens on in screenshot mode; `form` opens the MCP add form.
+/// `JCODE_DESKTOP_SCREENSHOT_EXTENSIONS=<mcp|skills|skills-bottom|plugins|form>`:
+/// which tab the overlay opens on in screenshot mode; `form` opens the MCP
+/// add form, `skills-bottom` seeds a long list and pins it to the bottom.
 pub(super) fn screenshot_tab() -> Option<ExtensionTab> {
     if !crate::harness::screenshot_mode() {
         return None;
     }
     match std::env::var("JCODE_DESKTOP_SCREENSHOT_EXTENSIONS").as_deref() {
         Ok("mcp") => Some(ExtensionTab::Mcp),
-        Ok("skills") => Some(ExtensionTab::Skills),
+        Ok("skills") | Ok("skills-bottom") => Some(ExtensionTab::Skills),
         Ok("plugins") => Some(ExtensionTab::Plugins),
         Ok("form") => Some(ExtensionTab::Mcp),
         _ => None,
@@ -700,6 +711,17 @@ pub(super) fn screenshot_fixture_paths() -> (ExtensionPaths, tempfile::TempDir) 
         "api-contracts",
         "Check API contracts",
     );
+    if std::env::var("JCODE_DESKTOP_SCREENSHOT_EXTENSIONS").as_deref()
+        == Ok("skills-bottom")
+    {
+        for index in 0..30 {
+            skill(
+                jcode_home.join(format!("skills/extra-skill-{index:02}")),
+                &format!("extra-skill-{index:02}"),
+                "Fixture row for the scroll screenshot",
+            );
+        }
+    }
     let paths = ExtensionPaths {
         jcode_home,
         user_home,

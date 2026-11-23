@@ -22,6 +22,7 @@ fn display_key(command: &str) -> Option<&'static str> {
         "/show-agentgrep-output" => "show_agentgrep_output",
         "/tool-call-details" => "tool_call_details",
         "/thinking-display" | "/thinking" | "/reasoning" => "thinking_display",
+        "/steps" => "steps_display",
         "/debug-visual" => "debug_visual",
         "/screenshot-mode" => "screenshot_mode",
         "/diff" => "diff_display",
@@ -33,6 +34,7 @@ fn setting_choices(key: &str) -> &'static str {
     match key {
         "alignment" => "left|center|right",
         "thinking_display" => "off|full|current|collapsed|toggle",
+        "steps_display" => "collapsed|expanded|toggle",
         "diff_display" => "off|inline|full|pinned|file",
         _ => "on|off|toggle",
     }
@@ -46,7 +48,11 @@ impl Panel {
             if value.is_empty() && key == "diff_display" {
                 value = "cycle".into();
             }
-            if value.is_empty() && !matches!(key, "alignment" | "thinking_display" | "diff_display")
+            if value.is_empty()
+                && !matches!(
+                    key,
+                    "alignment" | "thinking_display" | "steps_display" | "diff_display"
+                )
             {
                 value = "toggle".into();
             }
@@ -54,6 +60,16 @@ impl Panel {
                 let expanded = self.toggle_all_thinking(cx);
                 self.items.push(Item::Assistant(format!(
                     "{command}: {} all thinking.",
+                    if expanded { "expanded" } else { "folded" },
+                )));
+                cx.refresh_windows();
+                cx.notify();
+                return true;
+            }
+            if key == "steps_display" && value == "toggle" {
+                let expanded = self.toggle_all_steps(cx);
+                self.items.push(Item::Assistant(format!(
+                    "{command}: {} all steps.",
                     if expanded { "expanded" } else { "folded" },
                 )));
                 cx.refresh_windows();

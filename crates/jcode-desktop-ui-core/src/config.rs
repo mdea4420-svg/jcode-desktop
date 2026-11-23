@@ -194,6 +194,17 @@ pub enum ThinkingDisplay {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum StepsDisplay {
+    /// A turn's tool calls, thoughts, and notices fold into one pill after
+    /// the turn finishes.
+    #[default]
+    Collapsed,
+    /// Every turn's work stays expanded.
+    Expanded,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum DiffDisplay {
     Off,
     #[default]
@@ -213,6 +224,7 @@ pub struct DisplayConfig {
     pub show_agentgrep_output: bool,
     pub tool_call_details: bool,
     pub thinking_display: ThinkingDisplay,
+    pub steps_display: StepsDisplay,
     pub diff_display: DiffDisplay,
     pub debug_visual: bool,
     pub screenshot_mode: bool,
@@ -226,6 +238,7 @@ impl Default for DisplayConfig {
             show_agentgrep_output: false,
             tool_call_details: false,
             thinking_display: ThinkingDisplay::Collapsed,
+            steps_display: StepsDisplay::Collapsed,
             diff_display: DiffDisplay::Inline,
             debug_visual: false,
             screenshot_mode: false,
@@ -269,6 +282,13 @@ impl DisplayConfig {
                     "current" => ThinkingDisplay::Current,
                     "collapsed" => ThinkingDisplay::Collapsed,
                     _ => return Err("Expected off, full, current, or collapsed.".into()),
+                }
+            }
+            "steps_display" => {
+                next.steps_display = match value {
+                    "collapsed" => StepsDisplay::Collapsed,
+                    "expanded" => StepsDisplay::Expanded,
+                    _ => return Err("Expected collapsed or expanded.".into()),
                 }
             }
             "diff_display" => {

@@ -308,3 +308,88 @@ fn extensions_and_model_browser_are_mutually_exclusive(cx: &mut gpui::TestAppCon
     assert!(vcx.debug_bounds("model-browser").is_some());
     assert!(vcx.debug_bounds("extensions").is_none());
 }
+
+/// Long lists must scroll inside the fixed-height dialog: the list stays
+/// bounded, the wheel moves it, and a late row reaches the viewport.
+#[gpui::test]
+fn long_lists_scroll_inside_the_dialog(cx: &mut gpui::TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let jcode_home = root.path().join("jcode_home");
+    std::fs::create_dir_all(jcode_home.join("skills")).unwrap();
+    let servers = (0..40)
+        .map(|i| format!("\"srv-{i:02}\":{{\"command\":\"bin-{i:02}\"}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    std::fs::write(
+        jcode_home.join("mcp.json"),
+        format!("{{\"mcpServers\":{{{servers}}}}}"),
+    )
+    .unwrap();
+    for i in 0..40 {
+        let dir = jcode_home.join(format!("skills/skill-{i:02}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: skill-{i:02}\ndescription: d{i}\n---\n\n# skill-{i:02}\n"),
+        )
+        .unwrap();
+    }
+    let paths = ExtensionPaths {
+        jcode_home,
+        user_home: root.path().join("home"),
+        project_dir: None,
+    };
+    let (panel, vcx, _commands) = setup(cx);
+    panel.update(vcx, |panel, cx| {
+        panel.open_extensions_with_paths(paths, None, ExtensionTab::Mcp, cx);
+    });
+    vcx.run_until_parked();
+    let wheel = |vcx: &mut gpui::VisualTestContext, center: gpui::Point<gpui::Pixels>| {
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: center,
+            delta: gpui::ScrollDelta::Lines(gpui::point(0., -80.)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        vcx.run_until_parked();
+    };
+    let dialog = vcx.debug_bounds("extensions").expect("dialog");
+    let list = vcx.debug_bounds("extensions-mcp-list").expect("mcp list");
+    assert!(
+        list.size.height <= dialog.size.height,
+        "the list must stay inside the dialog: {list:?} vs {dialog:?}"
+    );
+    for _ in 0..3 {
+        wheel(vcx, list.center());
+    }
+    let offset = panel.read_with(vcx, |panel, _| {
+        panel.extensions.as_ref().unwrap().scroll.offset().y
+    });
+    assert!(offset < gpui::px(0.), "the wheel must move the list: {offset}");
+    let last = vcx
+        .debug_bounds("mcp-row-srv-39")
+        .expect("the last row paints");
+    assert!(
+        last.origin.y < dialog.bottom_right().y,
+        "the last row never reaches the viewport: {last:?} vs {dialog:?}"
+    );
+    // The Skills tab scrolls the same way (switching in place keeps the
+    // temp fixture; `/skills` would reopen the screenshot fixture).
+    panel.update(vcx, |panel, cx| {
+        panel.extensions.as_mut().unwrap().tab = ExtensionTab::Skills;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let list = vcx
+        .debug_bounds("extensions-skills-list")
+        .expect("skills list");
+    for _ in 0..3 {
+        wheel(vcx, list.center());
+    }
+    let last_sel = panel.read_with(vcx, |panel, _| skill_row_selector(panel, "skill-39"));
+    let last = vcx.debug_bounds(last_sel).expect("the last skill row paints");
+    assert!(
+        last.origin.y < dialog.bottom_right().y,
+        "the last skill row never reaches the viewport: {last:?}"
+    );
+}

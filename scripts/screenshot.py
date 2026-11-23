@@ -121,7 +121,7 @@ def main():
                         help="open the compact /model popup with offline routes")
     parser.add_argument("--model-manage", action="store_true",
                         help="open the model browser in Providers manage mode")
-    parser.add_argument("--extensions", choices=("mcp", "skills", "plugins", "form"),
+    parser.add_argument("--extensions", choices=("mcp", "skills", "skills-bottom", "plugins", "form"),
                         help="open the Extensions overlay on the given tab (form = MCP edit form)")
     parser.add_argument("--model-browser", action="store_true",
                         help="open the large model browser dialog with offline routes")
@@ -131,7 +131,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "reasoning-busy", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "reasoning-busy", "steps", "steps-expanded", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")

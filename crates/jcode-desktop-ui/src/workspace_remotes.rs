@@ -920,6 +920,32 @@ impl Workspace {
                             }),
                         ),
                     )
+                    .child(
+                        button(
+                            "sidebar-extensions",
+                            include_bytes!("../../../assets/icons/plug.svg"),
+                            "Extensions — MCP, skills, plugins".into(),
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            let Some(panel) = this
+                                .slots
+                                .get(this.active)
+                                .filter(|slot| !slot.closing)
+                                .map(|slot| slot.panel.clone())
+                            else {
+                                return;
+                            };
+                            window.dispatch_action(
+                                Box::new(OpenExtensions {
+                                    source: panel.entity_id(),
+                                    tab: jcode_desktop_model::extensions::ExtensionTab::Last,
+                                }),
+                                cx,
+                            );
+                        })),
+                    )
                     .child(self.render_default_directory_button(cx)),
             )
             .when(self.remotes.failed, |el| {
