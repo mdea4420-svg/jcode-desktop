@@ -76,6 +76,8 @@ fn every_display_preference_participates_in_derived_cache_key() {
         streaming: 3,
         expansions: 4,
         display: crate::config::DisplayConfig::default(),
+   
+        busy: false,
     };
     for setting in [
         "alignment",

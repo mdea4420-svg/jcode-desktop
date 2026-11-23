@@ -1,28 +1,58 @@
-//! Opt-in folding for settled thinking (`/thinking collapsed`).
+//! Folding for settled thinking (`/thinking collapsed`, the default).
 //!
-//! The default presentation keeps every thought inline. In collapsed mode a
-//! settled thought becomes a compact pill with a one-line preview, and the
-//! pill toggles the full text. Live thinking is never folded, so the current
-//! turn still streams in full. Fold state shares `expanded_tools`, which
-//! already feeds the transcript cache key and the selection document.
+//! While a turn runs its thoughts stay expanded; when the turn finishes they
+//! fold to a compact pill with a one-line preview. The pill expands a thought
+//! in place and an expanded one offers "Hide thinking". Fold state shares
+//! `expanded_tools`, which already feeds the transcript cache key and the
+//! selection document. `alt-t` or `/thinking toggle` toggles every settled
+//! thought at once.
 use super::*;
+
+gpui::actions!(reasoning_fold, [ToggleAllThinking]);
+
+pub(crate) fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([gpui::KeyBinding::new(
+        "alt-t",
+        ToggleAllThinking,
+        Some("ChatPanel"),
+    )]);
+}
 
 const PREVIEW_CHARS: usize = 120;
 
+/// `expanded_tools` key for a thought the user expanded by hand.
 pub(super) fn expansion_key(index: usize) -> String {
     format!("reasoning:{index}")
 }
 
-/// Whether a reasoning row at `index` is shown folded. Only settled rows
-/// fold. Live rows use indices at the top of the range.
+/// `expanded_tools` key for a thought the user folded by hand. An explicit
+/// collapse wins over the in-progress turn.
+fn hide_key(index: usize) -> String {
+    format!("reasoning-hide:{index}")
+}
+
+/// Whether a reasoning row at `index` is shown folded. `turn_start` is the
+/// user prompt index that began the in-progress turn, if any; settled rows
+/// after it stay expanded until the turn finishes. Live rows use indices at
+/// the top of the range and never fold.
 pub(super) fn is_folded(
     display: &crate::config::DisplayConfig,
     index: usize,
     expanded: &HashSet<String>,
+    turn_start: Option<usize>,
 ) -> bool {
-    display.thinking_display == crate::config::ThinkingDisplay::Collapsed
-        && index < usize::MAX / 2
-        && !expanded.contains(&expansion_key(index))
+    if display.thinking_display != crate::config::ThinkingDisplay::Collapsed
+        || index >= usize::MAX / 2
+    {
+        return false;
+    }
+    if expanded.contains(&hide_key(index)) {
+        return true;
+    }
+    if expanded.contains(&expansion_key(index)) {
+        return false;
+    }
+    turn_start.is_none_or(|start| index <= start)
 }
 
 /// First meaningful line, without Markdown heading and list markers.
@@ -44,13 +74,61 @@ pub(super) fn preview(text: &str) -> String {
 }
 
 impl Panel {
-    fn toggle_reasoning_fold(&mut self, index: usize, cx: &mut Context<Self>) {
-        let key = expansion_key(index);
-        if !self.expanded_tools.remove(&key) {
-            self.expanded_tools.insert(key);
+    /// The settled thought at `index`, kept expanded until folded again.
+    fn expand_reasoning(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.expanded_tools.remove(&hide_key(index));
+        self.expanded_tools.insert(expansion_key(index));
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
+    /// Fold the settled thought at `index`, even while its turn still runs.
+    fn collapse_reasoning(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.expanded_tools.remove(&expansion_key(index));
+        self.expanded_tools.insert(hide_key(index));
+        self.transcript_measurements.dirty = true;
+        cx.notify();
+    }
+
+    /// The user prompt index that began the in-progress turn, if any. Rows
+    /// after it keep their thinking expanded until the turn settles.
+    pub(super) fn current_turn_start(&self) -> Option<usize> {
+        if !self.is_busy() {
+            return None;
+        }
+        self.items
+            .iter()
+            .rposition(|item| matches!(item, Item::User(_)))
+    }
+
+    /// `alt-t` / `/thinking toggle`: expand every settled thought, or fold
+    /// them all back when none is folded. Returns true when it expanded.
+    pub(super) fn toggle_all_thinking(&mut self, cx: &mut Context<Self>) -> bool {
+        let display = crate::config::display();
+        let turn_start = self.current_turn_start();
+        let indices: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                matches!(item, Item::Reasoning(_)).then_some(index)
+            })
+            .collect();
+        let expand = indices
+            .iter()
+            .any(|&index| is_folded(&display, index, &self.expanded_tools, turn_start));
+        for index in indices {
+            if expand {
+                self.expanded_tools.remove(&hide_key(index));
+                self.expanded_tools.insert(expansion_key(index));
+            } else {
+                self.expanded_tools.remove(&expansion_key(index));
+                self.expanded_tools.insert(hide_key(index));
+            }
         }
         self.transcript_measurements.dirty = true;
         cx.notify();
+        expand
     }
 
     /// Folded pill. Clicking it expands the thought in place.
@@ -81,7 +159,7 @@ impl Panel {
             .hover(|style| style.text_color(theme.TEXT))
             .on_click(cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
-                panel.toggle_reasoning_fold(index, cx);
+                panel.expand_reasoning(index, cx);
             }))
             .child(
                 div()
@@ -127,7 +205,7 @@ impl Panel {
             .hover(|style| style.text_color(theme.TEXT))
             .on_click(cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
-                panel.toggle_reasoning_fold(index, cx);
+                panel.collapse_reasoning(index, cx);
             }))
             .child("Hide thinking")
             .into_any_element()
@@ -148,11 +226,28 @@ mod tests {
     #[test]
     fn only_settled_rows_fold_until_expanded() {
         let mut expanded = HashSet::new();
-        assert!(is_folded(&collapsed(), 3, &expanded));
-        assert!(!is_folded(&collapsed(), usize::MAX - 1, &expanded));
+        assert!(is_folded(&collapsed(), 3, &expanded, None));
+        assert!(!is_folded(&collapsed(), usize::MAX - 1, &expanded, None));
         expanded.insert(expansion_key(3));
-        assert!(!is_folded(&collapsed(), 3, &expanded));
-        assert!(!is_folded(&Default::default(), 4, &HashSet::new()));
+        assert!(!is_folded(&collapsed(), 3, &expanded, None));
+        let full = crate::config::DisplayConfig {
+            thinking_display: crate::config::ThinkingDisplay::Full,
+            ..Default::default()
+        };
+        assert!(!is_folded(&full, 4, &HashSet::new(), None));
+    }
+
+    #[test]
+    fn the_running_turn_keeps_its_thoughts_expanded() {
+        let expanded = HashSet::new();
+        // Turn started at index 0: its settled thought stays expanded, an
+        // older turn's thought stays folded.
+        assert!(!is_folded(&collapsed(), 3, &expanded, Some(0)));
+        assert!(is_folded(&collapsed(), 3, &expanded, Some(5)));
+        // An explicit collapse folds even inside the running turn.
+        let mut expanded = HashSet::new();
+        expanded.insert(hide_key(3));
+        assert!(is_folded(&collapsed(), 3, &expanded, Some(0)));
     }
 
     #[test]
@@ -169,6 +264,142 @@ mod tests {
         };
         assert!(segments(false).is_empty());
         assert!(!segments(true).is_empty());
+    }
+
+
+    fn session_status(status: &str) -> ApiEvent {
+        ApiEvent::SessionStatus {
+            session_id: "fold-test".into(),
+            status: status.into(),
+            pending_soft_interrupts: None,
+        }
+    }
+
+    fn fold_fixture(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<Panel>, &mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            crate::config::set_display("thinking_display", "collapsed").unwrap();
+        });
+        cx.add_window_view(|_, cx| {
+            Panel::new("fold-test".into(), None, None, crate::harness::spawn_inert(), cx)
+        })
+    }
+
+    #[gpui::test]
+    fn current_turn_thinking_folds_when_the_turn_finishes(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = fold_fixture(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![
+                Item::User("first prompt".into()),
+                Item::Reasoning("thinking for the current turn".into()),
+            ];
+            panel.apply(&session_status("processing"), cx);
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("reasoning-fold-1").is_none(),
+            "the running turn's thought stays expanded"
+        );
+        assert!(
+            vcx.debug_bounds("reasoning-unfold-1").is_some(),
+            "Hide thinking shows on the current-turn thought"
+        );
+        panel.update(vcx, |panel, cx| panel.apply(&session_status("idle"), cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("reasoning-fold-1").is_some(),
+            "the finished turn's thought folds without a click"
+        );
+    }
+
+    #[gpui::test]
+    fn older_turns_fold_while_a_new_turn_runs(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = fold_fixture(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![
+                Item::User("older prompt".into()),
+                Item::Reasoning("older thinking".into()),
+                Item::Assistant("older answer".into()),
+                Item::User("new prompt".into()),
+                Item::Reasoning("current thinking".into()),
+            ];
+            panel.apply(&session_status("processing"), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
+        assert!(vcx.debug_bounds("reasoning-fold-4").is_none());
+    }
+
+    #[gpui::test]
+    fn fold_pill_and_hide_control_roundtrip(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = fold_fixture(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![
+                Item::User("prompt".into()),
+                Item::Reasoning("settled thinking".into()),
+            ];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let pill = vcx.debug_bounds("reasoning-fold-1").unwrap();
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_none());
+        let hide = vcx.debug_bounds("reasoning-unfold-1").unwrap();
+        vcx.simulate_click(hide.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
+
+        // The same controls work mid-turn, including an explicit collapse.
+        panel.update(vcx, |panel, cx| panel.apply(&session_status("processing"), cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("reasoning-fold-1").is_some(),
+            "an explicit collapse persists into the next turn"
+        );
+        let pill = vcx.debug_bounds("reasoning-fold-1").unwrap();
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let hide = vcx.debug_bounds("reasoning-unfold-1").unwrap();
+        vcx.simulate_click(hide.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("reasoning-fold-1").is_some(),
+            "Hide thinking folds a current-turn thought"
+        );
+    }
+
+    #[gpui::test]
+    fn alt_t_expands_then_folds_every_thought(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = fold_fixture(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![
+                Item::User("first".into()),
+                Item::Reasoning("older thinking".into()),
+                Item::Assistant("answer".into()),
+                Item::User("second".into()),
+                Item::Reasoning("newer thinking".into()),
+            ];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
+        assert!(vcx.debug_bounds("reasoning-fold-4").is_some());
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.dispatch_action(&ToggleAllThinking, window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_none());
+        assert!(vcx.debug_bounds("reasoning-fold-4").is_none());
+        vcx.update(|window, cx| {
+            let focus = panel.read(cx).input.read(cx).focus_handle.clone();
+            focus.dispatch_action(&ToggleAllThinking, window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
+        assert!(vcx.debug_bounds("reasoning-fold-4").is_some());
     }
 
     #[test]

@@ -129,7 +129,7 @@ def main():
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
                         help="verify native default-directory selection, TOML persistence, validation, cancellation, and new drafts")
-    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "orchestration", "applet"), default="all",
+    parser.add_argument("--transcript", choices=("all", "empty", "background-tasks", "reasoning", "reasoning-busy", "streaming", "orb-working", "orb-thinking", "orb-tools", "orb-todos", "tool-streaming", "tool-icons", "prompts", "html", "image", "mermaid", "tokens", "diff", "diff-rich", "todos", "todos-completed", "gmail-draft", "gmail-read", "user-response", "user-response-short", "user-response-long", "mcp-list", "publish", "orchestration", "applet"), default="all",
                         help="choose the isolated transcript fixture")
     parser.add_argument("--applet-tab", choices=("components", "media", "data", "agent"),
                         help="select the showcase tab for --transcript applet")
@@ -599,7 +599,8 @@ def main():
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
                 if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps
-                        or args.changelog or args.model_menu or args.model_browser):
+                        or args.changelog or args.model_menu or args.model_browser
+                        or args.transcript == "reasoning-busy"):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)

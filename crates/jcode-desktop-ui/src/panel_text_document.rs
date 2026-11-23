@@ -25,6 +25,7 @@ impl TranscriptTextDocument {
         rows: &[TranscriptRenderRow],
         expanded_prompts: &HashSet<(usize, bool)>,
         expanded_tools: &HashSet<String>,
+        turn_start: Option<usize>,
     ) -> Option<Segments> {
         let display = crate::config::display();
         let preferences_changed = self.display.as_ref() != Some(&display);
@@ -50,9 +51,12 @@ impl TranscriptTextDocument {
                 Item::Stopped(_) | Item::CacheMiss(_) => {
                     expanded_tools.contains(&format!("notice:{}", row.index))
                 }
-                Item::Reasoning(_) => {
-                    !super::reasoning_fold::is_folded(&display, row.index, expanded_tools)
-                }
+                Item::Reasoning(_) => !super::reasoning_fold::is_folded(
+                    &display,
+                    row.index,
+                    expanded_tools,
+                    turn_start,
+                ),
                 _ => false,
             };
             let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);
@@ -357,21 +361,21 @@ mod tests {
         let rows = rows(&items);
         let prompts = HashSet::new();
         let mut tools = HashSet::new();
-        let doc = cache.sync(&items, &rows, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &rows, &prompts, &tools, None).unwrap();
         assert_eq!(doc.first().unwrap().0.as_ref(), "0-0");
         assert_eq!(doc.last().unwrap().0.as_ref(), "2-0");
         assert!(doc.iter().any(|(key, _)| key.as_ref() == "tool-summary-1"));
         assert!(!doc.iter().any(|(_, text)| text.contains("hidden output")));
-        assert!(cache.sync(&items, &rows, &prompts, &tools).is_none());
+        assert!(cache.sync(&items, &rows, &prompts, &tools, None).is_none());
         tools.insert("call".into());
-        let expanded = cache.sync(&items, &rows, &prompts, &tools).unwrap();
+        let expanded = cache.sync(&items, &rows, &prompts, &tools, None).unwrap();
         assert!(
             expanded.iter().any(
                 |(key, text)| key.as_ref() == "tool-detail-1" && text.contains("hidden output")
             )
         );
-        assert!(cache.sync(&items, &rows, &prompts, &tools).is_none());
-        let trimmed = cache.sync(&items, &rows[..1], &prompts, &tools).unwrap();
+        assert!(cache.sync(&items, &rows, &prompts, &tools, None).is_none());
+        let trimmed = cache.sync(&items, &rows[..1], &prompts, &tools, None).unwrap();
         assert_eq!(trimmed.len(), 1);
         assert_eq!(cache.rows.len(), 1);
     }
@@ -384,14 +388,14 @@ mod tests {
         let prompts = HashSet::new();
         let tools = HashSet::new();
         let rows_now = rows(&items);
-        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_some());
+        assert!(cache.sync(&items, &rows_now, &prompts, &tools, None).is_some());
         // Same transcript: nothing to replace.
-        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_none());
+        assert!(cache.sync(&items, &rows_now, &prompts, &tools, None).is_none());
         // An in-place edit bumps the revision, so the changed row is seen.
         if let Some(Item::Assistant(text)) = items.get_mut(1) {
             *text = "second".into();
         }
-        let doc = cache.sync(&items, &rows(&items), &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &rows(&items), &prompts, &tools, None).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("second")));
         assert!(!doc.iter().any(|(_, text)| text.contains("first")));
         // Live text is an owned row and is always compared.
@@ -402,11 +406,11 @@ mod tests {
             role: None,
             show_label: false,
         });
-        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &live, &prompts, &tools, None).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("partial")));
         live[2].source =
             TranscriptRowSource::Owned(Box::new(Item::Assistant("partial more".into())));
-        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        let doc = cache.sync(&items, &live, &prompts, &tools, None).unwrap();
         assert!(doc.iter().any(|(_, text)| text.contains("partial more")));
     }
 

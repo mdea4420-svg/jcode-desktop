@@ -112,7 +112,7 @@ mod plugins;
 #[path = "panel_queue.rs"]
 mod queue;
 #[path = "panel_reasoning_fold.rs"]
-mod reasoning_fold;
+pub(crate) mod reasoning_fold;
 #[path = "panel_reply_nav.rs"]
 pub(crate) mod reply_nav;
 #[path = "panel_recovery.rs"]
@@ -326,6 +326,8 @@ struct TranscriptDerivedKey {
     streaming: u64,
     expansions: u64,
     display: crate::config::DisplayConfig,
+    /// Folded-vs-expanded thinking flips with the turn, not the transcript.
+    busy: bool,
 }
 
 #[derive(Clone)]
@@ -929,7 +931,7 @@ impl Panel {
             crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens");
         let activity_status = if crate::harness::screenshot_mode() {
             match fixture.as_deref() {
-                Some("orb-working" | "orb-todos") => "running",
+                Some("orb-working" | "orb-todos" | "reasoning-busy") => "running",
                 Some("orb-thinking") => "thinking",
                 Some("orb-tools") => "running_tools",
                 _ => "idle",
@@ -3416,6 +3418,7 @@ impl Panel {
             streaming,
             expansions,
             display: crate::config::display(),
+            busy: self.is_busy(),
         };
         if self
             .transcript_derived
@@ -3425,7 +3428,9 @@ impl Panel {
             if self
                 .transcript_derived
                 .as_ref()
-                .is_some_and(|derived| derived.key.display != key.display)
+                .is_some_and(|derived| {
+                    derived.key.display != key.display || derived.key.busy != key.busy
+                })
             {
                 self.transcript_measurements.dirty = true;
             }
@@ -3435,6 +3440,7 @@ impl Panel {
                 &rows,
                 &self.expanded_prompts,
                 &self.expanded_tools,
+                self.current_turn_start(),
             ) {
                 self.transcript_selection
                     .update(cx, |selection, _| selection.set_document(document));
@@ -3772,7 +3778,12 @@ impl Panel {
             // Never truncate it by default. `/thinking collapsed` opts into a
             // fold for settled thoughts only.
             Item::Reasoning(text)
-                if reasoning_fold::is_folded(&display, index, &self.expanded_tools) =>
+                if reasoning_fold::is_folded(
+                    &display,
+                    index,
+                    &self.expanded_tools,
+                    self.current_turn_start(),
+                ) =>
             {
                 self.render_reasoning_fold(index, text, cx)
             }
@@ -5102,6 +5113,11 @@ impl Render for Panel {
             .on_action(cx.listener(|panel, _: &reply_nav::NextPrompt, _, cx| {
                 panel.step_prompt(1, cx);
             }))
+            .on_action(
+                cx.listener(|panel, _: &reasoning_fold::ToggleAllThinking, _, cx| {
+                    panel.toggle_all_thinking(cx);
+                }),
+            )
             .on_action(
                 cx.listener(|panel, _: &shortcuts::BackgroundRunningTool, _, cx| {
                     panel.background_running_tool_if_any(cx);
@@ -7353,7 +7369,11 @@ mod tests {
 
     #[gpui::test]
     fn inline_reasoning_paints_full_markdown_live_and_settled(cx: &mut gpui::TestAppContext) {
+        // Full mode keeps settled thinking inline; the default folds it.
         cx.update(|cx| crate::bind_workspace_keys(cx));
+        cx.update(|_| {
+            crate::config::set_display("thinking_display", "full").unwrap()
+        });
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -7405,7 +7425,6 @@ mod tests {
             heading.size.height > last_line.size.height,
             "thinking headings read as subsection titles above quieter body text"
         );
-
         // A quadruple click selects the entire Markdown leaf, not card chrome.
         vcx.simulate_event(gpui::MouseDownEvent {
             button: gpui::MouseButton::Left,
@@ -7427,6 +7446,9 @@ mod tests {
             vcx.debug_bounds("reasoning-inline").unwrap().size,
             settled_bounds.size
         );
+        vcx.update(|_, _| {
+            crate::config::set_display("thinking_display", "collapsed").unwrap()
+        });
     }
 
     #[test]
@@ -9821,6 +9843,15 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
         return vec![
             Item::User("Make it easier to see which panels are still working.".into()),
             Item::Assistant("I'll add a small spinner and a subtle accent tint, while keeping the conversation easy to read.".into()),
+        ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("reasoning-busy") {
+        return vec![
+            Item::User("Can you make the thinking display feel quieter?".into()),
+            Item::Reasoning("The content should read like part of the conversation, not another interface to manage. A dimmed font keeps it visible without competing with the answer.".into()),
+            Item::Assistant("Thinking now appears as subtle inline text and folds into a pill once each answer finishes.".into()),
+            Item::User("Nice. Can I still expand one when I need it?".into()),
+            Item::Reasoning("Yes — the fold pill expands a thought in place, `alt-t` toggles them all, and an expanded thought offers a compact **Hide thinking** pill. While this turn runs, its thinking stays open; when the answer lands it folds like the one above.".into()),
         ];
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("reasoning") {

@@ -116,6 +116,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
     panel::voice::bind_keys(cx);
     panel::shortcuts::bind_keys(cx);
     panel::reply_nav::bind_keys(cx);
+    panel::reasoning_fold::bind_keys(cx);
     cx.bind_keys([
         // Canonical Jcode TUI workspace bindings. On niri these are normally
         // intercepted by the compositor, so Super aliases remain below.

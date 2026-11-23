@@ -123,7 +123,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public(
         "/thinking-display",
-        "Show/hide the model's thinking text (off/full/current)",
+        "Show/fold the model's thinking text (off/full/current/collapsed/toggle)",
     ),
     RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
     RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),

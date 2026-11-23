@@ -185,10 +185,10 @@ pub enum TextAlignment {
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingDisplay {
     Off,
-    #[default]
     Full,
     Current,
-    /// Settled thoughts fold to a one-line disclosure. Live thinking stays full.
+    /// Thoughts stay expanded while their turn runs and fold after it.
+    #[default]
     Collapsed,
 }
 
@@ -225,7 +225,7 @@ impl Default for DisplayConfig {
             compact_notifications: true,
             show_agentgrep_output: false,
             tool_call_details: false,
-            thinking_display: ThinkingDisplay::Full,
+            thinking_display: ThinkingDisplay::Collapsed,
             diff_display: DiffDisplay::Inline,
             debug_visual: false,
             screenshot_mode: false,
@@ -712,7 +712,11 @@ mod tests {
             cycling = cycling.with_setting("diff_display", "cycle").unwrap();
         }
         assert_eq!(cycling.diff_display, defaults.diff_display);
-        for mode in ["off", "full", "current"] {
+        assert_eq!(
+            defaults.thinking_display,
+            super::ThinkingDisplay::Collapsed
+        );
+        for mode in ["off", "full", "current", "collapsed"] {
             assert_eq!(
                 defaults
                     .with_setting("thinking_display", mode)

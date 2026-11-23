@@ -32,7 +32,7 @@ fn display_key(command: &str) -> Option<&'static str> {
 fn setting_choices(key: &str) -> &'static str {
     match key {
         "alignment" => "left|center|right",
-        "thinking_display" => "off|full|current|collapsed",
+        "thinking_display" => "off|full|current|collapsed|toggle",
         "diff_display" => "off|inline|full|pinned|file",
         _ => "on|off|toggle",
     }
@@ -49,6 +49,16 @@ impl Panel {
             if value.is_empty() && !matches!(key, "alignment" | "thinking_display" | "diff_display")
             {
                 value = "toggle".into();
+            }
+            if key == "thinking_display" && value == "toggle" {
+                let expanded = self.toggle_all_thinking(cx);
+                self.items.push(Item::Assistant(format!(
+                    "{command}: {} all thinking.",
+                    if expanded { "expanded" } else { "folded" },
+                )));
+                cx.refresh_windows();
+                cx.notify();
+                return true;
             }
             let result = if value.is_empty() || value == "status" {
                 Ok(crate::config::display())
