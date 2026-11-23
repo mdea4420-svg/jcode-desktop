@@ -9918,6 +9918,7 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
             Item::Reasoning(
                 "用户在问这个 fork 的工作过程折叠。先搜一下上游有没有类似设计。".into(),
             ),
+            Item::Assistant("我来搜索最新的 AI 模型动态。".into()),
             Item::Tool {
                 call_id: "s1".into(),
                 name: "websearch".into(),
@@ -9944,6 +9945,13 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 done: true,
                 error: None,
             },
+            Item::CacheMiss(cache_miss::CacheMissNotice {
+                reason: "provider restart".into(),
+                harness_caused: false,
+                documented_cause: None,
+                missed_tokens: 35_000,
+                message: "KV cache miss: ~35K tokens resent to provider".into(),
+            }),
             Item::Assistant("找到一些线索了，继续确认一下细节。".into()),
             webfetch("f3", "https://mirror.example.com/design-notes", None),
             Item::Assistant(

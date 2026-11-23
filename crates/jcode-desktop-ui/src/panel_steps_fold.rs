@@ -22,11 +22,12 @@
 //!   images the assistant produced as its answer stay visible).
 //! - `Assistant`: a step between prompt and answer, visible inside the
 //!   trailing answer run.
-//! - `Reasoning`, `Tool`, `BackgroundTask`, `Todos`, `CacheMiss`: always
-//!   steps — the work process, including notices and still-running tasks.
-//! - `Error`, `Stopped`, `ResponseStats`: steps mid-turn, visible when
-//!   they close the turn (an errored turn folds its steps and keeps the
-//!   trailing error).
+//! - `Reasoning`, `Tool`, `BackgroundTask`, `Todos`: always steps — the
+//!   work process, including still-running tasks.
+//! - `Error`, `Stopped`, `ResponseStats`, `CacheMiss`: steps mid-turn,
+//!   visible when they close the turn (an errored turn folds its steps and
+//!   keeps the trailing error; a cache-miss notice that lands after the
+//!   answer must not pull the answer into the fold).
 //! - `Applet`, `StepsFold`: derived rows with no settled index; an applet
 //!   folds when it is emitted inside a steps block.
 use super::*;
@@ -87,12 +88,19 @@ pub(super) fn is_folded(
 
 /// Items that may close a turn as part of its visible answer: assistant
 /// text, error lines, the stats footer, stop notices, and images the
-/// assistant produced itself. A trailing `ToolResult` image stays a step —
-/// it belongs to its call — and a mid-turn `Error` is a step too unless it
-/// ends the turn.
+/// assistant produced itself. `CacheMiss` counts too — a cache-miss
+/// notice is emitted per request and can land after the final answer when
+/// a follow-up request (auto-poke, compaction) starts, and it must not
+/// drag the answer into the fold. A trailing `ToolResult` image stays a
+/// step — it belongs to its call — and a mid-turn `Error` is a step too
+/// unless it ends the turn.
 fn answer_eligible(item: &Item) -> bool {
     match item {
-        Item::Assistant(_) | Item::Error(_) | Item::ResponseStats(_) | Item::Stopped(_) => true,
+        Item::Assistant(_)
+        | Item::Error(_)
+        | Item::ResponseStats(_)
+        | Item::Stopped(_)
+        | Item::CacheMiss(_) => true,
         Item::Image(image) => matches!(
             image.source,
             jcode_sdk::RenderedImageSource::Other { .. }
@@ -138,6 +146,10 @@ fn turns(items: &Transcript) -> Vec<Turn> {
         let mut steps_end = end;
         while steps_end > steps_start && answer_eligible(&items[steps_end - 1]) {
             steps_end -= 1;
+        }
+        // A notice that opens the answer run belongs to the work before it.
+        while steps_end < end && matches!(items[steps_end], Item::CacheMiss(_)) {
+            steps_end += 1;
         }
         turns.push(Turn {
             user: index,
@@ -497,6 +509,50 @@ mod tests {
         assert_eq!((turns[0].steps_start, turns[0].steps_end), (1, 5));
     }
 
+    /// A cache-miss notice after the answer rides with the visible tail
+    /// instead of dragging the answer into the folded steps.
+    #[test]
+    fn a_trailing_cache_miss_stays_with_the_answer() {
+        let items: Transcript = vec![
+            user(),
+            tool(false),
+            Item::Assistant("final".into()),
+            Item::ResponseStats(response_stats::fixture()),
+            Item::CacheMiss(cache_miss::CacheMissNotice {
+                reason: "provider restart".into(),
+                harness_caused: false,
+                documented_cause: None,
+                missed_tokens: 35_000,
+                message: "KV cache miss".into(),
+            }),
+        ]
+        .into();
+        let turns = turns(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!((turns[0].steps_start, turns[0].steps_end), (1, 2));
+    }
+
+    /// A cache-miss notice just before the answer stays folded with the work.
+    #[test]
+    fn a_cache_miss_before_the_answer_folds_with_the_steps() {
+        let items: Transcript = vec![
+            user(),
+            tool(false),
+            Item::CacheMiss(cache_miss::CacheMissNotice {
+                reason: "provider restart".into(),
+                harness_caused: false,
+                documented_cause: None,
+                missed_tokens: 35_000,
+                message: "KV cache miss".into(),
+            }),
+            Item::Assistant("final".into()),
+            Item::ResponseStats(response_stats::fixture()),
+        ]
+        .into();
+        let turns = turns(&items);
+        assert_eq!((turns[0].steps_start, turns[0].steps_end), (1, 3));
+    }
+
     #[test]
     fn folds_only_with_two_or_more_steps_and_respects_state() {
         let mut expanded = HashSet::new();
@@ -582,6 +638,91 @@ mod tests {
             Item::Assistant("The final answer.".into()),
             Item::ResponseStats(response_stats::fixture()),
         ]
+    }
+
+    /// The reported real transcript: prompt, thoughts, tool batches and
+    /// cache-miss notices, then the long final answer and its stats row.
+    fn reattach_turn_items() -> Vec<Item> {
+        let miss = || {
+            Item::CacheMiss(cache_miss::CacheMissNotice {
+                reason: "provider restart".into(),
+                harness_caused: false,
+                documented_cause: None,
+                missed_tokens: 35_000,
+                message: "KV cache miss".into(),
+            })
+        };
+        vec![
+            Item::User("整理一下最新的 AI 模型动态".into()),
+            Item::Reasoning("thinking".into()),
+            Item::Assistant("我来搜索最新的 AI 模型动态。".into()),
+            tool(false),
+            Item::Reasoning("thinking".into()),
+            tool(false),
+            miss(),
+            Item::Reasoning("thinking".into()),
+            Item::Assistant("再确认一下细节。".into()),
+            tool(false),
+            miss(),
+            Item::Reasoning("thinking".into()),
+            Item::Assistant("The final answer with **markdown**.".into()),
+            Item::ResponseStats(response_stats::fixture()),
+        ]
+    }
+
+    /// Reattached or reconnecting panels hold non-`idle` statuses
+    /// (`lost: …`, `connected`, `crashed`) that are not real activity. A
+    /// finished turn must still fold under them — the bug this guards.
+    #[gpui::test]
+    fn a_settled_turn_folds_under_transport_and_lost_statuses(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for status in [
+            "lost: harness connection closed; reconnecting",
+            "connected",
+            "crashed",
+        ] {
+            let (panel, vcx) = steps_fixture(cx);
+            panel.update(vcx, |panel, cx| {
+                *panel.items = reattach_turn_items();
+                panel.status = status.into();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(
+                vcx.debug_bounds("steps-fold-0").is_some(),
+                "{status}: the finished turn folds"
+            );
+            assert!(
+                vcx.debug_bounds("assistant-response").is_some(),
+                "{status}: the final answer stays visible"
+            );
+            assert!(
+                vcx.debug_bounds("tool-inline").is_none(),
+                "{status}: tool rows fold away"
+            );
+            assert!(
+                vcx.debug_bounds("reasoning-fold-1").is_none(),
+                "{status}: thought rows fold away"
+            );
+            let rows = panel.update(vcx, |panel, _cx| panel.test_transcript_row_count());
+            assert_eq!(rows, 4, "{status}: prompt + fold pill + answer + stats");
+        }
+    }
+
+    /// The same turn stays expanded while it is genuinely running.
+    #[gpui::test]
+    fn the_live_turn_stays_expanded_while_running(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = steps_fixture(cx);
+        panel.update(vcx, |panel, cx| {
+            *panel.items = reattach_turn_items();
+            panel.status = "running".into();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("steps-fold-0").is_none());
+        assert!(vcx.debug_bounds("steps-unfold-0").is_some());
+        assert!(vcx.debug_bounds("tool-inline").is_some());
     }
 
     #[gpui::test]

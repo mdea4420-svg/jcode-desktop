@@ -95,9 +95,12 @@ impl Panel {
     }
 
     /// The user prompt index that began the in-progress turn, if any. Rows
-    /// after it keep their thinking expanded until the turn settles.
+    /// after it keep their thinking expanded until the turn settles. Only
+    /// genuine activity counts: a reattached or reconnecting session holds
+    /// transport statuses (`connected`, `lost: …`) that `is_busy` treats as
+    /// busy even though no generation is running.
     pub(super) fn current_turn_start(&self) -> Option<usize> {
-        if !self.is_busy() {
+        if !self.activity_active() {
             return None;
         }
         self.items
