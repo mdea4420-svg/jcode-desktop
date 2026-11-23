@@ -573,6 +573,46 @@ fn should_detach_on_drop(processing: bool) -> bool {
     !processing
 }
 
+/// A bridge that survived its daemon generation wedges the next launch:
+/// `ensure_runtime` reuses it while the fresh daemon idles out with nobody
+/// connected. Its pipe may even report "all instances busy", so whether the
+/// API socket accepts is not a reliable signal; a dead daemon is.
+fn stale_bridge_needs_restart(custom_api_socket: bool, daemon_accepts: bool) -> bool {
+    !custom_api_socket && !daemon_accepts
+}
+
+/// Retire a bridge whose daemon already exited so `ensure_runtime` spawns a
+/// new one. When the daemon socket refuses connections, every client behind
+/// the bridge is already gone, so stopping it loses nothing.
+fn stop_stale_bridge(api: &Path, progress: &dyn Fn(&str)) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        progress("restarting harness API bridge...");
+        let mut command = std::process::Command::new("taskkill");
+        command
+            .arg("/F")
+            .arg("/FI")
+            .arg("IMAGENAME eq jcode-harness-api-bridge.exe");
+        if let Ok(user) = std::env::var("USERNAME") {
+            command.arg("/FI").arg(format!("USERNAME eq {user}"));
+        }
+        let _ = command
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && jcode_sdk::socket_accepts(api) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (api, progress);
+}
+
 /// Start `jcode serve` even when a long-lived `jcode-harness-api-bridge` is
 /// still listening on `api_socket` after the idle daemon exited.
 fn ensure_local_runtime_with_daemon(
@@ -580,7 +620,11 @@ fn ensure_local_runtime_with_daemon(
     progress: &dyn Fn(&str),
 ) -> jcode_sdk::Result<()> {
     let legacy = jcode_sdk::api::legacy_socket_path();
-    if options.api_socket.is_none() && !jcode_sdk::socket_accepts(&legacy) {
+    let daemon_accepts = jcode_sdk::socket_accepts(&legacy);
+    if stale_bridge_needs_restart(options.api_socket.is_some(), daemon_accepts) {
+        stop_stale_bridge(&jcode_sdk::api::api_socket_path(), progress);
+    }
+    if options.api_socket.is_none() && !daemon_accepts {
         progress("starting jcode runtime...");
         let jcode = options
             .binary
@@ -2752,6 +2796,15 @@ mod remote_tests;
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn stale_bridge_restarts_only_for_a_dead_local_daemon() {
+        assert!(stale_bridge_needs_restart(false, false));
+        assert!(!stale_bridge_needs_restart(false, true));
+        // A custom API socket is someone else's bridge; never touch it.
+        assert!(!stale_bridge_needs_restart(true, false));
+        assert!(!stale_bridge_needs_restart(true, true));
+    }
 
     #[test]
     fn todo_progress_counts_completed_over_total() {
