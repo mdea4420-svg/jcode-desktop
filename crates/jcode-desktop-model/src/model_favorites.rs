@@ -15,33 +15,51 @@ pub fn path() -> Option<PathBuf> {
     )
 }
 
-/// Favorite route specs in stored order. Missing or corrupt data reads as
-/// empty rather than failing the picker.
-pub fn load(path: &Path) -> Vec<String> {
+/// The picker's stored lists: favorite route specs and hidden
+/// provider/channel group keys (`provider|api_method|channel`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Lists {
+    pub favorites: Vec<String>,
+    pub hidden_groups: Vec<String>,
+}
+
+/// Stored lists in stored order. Missing or corrupt data reads as empty
+/// rather than failing the picker; files written before `hidden_groups`
+/// existed still load.
+pub fn load(path: &Path) -> Lists {
     let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
+        return Lists::default();
     };
     #[derive(serde::Deserialize)]
     struct Stored {
         #[serde(default)]
         favorites: Vec<String>,
+        #[serde(default)]
+        hidden_groups: Vec<String>,
     }
     serde_json::from_str::<Stored>(&content)
-        .map(|stored| stored.favorites)
+        .map(|stored| Lists {
+            favorites: stored.favorites,
+            hidden_groups: stored.hidden_groups,
+        })
         .unwrap_or_default()
 }
 
-/// Write `specs` through a temporary file so a crash mid-write cannot leave
-/// a truncated store behind.
-pub fn save(path: &Path, specs: &[String]) -> io::Result<()> {
+/// Write both lists through a temporary file so a crash mid-write cannot
+/// leave a truncated store behind.
+pub fn save(path: &Path, lists: &Lists) -> io::Result<()> {
     #[derive(serde::Serialize)]
     struct Stored<'a> {
         favorites: &'a [String],
+        hidden_groups: &'a [String],
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let bytes = serde_json::to_vec_pretty(&Stored { favorites: specs })?;
+    let bytes = serde_json::to_vec_pretty(&Stored {
+        favorites: &lists.favorites,
+        hidden_groups: &lists.hidden_groups,
+    })?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
@@ -67,39 +85,55 @@ mod tests {
     fn missing_and_corrupt_files_read_as_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("favorites.json");
-        assert!(load(&path).is_empty());
+        assert_eq!(load(&path), Lists::default());
         std::fs::write(&path, "not json {{{").unwrap();
-        assert!(load(&path).is_empty());
+        assert_eq!(load(&path), Lists::default());
         std::fs::write(&path, r#"{"favorites": "nope"}"#).unwrap();
-        assert!(load(&path).is_empty());
+        assert_eq!(load(&path), Lists::default());
+    }
+
+    #[test]
+    fn files_without_hidden_groups_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("favorites.json");
+        std::fs::write(&path, r#"{"favorites": ["magpie:codex/gpt-6.2-sol"]}"#).unwrap();
+        let lists = load(&path);
+        assert_eq!(lists.favorites, ["magpie:codex/gpt-6.2-sol"]);
+        assert!(lists.hidden_groups.is_empty());
     }
 
     #[test]
     fn save_load_roundtrip_and_toggle_keeps_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/favorites.json");
-        let specs = vec![
-            "magpie:codex/gpt-6.2-sol".to_string(),
-            "openai-api:atlas-1".to_string(),
-        ];
-        save(&path, &specs).unwrap();
-        assert_eq!(load(&path), specs);
+        let mut lists = Lists {
+            favorites: vec![
+                "magpie:codex/gpt-6.2-sol".to_string(),
+                "openai-api:atlas-1".to_string(),
+            ],
+            hidden_groups: vec!["magpie|openai-compatible:magpie|group".to_string()],
+        };
+        save(&path, &lists).unwrap();
+        assert_eq!(load(&path), lists);
 
-        let mut list = load(&path);
-        assert!(!toggle(&mut list, "magpie:codex/gpt-6.2-sol"));
-        assert_eq!(list, ["openai-api:atlas-1"]);
-        assert!(toggle(&mut list, "claude-api:fable-5"));
-        assert_eq!(list, ["openai-api:atlas-1", "claude-api:fable-5"]);
-        assert!(toggle(&mut list, "magpie:codex/gpt-6.2-sol"));
+        assert!(!toggle(&mut lists.favorites, "magpie:codex/gpt-6.2-sol"));
+        assert_eq!(lists.favorites, ["openai-api:atlas-1"]);
+        assert!(toggle(&mut lists.favorites, "claude-api:fable-5"));
         assert_eq!(
-            list,
+            lists.favorites,
+            ["openai-api:atlas-1", "claude-api:fable-5"]
+        );
+        assert!(toggle(&mut lists.favorites, "magpie:codex/gpt-6.2-sol"));
+        assert_eq!(
+            lists.favorites,
             [
                 "openai-api:atlas-1",
                 "claude-api:fable-5",
                 "magpie:codex/gpt-6.2-sol"
             ]
         );
-        save(&path, &list).unwrap();
-        assert_eq!(load(&path), list);
+        assert!(toggle(&mut lists.hidden_groups, "other|method|"));
+        save(&path, &lists).unwrap();
+        assert_eq!(load(&path), lists);
     }
 }

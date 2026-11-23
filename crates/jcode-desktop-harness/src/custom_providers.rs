@@ -5,7 +5,7 @@
 //! into Jcode's private per-provider `.env` file and never returned to UI state
 //! or written in plaintext to `config.toml`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,9 +13,10 @@ use jcode_base::config::{
     Config, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
 };
 use jcode_base::provider_catalog::{
-    api_base_uses_localhost, is_safe_env_file_name, is_safe_env_key_name,
-    load_api_key_from_env_or_config, normalize_api_base, resolve_login_provider,
-    save_named_api_key,
+    OPENAI_COMPAT_LOCAL_ENABLED_ENV, OPENAI_COMPAT_PROFILE, api_base_uses_localhost,
+    is_safe_env_file_name, is_safe_env_key_name, load_api_key_from_env_or_config,
+    load_env_value_from_env_or_config, normalize_api_base, openai_compatible_profiles,
+    resolve_login_provider, resolve_openai_compatible_profile, save_named_api_key,
 };
 
 const RESERVED_NAMES: &[&str] = &[
@@ -129,6 +130,74 @@ pub fn configured_model_metadata_at(path: &Path) -> HashMap<(String, String), Co
         }
     }
     out
+}
+
+/// `openai-compatible:<id>` route methods for built-in presets that hold no
+/// usable credential. The daemon marks every preset available while a named
+/// profile is active (its configured check short-circuits to the named
+/// profile), so the picker drops the presets nothing configured.
+pub fn unconfigured_preset_route_methods() -> HashSet<String> {
+    let named = named_profile_names();
+    unconfigured_preset_route_methods_with(&named, |env_var, env_file| {
+        load_api_key_from_env_or_config(env_var, env_file)
+            .or_else(|| load_env_value_from_env_or_config(env_var, env_file))
+    })
+}
+
+/// `lookup` answers `(env_var, env_file)` credential checks so tests can drive
+/// every branch without touching the real environment.
+fn unconfigured_preset_route_methods_with(
+    named: &HashSet<String>,
+    lookup: impl Fn(&str, &str) -> Option<String>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for profile in openai_compatible_profiles() {
+        // A `[providers.<name>]` profile with a preset's id keeps its routes;
+        // it is the user's own configuration, not the built-in preset.
+        if named.contains(profile.id) {
+            continue;
+        }
+        let resolved = resolve_openai_compatible_profile(*profile);
+        // Mirrors `openai_compatible_profile_is_configured` without the
+        // named-profile shortcut that marks every preset configured.
+        let configured = lookup(&resolved.api_key_env, &resolved.env_file).is_some()
+            || (!resolved.requires_api_key
+                && ((resolved.id == OPENAI_COMPAT_PROFILE.id
+                    && api_base_uses_localhost(&resolved.api_base))
+                    || lookup(OPENAI_COMPAT_LOCAL_ENABLED_ENV, &resolved.env_file)
+                        .map(|value| env_flag_enabled(&value))
+                        .unwrap_or(false)));
+        if !configured {
+            out.insert(format!("openai-compatible:{}", resolved.id));
+        }
+    }
+    out
+}
+
+/// `[providers.<name>]` profile names, used to keep user profiles that happen
+/// to share a built-in preset's id.
+fn named_profile_names() -> HashSet<String> {
+    let Ok(path) = config_path() else {
+        return HashSet::new();
+    };
+    named_profile_names_at(&path)
+}
+
+fn named_profile_names_at(path: &Path) -> HashSet<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashSet::new();
+    };
+    let Ok(config) = parse_config_or_default(&content) else {
+        return HashSet::new();
+    };
+    config.providers.keys().cloned().collect()
+}
+
+fn env_flag_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 /// Offline metadata for the screenshot model fixture's Magpie routes.
@@ -942,6 +1011,41 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn unconfigured_presets_only_drop_uncredentialed_route_methods() {
+        let deepseek = openai_compatible_profiles()
+            .iter()
+            .find(|profile| profile.id == "deepseek")
+            .copied()
+            .expect("deepseek preset");
+        let key_env = resolve_openai_compatible_profile(deepseek).api_key_env;
+
+        // No credentials anywhere: key-required presets are dropped.
+        let set = unconfigured_preset_route_methods_with(&HashSet::new(), |_, _| None);
+        assert!(set.contains("openai-compatible:deepseek"));
+        assert!(set.contains("openai-compatible:ollama"));
+
+        // A preset holding its API key stays.
+        let keyed = |var: &str, _: &str| (var == key_env).then(|| "sk".to_string());
+        let set = unconfigured_preset_route_methods_with(&HashSet::new(), keyed);
+        assert!(!set.contains("openai-compatible:deepseek"));
+        assert!(set.contains("openai-compatible:ollama"));
+
+        // The local no-auth rule keeps no-key presets but not key-required ones.
+        let local = |var: &str, _: &str| {
+            (var == OPENAI_COMPAT_LOCAL_ENABLED_ENV).then(|| "true".to_string())
+        };
+        let set = unconfigured_preset_route_methods_with(&HashSet::new(), local);
+        assert!(!set.contains("openai-compatible:ollama"));
+        assert!(set.contains("openai-compatible:deepseek"));
+
+        // A user profile reusing a preset id is never treated as the preset.
+        let named: HashSet<String> = ["deepseek".to_string()].into_iter().collect();
+        let set = unconfigured_preset_route_methods_with(&named, |_, _| None);
+        assert!(!set.contains("openai-compatible:deepseek"));
+        assert!(set.contains("openai-compatible:ollama"));
+    }
 
     #[test]
     fn save_edit_default_and_remove_preserve_comments_and_stored_keys() {

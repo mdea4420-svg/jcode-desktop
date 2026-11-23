@@ -201,6 +201,14 @@ pub struct PromptInput {
     /// rebuilding plus re-ranking hundreds of routes each time showed up as a
     /// steady share of main-thread time in live profiles.
     applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
+    /// `openai-compatible:<preset>` methods whose routes the pickers drop.
+    /// Tests and the screenshot fixture inject the set; production resolves
+    /// it from the credential store once per route-set change.
+    dropped_preset_methods: HashSet<String>,
+    /// `route.model` names that survived preset filtering, once a route set
+    /// has been applied. Browser/popup fallbacks use it so an all-dropped
+    /// catalog cannot resurface preset names as an "Other models" group.
+    filtered_route_models: Option<Vec<String>>,
     expanded_model_groups: HashSet<String>,
     current_model: Option<String>,
     /// Levels the serving model accepts, for the `/effort` menu.
@@ -579,6 +587,8 @@ impl PromptInput {
             model_meta: HashMap::new(),
             configured_model_meta: HashMap::new(),
             applied_model_routes: None,
+            filtered_route_models: None,
+            dropped_preset_methods: HashSet::new(),
             expanded_model_groups: HashSet::new(),
             current_model: None,
             effort_ladder: crate::effort::ladder(None, None),
@@ -775,6 +785,29 @@ impl PromptInput {
             return;
         }
         let applied = (models.clone(), routes.to_vec());
+        // The daemon marks every built-in preset available while a named
+        // profile is active; drop the ones holding no credential. The set is
+        // resolved only here, when the incoming catalog actually changed.
+        let dropped = self.preset_route_methods();
+        let routes: Vec<jcode_sdk::ModelRouteInfo> = if dropped.is_empty() {
+            routes.to_vec()
+        } else {
+            routes
+                .iter()
+                .filter(|route| !dropped.contains(route.api_method.as_str()))
+                .cloned()
+                .collect()
+        };
+        if !dropped.is_empty() {
+            let kept: HashSet<&str> = routes
+                .iter()
+                .map(|route| route.model.as_str())
+                .collect();
+            models.retain(|model| kept.contains(model.as_str()));
+        }
+        self.filtered_route_models =
+            Some(routes.iter().map(|route| route.model.clone()).collect());
+        let routes = routes.as_slice();
         let selected = self
             .command_suggestions()
             .get(self.command_selection)
@@ -882,6 +915,7 @@ impl PromptInput {
                     self.current_model.as_deref(),
                     &self.expanded_model_groups,
                     &model_favorites::favorites().1,
+                    &model_favorites::hidden_groups().1,
                     true,
                     false,
                     query,
@@ -1372,6 +1406,35 @@ impl PromptInput {
                 self.suggestions_revision += 1;
             }
         }
+    }
+
+    /// `openai-compatible:<preset>` route methods to drop. Tests inject the
+    /// set; screenshot mode uses the (empty) injected set; production reads
+    /// the credential store once per route-set change.
+    fn preset_route_methods(&self) -> HashSet<String> {
+        #[cfg(test)]
+        {
+            return self.dropped_preset_methods.clone();
+        }
+        #[cfg(not(test))]
+        {
+            if crate::harness::screenshot_mode() || !self.dropped_preset_methods.is_empty() {
+                return self.dropped_preset_methods.clone();
+            }
+            crate::custom_providers::unconfigured_preset_route_methods()
+        }
+    }
+
+    /// Inject the dropped-preset set in tests.
+    #[cfg(test)]
+    pub(crate) fn set_dropped_preset_methods(&mut self, methods: HashSet<String>) {
+        self.dropped_preset_methods = methods;
+    }
+
+    /// `route.model` names from the last applied route set after preset
+    /// filtering, or `None` before any catalog has been applied.
+    pub(crate) fn filtered_route_models(&self) -> Option<&[String]> {
+        self.filtered_route_models.as_deref()
     }
 
     /// Inject configured metadata in tests without touching the config file.
@@ -3169,6 +3232,48 @@ mod tests {
                     "/model openai-oauth:atlas-1"
                 );
                 assert_eq!(input.model_picker_rows().len(), 5);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn unconfigured_preset_routes_drop_out_of_the_picker(cx: &mut TestAppContext) {
+        let window = input_window(cx);
+        let route = |model: &str, provider: &str, api_method: &str| {
+            jcode_sdk::ModelRouteInfo {
+                model: model.into(),
+                provider: provider.into(),
+                api_method: api_method.into(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+            }
+        };
+        let routes = vec![
+            route("302ai-fancy", "302.AI", "openai-compatible:302ai"),
+            route("codex/gpt-6.2-sol", "magpie", "openai-compatible:magpie"),
+            route("atlas-1", "openai", "openai-oauth"),
+        ];
+        window
+            .update(cx, |input, _, cx| {
+                input.set_dropped_preset_methods(
+                    ["openai-compatible:302ai".to_string()]
+                        .into_iter()
+                        .collect(),
+                );
+                input.set_model_routes(Vec::new(), &routes, None, cx);
+                input.set_content("/model".into(), cx);
+                let suggestions = input.command_suggestions();
+                let values: Vec<_> = suggestions
+                    .iter()
+                    .map(|row| row.value.as_str())
+                    .collect();
+                assert!(
+                    !values.iter().any(|value| value.contains("302ai")),
+                    "unconfigured preset rows must not render: {values:?}"
+                );
+                assert!(values.iter().any(|value| value.contains("codex/")));
+                assert!(values.iter().any(|value| value.contains("atlas-1")));
             })
             .unwrap();
     }

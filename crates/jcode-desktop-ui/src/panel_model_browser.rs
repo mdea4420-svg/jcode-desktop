@@ -19,6 +19,18 @@ pub(super) struct ModelBrowserState {
     /// layout so a narrow panel in a wide window collapses its filter
     /// column into a horizontal row.
     pub panel_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// Providers manage mode: the list shows per-group Shown/Hidden
+    /// toggles instead of models.
+    pub manage: bool,
+}
+
+/// One provider/channel group in Providers manage mode.
+struct ManageGroup {
+    key: String,
+    label: String,
+    logo: &'static str,
+    count: usize,
+    hidden: bool,
 }
 
 
@@ -102,6 +114,7 @@ impl Panel {
             scroll: ScrollHandle::new(),
             focus_pending: true,
             panel_bounds: Default::default(),
+            manage: false,
         });
         // Offline/reconnected inputs may not have received route metadata
         // yet. Never replace canonical grouped routes once they exist.
@@ -109,6 +122,12 @@ impl Panel {
         let input = self.input.clone();
         input.update(cx, move |input, cx| {
             if input.command_models().is_empty() {
+                // Prefer the names that survived preset filtering; an
+                // all-dropped catalog must not resurface via this fallback.
+                let models = input
+                    .filtered_route_models()
+                    .map(|models| models.to_vec())
+                    .unwrap_or(models);
                 input.set_command_models(models, cx);
             }
         });
@@ -195,6 +214,11 @@ impl Panel {
                     search.update(cx, |search, cx| search.set_content(query, cx));
                 });
             }
+            if std::env::var("JCODE_DESKTOP_SCREENSHOT_MODEL_MANAGE").as_deref() == Ok("1")
+                && let Some(state) = self.model_browser.as_mut()
+            {
+                state.manage = true;
+            }
         } else if std::env::var("JCODE_DESKTOP_SCREENSHOT_MODEL_MENU").as_deref() == Ok("1") {
             let query = std::env::var("JCODE_DESKTOP_SCREENSHOT_MODEL_QUERY")
                 .map(|query| format!("/model {query}"))
@@ -227,6 +251,7 @@ impl Panel {
             details.keys().cloned().collect()
         };
         let (_, favorites) = model_favorites::favorites();
+        let (_, hidden) = model_favorites::hidden_groups();
         let query = state.search.read(cx).content.to_string();
         model_menu::browser_rows(
             &state.filter,
@@ -237,7 +262,58 @@ impl Panel {
             self.model.as_deref(),
             &query,
             model_menu::now_unix_secs(),
+            &hidden,
         )
+    }
+
+    /// Provider/channel groups for Providers manage mode: every group the
+    /// catalog supplied (hidden groups included — unconfigured presets were
+    /// already dropped by `set_model_routes`), filtered by the search query
+    /// on the group label.
+    fn model_browser_manage_rows(&self, cx: &App) -> Vec<ManageGroup> {
+        let input = self.input.read(cx);
+        let details = input.model_details();
+        let models: Vec<String> = if details.is_empty() {
+            input.command_models().to_vec()
+        } else {
+            details.keys().cloned().collect()
+        };
+        let (_, hidden) = model_favorites::hidden_groups();
+        let query = self
+            .model_browser
+            .as_ref()
+            .map(|state| state.search.read(cx).content.to_lowercase())
+            .unwrap_or_default();
+        model_menu::groups_of(&models, details, self.model.as_deref(), &[])
+            .into_iter()
+            .filter(|(_, label, _)| {
+                query.is_empty() || label.to_lowercase().contains(&query)
+            })
+            .map(|(key, label, members)| ManageGroup {
+                logo: members
+                    .first()
+                    .map(|model| model_menu::header_parts(model, details).logo)
+                    .unwrap_or(""),
+                count: members.len(),
+                hidden: model_favorites::is_hidden(&hidden, &key),
+                key,
+                label,
+            })
+            .collect()
+    }
+
+    /// Toggle a group hidden; if the browser's active filter pointed at it,
+    /// fall back to All models.
+    fn toggle_browser_group_hidden(&mut self, key: &str, cx: &mut Context<Self>) {
+        let now_hidden = model_favorites::toggle_hidden(key);
+        if let Some(state) = self.model_browser.as_mut() {
+            if now_hidden && matches!(&state.filter, ModelFilter::Group(k) if k == key) {
+                state.filter = ModelFilter::All;
+            }
+            state.selection = 0;
+            state.scroll.set_offset(point(px(0.), px(0.)));
+        }
+        cx.notify();
     }
 
     /// Select `spec`: the same path as submitting `/model <spec>` (preview
@@ -278,9 +354,23 @@ impl Panel {
                 details.keys().cloned().collect()
             };
             let (_, favorites) = model_favorites::favorites();
-            model_menu::browser_filters(&models, details, &favorites, self.model.as_deref())
+            let (_, hidden) = model_favorites::hidden_groups();
+            model_menu::browser_filters(
+                &models,
+                details,
+                &favorites,
+                self.model.as_deref(),
+                &hidden,
+            )
         };
-        let selection = state.selection.min(rows.len().saturating_sub(1));
+        let manage = state.manage;
+        let manage_rows = if manage {
+            self.model_browser_manage_rows(cx)
+        } else {
+            Vec::new()
+        };
+        let row_count = if manage { manage_rows.len() } else { rows.len() };
+        let selection = state.selection.min(row_count.saturating_sub(1));
         let search = state.search.clone();
         let scroll = state.scroll.clone();
         let active_filter = state.filter.clone();
@@ -518,7 +608,91 @@ impl Panel {
             })
             .collect();
 
-        let body_list = div()
+        let manage_items: Vec<_> = manage_rows
+            .iter()
+            .enumerate()
+            .map(|(index, group)| {
+                let row_key = group.key.clone();
+                let hide_key = group.key.clone();
+                let toggle_key = group.key.clone();
+                let selected = index == selection;
+                let ink = if selected { theme.BG } else { theme.TEXT };
+                div()
+                    .id(("model-browser-manage", index))
+                    .debug_selector(move || {
+                        format!("model-browser-manage-{row_key}").into()
+                    })
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_full()
+                    .bg(if selected { theme.TEXT } else { theme.HEADER_BG })
+                    .when(!selected, |el| {
+                        el.hover(|style| style.bg(theme.INPUT_BG))
+                    })
+                    .child(logo_svg(group.logo, &group.label, 18., ink))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.))
+                            .text_color(ink)
+                            .child(group.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.))
+                            .text_color(if selected {
+                                ink
+                            } else {
+                                theme.TEXT_FAINT
+                            })
+                            .child(group.count.to_string()),
+                    )
+                    .child({
+                        let group_hidden = group.hidden;
+                        div()
+                            .debug_selector(move || {
+                                format!("model-browser-hide-{hide_key}").into()
+                            })
+                            .flex_none()
+                            .px_3()
+                            .h(px(24.))
+                            .rounded_full()
+                            .text_size(px(11.))
+                            .cursor_pointer()
+                            .bg(if group_hidden {
+                                theme.HEADER_BG
+                            } else {
+                                theme.ACCENT
+                            })
+                            .text_color(if group_hidden {
+                                theme.TEXT_DIM
+                            } else {
+                                theme.BG
+                            })
+                            .when(group_hidden, |el| {
+                                el.hover(|style| style.bg(theme.INPUT_BG))
+                            })
+                            .child(if group_hidden { "Hidden" } else { "Shown" })
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_browser_group_hidden(&toggle_key, cx);
+                                }),
+                            )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        let base_list = div()
             .id("model-browser-list")
             .track_scroll(&scroll)
             .flex_1()
@@ -527,23 +701,64 @@ impl Panel {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap_1()
-            .children(list_rows)
-            .when(rows.is_empty(), |el| {
-                el.child(
-                    div()
-                        .debug_selector(|| "model-browser-empty".into())
-                        .px_3()
-                        .py_6()
-                        .text_size(px(12.))
-                        .text_color(theme.TEXT_DIM)
-                        .child(if favorites_empty {
-                            "No favorites yet — star a model to pin it here"
-                        } else {
-                            "No models match"
-                        }),
-                )
-            });
+            .gap_1();
+        let body_list = if manage {
+            let any_hidden = manage_rows.iter().any(|group| group.hidden)
+                || !model_favorites::hidden_groups().1.is_empty();
+            base_list
+                .debug_selector(|| "model-browser-manage-list".into())
+                .when(any_hidden, |el| {
+                    el.child(
+                        div()
+                            .id("model-browser-show-all")
+                            .debug_selector(|| "model-browser-show-all".into())
+                            .flex_none()
+                            .px_3()
+                            .h(px(28.))
+                            .rounded_full()
+                            .bg(theme.HEADER_BG)
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.INPUT_BG))
+                            .child("Show all")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                model_favorites::show_all();
+                                cx.notify();
+                            })),
+                    )
+                })
+                .children(manage_items)
+                .when(manage_rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "model-browser-empty".into())
+                            .px_3()
+                            .py_6()
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .child("No models match"),
+                    )
+                })
+        } else {
+            base_list
+                .children(list_rows)
+                .when(rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .debug_selector(|| "model-browser-empty".into())
+                            .px_3()
+                            .py_6()
+                            .text_size(px(12.))
+                            .text_color(theme.TEXT_DIM)
+                            .child(if favorites_empty {
+                                "No favorites yet — star a model to pin it here"
+                            } else {
+                                "No models match"
+                            }),
+                    )
+                })
+        };
 
         let body = if narrow {
             div()
@@ -664,15 +879,32 @@ impl Panel {
                                         if this.model_browser.is_none() {
                                             return;
                                         }
-                                        let rows = this.model_browser_rows(cx);
                                         let index = this
                                             .model_browser
                                             .as_ref()
                                             .map(|state| state.selection)
                                             .unwrap_or(0);
-                                        if let Some(row) = rows.get(index) {
-                                            let spec = row.spec.clone();
-                                            this.choose_browser_model(spec, window, cx);
+                                        if this
+                                            .model_browser
+                                            .as_ref()
+                                            .is_some_and(|state| state.manage)
+                                        {
+                                            let groups =
+                                                this.model_browser_manage_rows(cx);
+                                            if let Some(group) = groups.get(index) {
+                                                let key = group.key.clone();
+                                                this.toggle_browser_group_hidden(
+                                                    &key, cx,
+                                                );
+                                            }
+                                        } else {
+                                            let rows = this.model_browser_rows(cx);
+                                            if let Some(row) = rows.get(index) {
+                                                let spec = row.spec.clone();
+                                                this.choose_browser_model(
+                                                    spec, window, cx,
+                                                );
+                                            }
                                         }
                                         cx.stop_propagation();
                                     },
@@ -697,10 +929,16 @@ impl Panel {
                                         if this.model_browser.is_none() {
                                             return;
                                         }
-                                        let max = this
-                                            .model_browser_rows(cx)
-                                            .len()
-                                            .saturating_sub(1);
+                                        let max = if this
+                                            .model_browser
+                                            .as_ref()
+                                            .is_some_and(|state| state.manage)
+                                        {
+                                            this.model_browser_manage_rows(cx).len()
+                                        } else {
+                                            this.model_browser_rows(cx).len()
+                                        }
+                                        .saturating_sub(1);
                                         if let Some(state) = this.model_browser.as_mut() {
                                             state.selection =
                                                 (state.selection + 1).min(max);
@@ -735,6 +973,47 @@ impl Panel {
                                                 .border_color(theme.INPUT_BORDER)
                                                 .px_2()
                                                 .child(search),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("model-browser-providers")
+                                                .debug_selector(|| {
+                                                    "model-browser-providers".into()
+                                                })
+                                                .flex_none()
+                                                .px_3()
+                                                .h(px(28.))
+                                                .rounded_full()
+                                                .text_size(px(12.))
+                                                .cursor_pointer()
+                                                .bg(if manage {
+                                                    theme.ACCENT
+                                                } else {
+                                                    theme.HEADER_BG
+                                                })
+                                                .text_color(if manage {
+                                                    theme.BG
+                                                } else {
+                                                    theme.TEXT_DIM
+                                                })
+                                                .when(!manage, |el| {
+                                                    el.hover(|el| el.bg(theme.INPUT_BG))
+                                                })
+                                                .child(if manage { "Done" } else { "Providers" })
+                                                .on_click(cx.listener(
+                                                    |this, _, _, cx| {
+                                                        if let Some(state) =
+                                                            this.model_browser.as_mut()
+                                                        {
+                                                            state.manage = !state.manage;
+                                                            state.selection = 0;
+                                                            state.scroll.set_offset(
+                                                                point(px(0.), px(0.)),
+                                                            );
+                                                        }
+                                                        cx.notify();
+                                                    },
+                                                )),
                                         )
                                         .child(
                                             div()
@@ -835,7 +1114,7 @@ mod tests {
                 &input.model_details().keys().cloned().collect::<Vec<_>>(),
                 input.model_details(),
                 &[],
-                panel.model.as_deref(),
+                panel.model.as_deref(), &[],
             );
             let labels: Vec<_> = filters.iter().map(|filter| filter.label.as_str()).collect();
             assert!(labels.contains(&"Magpie · codex"), "{labels:?}");
@@ -981,6 +1260,69 @@ mod tests {
             let focused = input.read(cx).focus_handle.is_focused(window);
             assert!(focused, "Escape returns focus to the composer");
         });
+        crate::input::model_favorites::reset();
+    }
+
+    #[gpui::test]
+    fn providers_manage_mode_hides_and_restores_groups(cx: &mut gpui::TestAppContext) {
+        crate::input::model_favorites::reset();
+        let (panel, vcx, _commands) = setup(cx);
+        panel.update_in(vcx, |panel, window, cx| panel.toggle_model_picker(window, cx));
+        vcx.run_until_parked();
+
+        // Open Providers manage mode: group rows carry Shown/Hidden toggles.
+        let providers = vcx
+            .debug_bounds("model-browser-providers")
+            .expect("providers pill");
+        vcx.simulate_click(providers.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("model-browser-manage-list").is_some());
+        assert!(vcx.debug_bounds("model-browser-show-all").is_none());
+
+        let codex_key = "magpie · openai-compatible:magpie · codex";
+        let hide_selector: &'static str =
+            Box::leak(format!("model-browser-hide-{codex_key}").into_boxed_str());
+        let hide = vcx
+            .debug_bounds(hide_selector)
+            .expect("codex group toggle");
+        vcx.simulate_click(hide.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("model-browser-show-all").is_some(),
+            "Show all appears once a group is hidden"
+        );
+
+        // Done: the codex channel's pill and rows are gone.
+        let done = vcx.debug_bounds("model-browser-providers").unwrap();
+        vcx.simulate_click(done.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("model-browser-filter-Magpie · codex")
+                .is_none(),
+            "hidden group's filter pill disappears"
+        );
+        let visible = rows(&panel, vcx);
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|row| !row.spec.contains("codex/")));
+
+        // Show all restores the group.
+        let providers = vcx.debug_bounds("model-browser-providers").unwrap();
+        vcx.simulate_click(providers.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let show_all = vcx
+            .debug_bounds("model-browser-show-all")
+            .expect("show all pill");
+        vcx.simulate_click(show_all.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("model-browser-show-all").is_none());
+        let done = vcx.debug_bounds("model-browser-providers").unwrap();
+        vcx.simulate_click(done.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("model-browser-filter-Magpie · codex")
+                .is_some()
+        );
+        assert!(rows(&panel, vcx).iter().any(|row| row.spec.contains("codex/")));
         crate::input::model_favorites::reset();
     }
 }

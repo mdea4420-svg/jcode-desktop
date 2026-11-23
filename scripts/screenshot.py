@@ -119,6 +119,8 @@ def main():
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
     parser.add_argument("--model-menu", action="store_true",
                         help="open the compact /model popup with offline routes")
+    parser.add_argument("--model-manage", action="store_true",
+                        help="open the model browser in Providers manage mode")
     parser.add_argument("--model-browser", action="store_true",
                         help="open the large model browser dialog with offline routes")
     parser.add_argument("--model-query",
@@ -530,6 +532,11 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_FAVORITES"] = "magpie:codex/gpt-6.2-sol"
         if args.model_query:
             env["JCODE_DESKTOP_SCREENSHOT_MODEL_QUERY"] = args.model_query
+        if args.model_manage:
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_MANAGE"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_HIDDEN"] = (
+                "magpie · openai-compatible:magpie · truesota"
+            )
         if args.history_interact or args.sidebar_workspaces_interact:
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         env["VK_DRIVER_FILES"] = str(drivers[0])
