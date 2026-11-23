@@ -497,7 +497,17 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
             if !revive_local_runtime(error.kind.clone()) {
                 return Err(error);
             }
-            attempt()
+            // A bridge that just started can refuse the first dials (Windows
+            // reports "all pipe instances are busy") until it is listening.
+            let mut result = attempt();
+            for _ in 0..10 {
+                if !matches!(&result, Err(e) if e.kind == jcode_sdk::ErrorKind::ConnectFailed) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                result = attempt();
+            }
+            result
         }
         other => other,
     }
