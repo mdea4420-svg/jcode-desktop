@@ -478,15 +478,23 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
         })
     };
     match attempt() {
-        Err(error) if error.kind == jcode_sdk::ErrorKind::ConnectFailed => {
+        Err(error)
+            if matches!(
+                error.kind,
+                jcode_sdk::ErrorKind::ConnectFailed | jcode_sdk::ErrorKind::Disconnected
+            ) =>
+        {
             // The runtime was started once at bridge startup. If the harness
             // API bridge later dies (a self-dev restart interrupted halfway,
             // a crash), its socket file is left behind with nothing listening
-            // and every panel retried the dead socket forever. Respawn the
-            // runtime here instead. The bridge holds a single-instance lock,
-            // so concurrent respawns from several panels are harmless, and the
-            // throttle keeps a genuinely broken install from fork-looping.
-            if !revive_local_runtime() {
+            // and every panel retried the dead socket forever. The daemon can
+            // also idle out on its own, leaving a live bridge that accepts the
+            // dial and then drops the handshake as Disconnected. Revive the
+            // missing half here instead. The bridge holds a single-instance
+            // lock, so concurrent respawns from several panels are harmless,
+            // and the throttle keeps a genuinely broken install from
+            // fork-looping.
+            if !revive_local_runtime(error.kind.clone()) {
                 return Err(error);
             }
             attempt()
@@ -498,14 +506,82 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
 /// Minimum spacing between runtime respawn attempts from reconnect paths.
 const RUNTIME_REVIVE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Respawn the harness API bridge when the daemon is up but the bridge is not.
-/// Returns whether a revive was attempted and succeeded.
+/// How a failed local connect gets revived, if at all.
+#[derive(Debug, PartialEq, Eq)]
+enum RevivePlan {
+    /// Nothing to revive: the failure was not a dial/connect failure, the
+    /// daemon closed a live connection for real, or the API socket belongs to
+    /// someone else's runtime.
+    None,
+    /// The daemon accepts but nothing listens on the API socket: respawn the
+    /// harness API bridge, the long-standing behavior.
+    RespawnBridge,
+    /// The daemon itself exited (idle shutdown, crash): restart `jcode serve`
+    /// through the same path startup uses.
+    RestartRuntime,
+}
+
+fn revive_plan(
+    kind: jcode_sdk::ErrorKind,
+    custom_api_socket: bool,
+    daemon_accepts: bool,
+) -> RevivePlan {
+    if !matches!(
+        kind,
+        jcode_sdk::ErrorKind::ConnectFailed | jcode_sdk::ErrorKind::Disconnected
+    ) {
+        return RevivePlan::None;
+    }
+    if daemon_accepts {
+        // A closed stream with a live daemon is a genuine disconnect, not a
+        // missing bridge; reviving it would loop on the same failure.
+        return if kind == jcode_sdk::ErrorKind::ConnectFailed {
+            RevivePlan::RespawnBridge
+        } else {
+            RevivePlan::None
+        };
+    }
+    if custom_api_socket {
+        // Someone else's socket; never restart their runtime.
+        return RevivePlan::None;
+    }
+    RevivePlan::RestartRuntime
+}
+
+/// Revive whichever half of the local runtime the failure reports: respawn
+/// the harness API bridge when the daemon is up but the API socket is dead,
+/// or restart `jcode serve` through the startup path when the daemon itself
+/// idled out or crashed. Returns whether the caller may retry its connect
+/// once — either a revive ran here, or another panel just finished one while
+/// this caller waited on the start lock or the throttle.
 ///
-/// A missing daemon is left alone on purpose: a self-dev reload takes the
-/// daemon socket away for a moment, and spawning a competing `jcode serve`
-/// from every reconnecting panel would fight the handoff.
-fn revive_local_runtime() -> bool {
-    if !jcode_sdk::socket_accepts(&jcode_sdk::api::legacy_socket_path()) {
+/// A missing daemon still gets a short grace first: a self-dev reload takes
+/// the daemon socket away for a moment, and spawning a competing `jcode
+/// serve` into that handoff would fight it. Only a daemon still absent after
+/// the grace is restarted.
+fn revive_local_runtime(kind: jcode_sdk::ErrorKind) -> bool {
+    // Serialize every runtime start before any decision: a panel that waited
+    // behind another panel's successful restart should still earn its retry,
+    // and Windows bridges have no single-instance flock to drop duplicates.
+    let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
+    let legacy = jcode_sdk::api::legacy_socket_path();
+    let mut daemon_accepts = jcode_sdk::socket_accepts(&legacy);
+    if !daemon_accepts {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+            if jcode_sdk::socket_accepts(&legacy) {
+                daemon_accepts = true;
+                break;
+            }
+        }
+    }
+    let plan = revive_plan(
+        kind,
+        LaunchOptions::default().api_socket.is_some(),
+        daemon_accepts,
+    );
+    if plan == RevivePlan::None {
         return false;
     }
     static LAST_ATTEMPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
@@ -514,7 +590,9 @@ fn revive_local_runtime() -> bool {
             return false;
         };
         if !revive_due(*last, std::time::Instant::now()) {
-            return false;
+            // Throttled: when another panel just restarted the runtime the
+            // daemon socket accepts again and this caller earns its retry.
+            return jcode_sdk::socket_accepts(&legacy);
         }
         *last = Some(std::time::Instant::now());
     }
@@ -522,12 +600,24 @@ fn revive_local_runtime() -> bool {
         binary: Some(crate::platform::companion_executable("jcode")),
         ..Default::default()
     };
-    let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
-    match jcode_sdk::ensure_runtime(&options, &|_| {}) {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("jcode desktop: could not revive local runtime: {error}");
-            false
+    match plan {
+        RevivePlan::None => false,
+        RevivePlan::RespawnBridge => match jcode_sdk::ensure_runtime(&options, &|_| {}) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("jcode desktop: could not revive local runtime: {error}");
+                false
+            }
+        },
+        RevivePlan::RestartRuntime => {
+            eprintln!("jcode desktop: local runtime exited; restarting jcode serve");
+            match ensure_local_runtime_with_daemon(&options, &|_| {}) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("jcode desktop: could not restart local runtime: {error}");
+                    false
+                }
+            }
         }
     }
 }
@@ -2804,6 +2894,36 @@ mod tests {
         // A custom API socket is someone else's bridge; never touch it.
         assert!(!stale_bridge_needs_restart(true, false));
         assert!(!stale_bridge_needs_restart(true, true));
+    }
+
+    #[test]
+    fn revive_plan_covers_every_failure_shape() {
+        use jcode_sdk::ErrorKind::*;
+        // Failures that are not a connect problem never revive.
+        for kind in [HandshakeFailed, Timeout, Transport, LaunchFailed] {
+            assert_eq!(revive_plan(kind.clone(), false, false), RevivePlan::None);
+            assert_eq!(revive_plan(kind.clone(), false, true), RevivePlan::None);
+            assert_eq!(revive_plan(kind.clone(), true, false), RevivePlan::None);
+        }
+        // Daemon alive, API socket dead: respawn the bridge, as before.
+        assert_eq!(
+            revive_plan(ConnectFailed, false, true),
+            RevivePlan::RespawnBridge
+        );
+        // A closed stream with a live daemon is a genuine disconnect; do not
+        // loop a respawn on it.
+        assert_eq!(revive_plan(Disconnected, false, true), RevivePlan::None);
+        // Daemon dead: restart the whole runtime unless the socket is custom.
+        assert_eq!(
+            revive_plan(ConnectFailed, false, false),
+            RevivePlan::RestartRuntime
+        );
+        assert_eq!(
+            revive_plan(Disconnected, false, false),
+            RevivePlan::RestartRuntime
+        );
+        assert_eq!(revive_plan(ConnectFailed, true, false), RevivePlan::None);
+        assert_eq!(revive_plan(Disconnected, true, false), RevivePlan::None);
     }
 
     #[test]
