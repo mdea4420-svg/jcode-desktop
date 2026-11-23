@@ -9,6 +9,7 @@ pub mod diff;
 pub mod diff_model;
 pub mod friendly_error;
 pub mod learning;
+pub mod model_favorites;
 pub mod pdf_render;
 pub mod platform_dirs;
 pub mod todoist;

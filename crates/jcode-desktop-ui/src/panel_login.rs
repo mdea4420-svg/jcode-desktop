@@ -104,6 +104,7 @@ impl Panel {
 
     pub(super) fn open_login_picker(&mut self, cx: &mut Context<Self>) {
         self.recovery_picker_open = false;
+        self.model_browser = None;
         if self.login.is_some() {
             return;
         }

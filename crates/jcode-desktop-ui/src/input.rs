@@ -30,8 +30,10 @@ use layout::PromptLayout;
 
 #[path = "input_file_drop.rs"]
 pub(crate) mod file_drop;
+#[path = "input_model_favorites.rs"]
+pub(crate) mod model_favorites;
 #[path = "input_model_menu.rs"]
-mod model_menu;
+pub(crate) mod model_menu;
 #[path = "input_model_picker.rs"]
 mod model_picker;
 #[path = "input_model_search.rs"]
@@ -189,6 +191,11 @@ pub struct PromptInput {
     command_menu_active: bool,
     command_selection: usize,
     model_details: HashMap<String, model_menu::ModelDetails>,
+    /// Capability metadata per route spec for the pickers' detail line.
+    model_meta: HashMap<String, model_menu::ModelMeta>,
+    /// `[providers.<name>].models` config, loaded when a picker opens.
+    configured_model_meta:
+        HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
     /// rebroadcast on every usage tick with an unchanged catalog, and
     /// rebuilding plus re-ranking hundreds of routes each time showed up as a
@@ -278,6 +285,10 @@ struct CommandSuggestion {
     detail: Option<String>,
     header: Option<String>,
     toggle: Option<String>,
+    /// The group header carries the channel, so the row title drops it.
+    channel_header: bool,
+    /// A "Recently used" row; its detail line shows the last activity time.
+    recent: bool,
 }
 
 fn command_suggestions(input: &str, models: &[String]) -> Vec<CommandSuggestion> {
@@ -316,6 +327,8 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                channel_header: false,
+                recent: false,
             })
             .collect();
     }
@@ -340,6 +353,8 @@ fn command_suggestions_with_efforts(
                 detail: None,
                 header: None,
                 toggle: None,
+                channel_header: false,
+                recent: false,
             })
             .collect();
     }
@@ -369,6 +384,8 @@ fn command_suggestions_with_efforts(
             detail: None,
             header: None,
             toggle: None,
+            channel_header: false,
+            recent: false,
         })
         .collect()
 }
@@ -559,6 +576,8 @@ impl PromptInput {
             command_menu_active: true,
             command_selection: 0,
             model_details: HashMap::new(),
+            model_meta: HashMap::new(),
+            configured_model_meta: HashMap::new(),
             applied_model_routes: None,
             expanded_model_groups: HashSet::new(),
             current_model: None,
@@ -761,6 +780,7 @@ impl PromptInput {
             .get(self.command_selection)
             .cloned();
         self.model_details = model_menu::from_routes(routes);
+        self.refresh_model_meta();
         self.suggestions_revision += 1;
         self.current_model = current_model;
         if !routes.is_empty() {
@@ -829,7 +849,6 @@ impl PromptInput {
             .collect()
     }
 
-    #[cfg(test)]
     pub(crate) fn command_models(&self) -> &[String] {
         &self.command_models
     }
@@ -862,6 +881,9 @@ impl PromptInput {
                     &self.model_details,
                     self.current_model.as_deref(),
                     &self.expanded_model_groups,
+                    &model_favorites::favorites().1,
+                    true,
+                    false,
                     query,
                 )
                 .into_iter()
@@ -871,6 +893,8 @@ impl PromptInput {
                     detail: None,
                     header: row.header,
                     toggle: row.toggle,
+                    channel_header: row.channel_header,
+                    recent: row.recent,
                 })
                 .collect()
             } else {
@@ -887,11 +911,22 @@ impl PromptInput {
             .into_iter()
             .map(|mut suggestion| {
                 if let Some(model) = suggestion.value.strip_prefix("/model ") {
-                    suggestion.detail = Some(
+                    let used = suggestion.recent.then(|| {
                         self.model_details
                             .get(model)
-                            .map(|details| details.label(now))
-                            .unwrap_or_else(|| model_menu::usage_label(None, now)),
+                            .and_then(|details| details.usage.as_ref())
+                            .and_then(|usage| {
+                                usage
+                                    .last_used_unix_secs
+                                    .into_iter()
+                                    .chain(usage.last_selected_unix_secs)
+                                    .max()
+                            })
+                    });
+                    suggestion.detail = model_menu::detail_label(
+                        self.model_meta.get(model),
+                        used.flatten(),
+                        now,
                     );
                     suggestion.help = if current == Some(model) {
                         "Current".into()
@@ -1318,6 +1353,92 @@ impl PromptInput {
             self.attachment_preview = None;
         }
         self.set_content("/model ".into(), cx);
+        self.load_configured_model_meta();
+    }
+
+    /// Re-read `[providers.<name>].models` when a picker opens (cheap file
+    /// read, skipped under tests). The browser calls this too.
+    pub(crate) fn load_configured_model_meta(&mut self) {
+        #[cfg(not(test))]
+        {
+            let configured = if crate::harness::screenshot_mode() {
+                crate::custom_providers::offline_model_metadata()
+            } else {
+                crate::custom_providers::configured_model_metadata()
+            };
+            if configured != self.configured_model_meta {
+                self.configured_model_meta = configured;
+                self.refresh_model_meta();
+                self.suggestions_revision += 1;
+            }
+        }
+    }
+
+    /// Inject configured metadata in tests without touching the config file.
+    #[cfg(test)]
+    pub(crate) fn set_configured_model_meta(
+        &mut self,
+        configured: HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>,
+    ) {
+        self.configured_model_meta = configured;
+        self.refresh_model_meta();
+        self.suggestions_revision += 1;
+    }
+
+    /// Rebuild per-spec capability metadata from details + configured values.
+    /// Runs on route or config reload, never per frame.
+    fn refresh_model_meta(&mut self) {
+        self.model_meta = self
+            .model_details
+            .iter()
+            .map(|(spec, detail)| {
+                (
+                    spec.clone(),
+                    model_meta_for(detail, &self.configured_model_meta),
+                )
+            })
+            .collect();
+    }
+
+    /// The whole capability map, for the model browser's row building.
+    pub(crate) fn model_metas(&self) -> &HashMap<String, model_menu::ModelMeta> {
+        &self.model_meta
+    }
+
+    /// Route metadata for the model browser's own row construction.
+    pub(crate) fn model_details(
+        &self,
+    ) -> &HashMap<String, model_menu::ModelDetails> {
+        &self.model_details
+    }
+
+    /// Toggle `spec` in the shared favorites store and rebuild the menu so
+    /// the row moves to or from the Favorites section. Keeps the selection
+    /// on the same row value afterwards.
+    pub(crate) fn toggle_model_favorite(&mut self, spec: &str, cx: &mut Context<Self>) {
+        // Capture the selected row before the Favorites section reshuffles it.
+        let selected = self
+            .command_suggestions()
+            .get(self.command_selection)
+            .cloned();
+        model_favorites::toggle(spec);
+        self.suggestions_revision += 1;
+        if let Some(selected) = selected {
+            if let Some(index) = self
+                .command_suggestions()
+                .iter()
+                .position(|row| row.value == selected.value && row.toggle == selected.toggle)
+            {
+                self.command_selection = index;
+                self.reveal_command(index);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Whether `spec` is currently favorited (shared process-wide store).
+    pub(crate) fn model_is_favorite(&self, spec: &str) -> bool {
+        model_favorites::is_favorite(&model_favorites::favorites().1, spec)
     }
 
     /// Show the `/effort` suggestions, stashing the draft like the model menu.
@@ -3082,11 +3203,10 @@ mod tests {
                 assert_eq!(suggestions[0].value, "/model z-favorite");
                 assert_eq!(suggestions[0].help, "Current");
                 assert!(
-                    suggestions[0]
+                    !suggestions[0]
                         .detail
-                        .as_ref()
-                        .unwrap()
-                        .contains("12 tracked turns")
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("tracked turns"))
                 );
             })
             .unwrap();
@@ -3104,7 +3224,13 @@ mod tests {
                     cx,
                 );
                 let suggestions = input.command_suggestions();
-                assert_eq!(input.command_selection, 1);
+                // Selection sticks to the same row value across the refresh;
+                // the index is wherever "a-rare" now sits in the sectioned
+                // layout rather than a fixed position.
+                assert_eq!(
+                    suggestions[input.command_selection].value,
+                    "/model a-rare"
+                );
                 assert_eq!(
                     accepted_command_submission(&suggestions, input.command_selection).as_deref(),
                     Some("/model a-rare")
@@ -3619,6 +3745,33 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+/// Capability metadata for one route: `[providers.<name>].models` config
+/// first (OpenAI-compatible profiles only), then the shared model-family
+/// context fallback, which returns `None` for ids it does not know.
+fn model_meta_for(
+    detail: &model_menu::ModelDetails,
+    configured: &HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>,
+) -> model_menu::ModelMeta {
+    let mut meta = model_menu::ModelMeta::default();
+    let mut bare = jcode_provider_core::explicit_model_provider_prefix(&detail.model)
+        .map_or(detail.model.as_str(), |(_, _, bare)| bare);
+    if let Some(profile) = detail.api_method.strip_prefix("openai-compatible:") {
+        bare = bare.strip_prefix(profile).and_then(|rest| rest.strip_prefix(':')).unwrap_or(bare);
+        if let Some(conf) = configured.get(&(profile.to_string(), bare.to_string())) {
+            meta.context_window = conf.context_window;
+            meta.image_input = conf.image_input;
+            meta.reasoning = conf.reasoning;
+        }
+    }
+    if meta.context_window.is_none() {
+        meta.context_window = jcode_provider_core::context_limit_for_model_with_provider(
+            bare,
+            Some(&detail.provider),
+        );
+    }
+    meta
+}
 
 /// Pick the route spec to switch to when the user selects `provider`.
 ///

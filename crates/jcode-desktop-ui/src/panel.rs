@@ -101,6 +101,8 @@ mod image_preview;
 mod latest;
 #[path = "panel_login.rs"]
 mod login;
+#[path = "panel_model_browser.rs"]
+mod model_browser;
 #[path = "panel_preview.rs"]
 mod preview;
 #[path = "panel_prompt.rs"]
@@ -607,6 +609,7 @@ pub struct Panel {
     orchestration: Option<orchestration::State>,
     recovery_picker_open: bool,
     model_picker_open: bool,
+    model_browser: Option<model_browser::ModelBrowserState>,
     focus_pending: bool,
     /// Read-only transcript surface (resume preview): the chat renderer
     /// without composer, footer, or focus stealing.
@@ -1048,6 +1051,7 @@ impl Panel {
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             model_picker_open: false,
+            model_browser: None,
             focus_pending: false,
             transcript_only: false,
             login: None,
@@ -1928,6 +1932,7 @@ impl Panel {
                             if (content == "/model" || content.starts_with("/model "))
                                 && !this.is_pending_session()
                             {
+                                this.model_browser = None;
                                 this.model_picker_open = true;
                                 cx.notify();
                             } else if this.model_picker_open && !content.starts_with("/model ") {
@@ -1945,6 +1950,9 @@ impl Panel {
                                 handled = true;
                             } else if this.model_picker_open {
                                 this.close_model_picker(cx);
+                                handled = true;
+                            } else if this.model_browser.is_some() {
+                                this.model_browser = None;
                                 handled = true;
                             } else if !this.is_pending_session()
                                 && (this.status != "idle"
@@ -1973,61 +1981,7 @@ impl Panel {
                 this.input
                     .update(cx, |input, cx| input.set_command_menu_active(false, cx));
             }
-            if std::env::var("JCODE_DESKTOP_SCREENSHOT").as_deref() == Ok("1")
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_MODELS").as_deref() == Ok("1")
-            {
-                let names = [
-                    "anthropic:sonnet-review".to_string(),
-                    "google:gemini-review".to_string(),
-                ]
-                .into_iter()
-                .chain((1..=12).map(|index| format!("openai:atlas-{index:02}")));
-                let routes = names
-                    .map(|model| {
-                        let provider = model.split(':').next().unwrap().to_string();
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let usage = match provider.as_str() {
-                            "anthropic" => Some(jcode_sdk::ModelUsage {
-                                count: 42,
-                                last_used_unix_secs: Some(now - 7200),
-                                tracking_started_unix_secs: Some(now - 86400 * 14),
-                                selection_count: 5,
-                                last_selected_unix_secs: Some(now - 7200),
-                            }),
-                            "google" => Some(jcode_sdk::ModelUsage {
-                                count: 7,
-                                last_used_unix_secs: Some(now - 86400 * 3),
-                                tracking_started_unix_secs: Some(now - 86400 * 14),
-                                selection_count: 2,
-                                last_selected_unix_secs: Some(now - 86400 * 3),
-                            }),
-                            _ => None,
-                        };
-                        jcode_sdk::ModelRouteInfo {
-                            api_method: format!("{provider}-api-key"),
-                            model,
-                            provider,
-                            available: true,
-                            detail: String::new(),
-                            usage,
-                        }
-                    })
-                    .collect();
-                this.apply(
-                    &ApiEvent::RuntimeInfo {
-                        session_id: this.session_id.clone(),
-                        provider: Some("openai".into()),
-                        model: Some("openai:atlas-01".into()),
-                        reasoning_effort: None,
-                        auth_method: None,
-                        routes,
-                    },
-                    cx,
-                );
-            }
+            this.apply_screenshot_model_entry(cx);
             if this.is_pending_session() {
                 this.status = "Starting session · you can type now".into();
                 this.input
@@ -2108,13 +2062,7 @@ impl Panel {
             .map(str::trim)
             .filter(|model| !model.is_empty())
         {
-            self.close_model_picker(cx);
-            self.bridge.send(Command::SetModel {
-                session_id: self.session_id.clone(),
-                model: model.to_string(),
-            });
-            self.items
-                .push(Item::Assistant(format!("Switching model to `{model}`…")));
+            self.select_model_route(model, cx);
         } else if let Some(effort) = trimmed.strip_prefix("/effort ").map(str::trim) {
             let effort = effort.to_ascii_lowercase();
             if self.request_effort(&effort, cx) {
@@ -2348,6 +2296,19 @@ impl Panel {
         })
     }
 
+    /// Switch the session model through the same path as submitting
+    /// `/model <spec>`: close pickers, send the route, note the transcript.
+    fn select_model_route(&mut self, model: &str, cx: &mut Context<Self>) {
+        self.close_model_picker(cx);
+        self.model_browser = None;
+        self.bridge.send(Command::SetModel {
+            session_id: self.session_id.clone(),
+            model: model.to_string(),
+        });
+        self.items
+            .push(Item::Assistant(format!("Switching model to `{model}`…")));
+    }
+
     fn open_model_picker(&mut self, cx: &mut Context<Self>) {
         if self.is_side_document() {
             return;
@@ -2357,6 +2318,7 @@ impl Panel {
             return;
         }
         self.recovery_picker_open = false;
+        self.model_browser = None;
         self.model_picker_open = true;
         let models = self.available_models.clone();
         let input = self.input.clone();
@@ -5432,6 +5394,7 @@ impl Render for Panel {
             .children(self.render_image_preview(window, cx))
             .children(self.render_diff_review(cx))
             .children(self.render_login_picker(window, cx))
+            .children(self.render_model_browser(window, cx))
             .into_any_element();
 
         // Inline mode retains the existing chat layout and event ancestry.

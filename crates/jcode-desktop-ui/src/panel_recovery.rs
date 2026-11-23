@@ -144,6 +144,8 @@ impl Panel {
     pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recovery_picker_open {
             self.recovery_picker_open = false;
+        } else if self.model_browser.is_some() {
+            self.close_model_browser(cx);
         } else if self.model_picker_open {
             self.close_model_picker(cx);
         } else {
@@ -158,7 +160,7 @@ impl Panel {
         if self.available_models.is_empty() {
             self.recovery_picker_open = true;
         } else {
-            self.open_model_picker(cx);
+            self.open_model_browser(cx);
         }
         self.focus_pending = true;
         cx.notify();

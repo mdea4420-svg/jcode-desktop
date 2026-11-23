@@ -142,7 +142,7 @@ fn preview_keyboard_and_model_recovery_stay_offline(cx: &mut gpui::TestAppContex
     let button = vcx.debug_bounds("recovery-choose-model").unwrap();
     vcx.simulate_click(button.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
-    let button = vcx.debug_bounds("slash-command-row-0").unwrap();
+    let button = vcx.debug_bounds("model-browser-row-0").unwrap();
     vcx.simulate_click(button.center(), gpui::Modifiers::default());
     panel.read_with(vcx, |panel, _| {
         assert_eq!(panel.model.as_deref(), Some("preview-model"));

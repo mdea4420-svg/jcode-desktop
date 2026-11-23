@@ -5,7 +5,7 @@
 //! into Jcode's private per-provider `.env` file and never returned to UI state
 //! or written in plaintext to `config.toml`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -85,6 +85,82 @@ pub fn offline_summaries() -> Vec<CustomProviderSummary> {
         has_api_key: true,
         is_default: false,
     }]
+}
+
+/// Per-model capabilities declared in `[providers.<name>].models`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfiguredModelMeta {
+    pub context_window: Option<usize>,
+    pub image_input: Option<bool>,
+    pub reasoning: Option<bool>,
+}
+
+/// `(profile, model id)` -> configured capabilities, read from `config.toml`.
+/// Missing or unparseable config reads as empty, never as defaults.
+pub fn configured_model_metadata() -> HashMap<(String, String), ConfiguredModelMeta> {
+    let Ok(path) = config_path() else {
+        return HashMap::new();
+    };
+    configured_model_metadata_at(&path)
+}
+
+pub fn configured_model_metadata_at(path: &Path) -> HashMap<(String, String), ConfiguredModelMeta> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(config) = parse_config_or_default(&content) else {
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for (name, profile) in &config.providers {
+        for model in &profile.models {
+            if model.id.is_empty() {
+                continue;
+            }
+            out.insert(
+                (name.clone(), model.id.clone()),
+                ConfiguredModelMeta {
+                    context_window: model.context_window,
+                    image_input: (!model.input.is_empty())
+                        .then(|| model.input.iter().any(|kind| kind == "image")),
+                    reasoning: model.reasoning,
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Offline metadata for the screenshot model fixture's Magpie routes.
+pub fn offline_model_metadata() -> HashMap<(String, String), ConfiguredModelMeta> {
+    let meta = |context_window, image_input, reasoning| ConfiguredModelMeta {
+        context_window,
+        image_input,
+        reasoning,
+    };
+    [
+        (
+            ("magpie".to_string(), "codex/gpt-6.2-sol".to_string()),
+            meta(Some(272_000), Some(true), Some(true)),
+        ),
+        (
+            ("magpie".to_string(), "cpr-fast/gpt-6.2-sol".to_string()),
+            meta(Some(272_000), Some(false), None),
+        ),
+        (
+            ("magpie".to_string(), "truesota/deepseek-flash".to_string()),
+            meta(Some(1_000_000), Some(true), None),
+        ),
+        (
+            (
+                "magpie".to_string(),
+                "workbuddy/deepseek-v4.1-flash".to_string(),
+            ),
+            meta(Some(1_000_000), None, Some(true)),
+        ),
+    ]
+    .into_iter()
+    .collect()
 }
 
 pub fn list() -> Vec<CustomProviderSummary> {
@@ -957,6 +1033,43 @@ mod tests {
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("# keep user comment"));
         assert!(!after.contains("default_provider"));
+    }
+
+    #[test]
+    fn configured_model_metadata_reads_profile_model_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[providers.magpie]
+base_url = "https://magpie.example.com/v1"
+default_model = "codex/gpt-6.2-sol"
+models = [
+  { id = "codex/gpt-6.2-sol", context_window = 272000, reasoning = true, input = ["text", "image"] },
+  { id = "truesota/deepseek-flash", input = ["text"] },
+  { id = "workbuddy/deepseek-v4.1-flash" },
+]
+"#,
+        )
+        .unwrap();
+
+        let meta = configured_model_metadata_at(&path);
+        assert_eq!(meta.len(), 3);
+        let codex = &meta[&("magpie".to_string(), "codex/gpt-6.2-sol".to_string())];
+        assert_eq!(codex.context_window, Some(272_000));
+        assert_eq!(codex.image_input, Some(true));
+        assert_eq!(codex.reasoning, Some(true));
+        let flash = &meta[&("magpie".to_string(), "truesota/deepseek-flash".to_string())];
+        assert_eq!(flash.context_window, None);
+        assert_eq!(flash.image_input, Some(false));
+        assert_eq!(flash.reasoning, None);
+        assert_eq!(
+            meta[&("magpie".to_string(), "workbuddy/deepseek-v4.1-flash".to_string())],
+            ConfiguredModelMeta::default()
+        );
+        assert!(
+            configured_model_metadata_at(&temp.path().join("missing.toml")).is_empty()
+        );
     }
 
     #[test]

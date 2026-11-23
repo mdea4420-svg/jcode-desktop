@@ -375,7 +375,7 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
         });
         vcx.run_until_parked();
         click(vcx, "panel-model");
-        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        assert!(vcx.debug_bounds("model-browser").is_some());
         assert!(vcx.debug_bounds("recovery-model-picker").is_none());
         vcx.update(|_, cx| assert_eq!(cx.windows().len(), 1));
         vcx.simulate_keystrokes("escape");
@@ -385,7 +385,7 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
         });
         source.update(vcx, |panel, cx| panel.choose_account_model(cx));
         vcx.run_until_parked();
-        assert!(vcx.debug_bounds("slash-command-overlay").is_some());
+        assert!(vcx.debug_bounds("model-browser").is_some());
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         assert!(

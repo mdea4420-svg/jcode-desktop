@@ -235,3 +235,48 @@ fn model_picker_virtualizes_thousand_routes_and_clicks_exact_last_route(
         );
     });
 }
+
+#[gpui::test]
+fn popup_star_click_toggles_favorite_without_submitting(cx: &mut gpui::TestAppContext) {
+    model_favorites::reset();
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let record = submitted.clone();
+    let (fixture, vcx) = cx.add_window_view(|_, cx| {
+        Fixture(cx.new(|cx| {
+            PromptInput::new(cx, "test", move |content, _, _, _| {
+                record.borrow_mut().push(content);
+            })
+        }))
+    });
+    let input = fixture.read_with(vcx, |fixture, _| fixture.0.clone());
+    input.update(vcx, |input, cx| {
+        input.set_model_routes(Vec::new(), &routes(4), None, cx);
+        input.set_content("/model ".into(), cx);
+    });
+    vcx.run_until_parked();
+    let star = vcx
+        .debug_bounds("model-picker-favorite-0")
+        .expect("star on the first row");
+    vcx.simulate_click(star.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    input.read_with(vcx, |input, _| {
+        let spec = input.command_suggestions()[0].value.clone();
+        assert!(spec.starts_with("/model "));
+        assert!(input.model_is_favorite(spec.trim_start_matches("/model ")));
+        // The star keeps the menu and draft; it never submits the row.
+        assert_eq!(input.content.as_ref(), "/model ");
+        assert!(
+            input
+                .command_suggestions()
+                .iter()
+                .any(|row| row.header.as_deref() == Some(model_menu::FAVORITES_HEADER)),
+            "favorited row pins under the Favorites section"
+        );
+        assert_eq!(
+            input.command_suggestions()[0].header.as_deref(),
+            Some(model_menu::FAVORITES_HEADER)
+        );
+    });
+    assert!(submitted.borrow().is_empty());
+    model_favorites::reset();
+}

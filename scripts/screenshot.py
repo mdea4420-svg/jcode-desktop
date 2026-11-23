@@ -117,6 +117,12 @@ def main():
                         help="verify native account/provider clicks, masked clipboard paste, and draft restoration offline")
     parser.add_argument("--model-interact", action="store_true",
                         help="verify native model search, scrolling, dismissal, aliases, and selection with offline routes")
+    parser.add_argument("--model-menu", action="store_true",
+                        help="open the compact /model popup with offline routes")
+    parser.add_argument("--model-browser", action="store_true",
+                        help="open the large model browser dialog with offline routes")
+    parser.add_argument("--model-query",
+                        help="pre-fill the model search field (compact popup or browser)")
     parser.add_argument("--slash-interact", action="store_true",
                         help="verify visible slash menu selection and overflow scrolling on the private display")
     parser.add_argument("--default-directory-interact", action="store_true",
@@ -514,6 +520,16 @@ def main():
         env["JCODE_DESKTOP_SCREENSHOT_PANELS"] = str(args.panels)
         if args.model_interact:
             env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
+        if args.model_menu:
+            env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_MENU"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_FAVORITES"] = "magpie:codex/gpt-6.2-sol"
+        if args.model_browser:
+            env["JCODE_DESKTOP_SCREENSHOT_MODELS"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_BROWSER"] = "1"
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_FAVORITES"] = "magpie:codex/gpt-6.2-sol"
+        if args.model_query:
+            env["JCODE_DESKTOP_SCREENSHOT_MODEL_QUERY"] = args.model_query
         if args.history_interact or args.sidebar_workspaces_interact:
             env["JCODE_DESKTOP_SCREENSHOT_HISTORY"] = "1"
         env["VK_DRIVER_FILES"] = str(drivers[0])
@@ -576,7 +592,7 @@ def main():
                 time.sleep(0.8 if (args.beta_notice or args.beta_notice_interact) else 2)
                 # Exercise the real launch overlay, then leave other fixtures unobscured.
                 if not (args.beta_notice or args.beta_notice_interact or args.account_sign_in or args.account_sign_in_interact or args.accounts or args.sign_in_steps
-                        or args.changelog):
+                        or args.changelog or args.model_menu or args.model_browser):
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)

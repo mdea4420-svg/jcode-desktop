@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct SuggestionsCache {
     content: SharedString,
     revision: u64,
+    favorites: u64,
     minute: u64,
     completion: bool,
     rows: Arc<Vec<CommandSuggestion>>,
@@ -28,10 +29,12 @@ impl PromptInput {
     /// refresh relative usage labels on the next interaction after a minute.
     pub(super) fn command_suggestions(&self) -> Arc<Vec<CommandSuggestion>> {
         let minute = model_menu::now_unix_secs() / 60;
+        let (favorites, _) = model_favorites::favorites();
         let mut cache = self.suggestions_cache.borrow_mut();
         if let Some(cached) = cache.as_ref()
             && cached.content == self.content
             && cached.revision == self.suggestions_revision
+            && cached.favorites == favorites
             && cached.minute == minute
             && cached.completion == self.command_completion
         {
@@ -55,6 +58,7 @@ impl PromptInput {
         *cache = Some(SuggestionsCache {
             content: self.content.clone(),
             revision: self.suggestions_revision,
+            favorites,
             minute,
             completion: self.command_completion,
             rows: rows.clone(),
@@ -122,39 +126,24 @@ impl PromptInput {
                 .text_size(px(11.0))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(faint);
-            let Some(model) = model else {
+            // Favorites/Recently used headers name a section, not a provider.
+            let section = header == model_menu::FAVORITES_HEADER
+                || header == model_menu::RECENT_HEADER;
+            let Some(model) = model.filter(|_| !section) else {
                 return base.child(header);
             };
             let parts = model_menu::header_parts(model, &self.model_details);
             base.child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
-                .child(
-                    div()
-                        .text_color(Theme::global().TEXT_DIM)
-                        .child(parts.provider),
-                )
-                .child(
-                    div()
-                        .debug_selector(move || format!("model-picker-auth-{index}"))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .px_2()
-                        .py(px(1.0))
-                        .rounded_full()
-                        .bg(Theme::global().INPUT_BG)
-                        .font_weight(gpui::FontWeight::NORMAL)
-                        .child(
-                            gpui::svg()
-                                .data(parts.auth.icon())
-                                .size(px(11.0))
-                                .flex_none()
-                                .text_color(faint),
-                        )
-                        .child(parts.auth.label()),
-                )
+                .child(div().text_color(Theme::global().TEXT_DIM).child(header))
         });
         let label = model
-            .map(|model| model_menu::pretty_title(model, &self.model_details))
+            .map(|model| {
+                if suggestion.channel_header {
+                    model_menu::pretty_title_in_group(model, &self.model_details)
+                } else {
+                    model_menu::pretty_title(model, &self.model_details)
+                }
+            })
             .unwrap_or_else(|| suggestion.value.clone());
         div()
             .w_full()
@@ -165,6 +154,7 @@ impl PromptInput {
             .child(
                 div()
                     .id(("slash-command", index))
+                    .group("model-picker-row")
                     .debug_selector(move || {
                         if is_toggle {
                             format!("model-picker-toggle-{index}")
@@ -252,6 +242,49 @@ impl PromptInput {
                             })
                             .child(suggestion.help),
                     )
+                    .children(model.map(|model| {
+                        let spec = model.to_string();
+                        let favorited = self.model_is_favorite(model);
+                        let star = div()
+                            .debug_selector(move || format!("model-picker-favorite-{index}"))
+                            .w(px(22.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_color(if favorited {
+                                Theme::global().ACCENT
+                            } else if selected {
+                                ink
+                            } else {
+                                gpui::transparent_black().into()
+                            });
+                        let star = if favorited || selected {
+                            star
+                        } else {
+                            star.group_hover("model-picker-row", |style| {
+                                style.text_color(Theme::global().TEXT_FAINT)
+                            })
+                        };
+                        star.child(
+                            gpui::svg()
+                                .data(if favorited {
+                                    model_menu::STAR_FILLED_ICON
+                                } else {
+                                    model_menu::STAR_ICON
+                                })
+                                .size(px(14.0))
+                                .flex_none(),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_model_favorite(&spec, cx);
+                            }),
+                        )
+                    }))
                     .child(
                         div()
                             .w(px(14.0))

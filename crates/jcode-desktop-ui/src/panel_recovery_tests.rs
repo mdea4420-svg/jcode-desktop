@@ -101,7 +101,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     vcx.simulate_click(choose.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     let row = vcx
-        .debug_bounds("slash-command-row-0")
+        .debug_bounds("model-browser-row-0")
         .expect("native model choice");
     assert!(vcx.debug_bounds("recovery-model-picker-1").is_none());
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
@@ -138,7 +138,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
     panel.update(vcx, |panel, cx| panel.open_recovery_models(cx));
     vcx.run_until_parked();
     let row = vcx
-        .debug_bounds("slash-command-row-0")
+        .debug_bounds("model-browser-row-0")
         .expect("native picker route");
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
@@ -256,12 +256,12 @@ fn recovery_many_routes_stay_compact_until_choose_model_is_clicked(cx: &mut gpui
     vcx.simulate_click(choose.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
     let picker = vcx
-        .debug_bounds("slash-command-overlay")
+        .debug_bounds("model-browser")
         .expect("shared model menu");
     assert!(picker.top() >= px(0.), "menu must stay inside the viewport");
-    assert!(picker.size.height <= px(490.));
+    assert!(picker.size.height <= px(560.));
     assert!(vcx.debug_bounds("recovery-model-picker").is_none());
-    let row = vcx.debug_bounds("slash-command-row-0").unwrap();
+    let row = vcx.debug_bounds("model-browser-row-0").unwrap();
     assert!(row.size.height >= px(20.));
     vcx.simulate_click(row.center(), gpui::Modifiers::default());
     vcx.run_until_parked();
