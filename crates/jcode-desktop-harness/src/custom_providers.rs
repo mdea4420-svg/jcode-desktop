@@ -63,8 +63,111 @@ pub struct CustomProviderDraft {
     pub api_key: Option<String>,
     pub default_model: String,
     pub models: Vec<String>,
+    pub model_settings: std::collections::BTreeMap<String, ModelSettingsEdit>,
     pub set_default: bool,
     pub model_catalog: bool,
+}
+
+pub const MODEL_REASONING_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelSettings {
+    pub context_window: Option<usize>,
+    pub reasoning: Option<bool>,
+    pub reasoning_effort: Option<String>,
+    pub image_input: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelSettingsEdit {
+    // The outer option indicates that the field was edited. The inner None
+    // clears a previously configured override so the runtime can infer it.
+    pub context_window: Option<Option<usize>>,
+    pub reasoning: Option<Option<bool>>,
+    pub reasoning_effort: Option<Option<String>>,
+    pub image_input: Option<Option<bool>>,
+}
+
+pub fn provider_model_settings(name: &str) -> HashMap<String, ModelSettings> {
+    config_path()
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(HashMap::new, |content| model_settings_from_config(&content, name))
+}
+
+pub fn offline_model_settings(name: &str) -> HashMap<String, ModelSettings> {
+    model_settings_from_config(
+        r#"
+[providers.local-gateway]
+base_url = "http://127.0.0.1:3425/v1"
+models = [{ id = "codex/gpt-6.2-sol", context_window = 272000, reasoning = true, reasoning_effort = "high", input = ["text", "image"] }]
+"#,
+        name,
+    )
+}
+
+fn model_settings_from_config(content: &str, name: &str) -> HashMap<String, ModelSettings> {
+    let Ok(config) = parse_config_or_default(content) else {
+        return HashMap::new();
+    };
+    let Some(profile) = config.providers.get(name) else {
+        return HashMap::new();
+    };
+    let mut settings = HashMap::new();
+    for row in &profile.models {
+        settings.entry(row.id.clone()).or_insert_with(|| ModelSettings {
+            context_window: row.context_window,
+            reasoning: row.reasoning,
+            reasoning_effort: row.reasoning_effort.clone(),
+            image_input: (!row.input.is_empty())
+                .then(|| row.input.iter().any(|kind| kind.eq_ignore_ascii_case("image"))),
+        });
+    }
+    settings
+}
+
+impl ModelSettingsEdit {
+    fn validate(&self, id: &str) -> Result<(), String> {
+        if self.context_window.flatten()
+            .is_some_and(|tokens| tokens == 0 || i64::try_from(tokens).is_err())
+        {
+            return Err(format!(
+                "Model '{id}': context_window must be a positive whole number of tokens."
+            ));
+        }
+        if let Some(Some(effort)) = &self.reasoning_effort
+            && !MODEL_REASONING_EFFORTS.contains(&effort.as_str())
+        {
+            return Err(format!("Model '{id}': unsupported reasoning_effort '{effort}'."));
+        }
+        Ok(())
+    }
+
+    fn apply(self, model: &mut NamedProviderModelConfig) {
+        if let Some(value) = self.context_window {
+            model.context_window = value;
+        }
+        if let Some(value) = self.reasoning {
+            model.reasoning = value;
+        }
+        if let Some(value) = self.reasoning_effort {
+            model.reasoning_effort = value;
+        }
+        match self.image_input {
+            Some(Some(image)) => {
+                if !model.input.iter().any(|kind| kind == "text") {
+                    model.input.push("text".into());
+                }
+                if image && !model.input.iter().any(|kind| kind.eq_ignore_ascii_case("image")) {
+                    model.input.push("image".into());
+                } else if !image {
+                    model.input.retain(|kind| !kind.eq_ignore_ascii_case("image"));
+                }
+            }
+            Some(None) => model.input.clear(),
+            None => {}
+        }
+    }
 }
 
 pub fn config_path() -> Result<PathBuf, String> {
@@ -123,7 +226,7 @@ pub fn configured_model_metadata_at(path: &Path) -> HashMap<(String, String), Co
                 ConfiguredModelMeta {
                     context_window: model.context_window,
                     image_input: (!model.input.is_empty())
-                        .then(|| model.input.iter().any(|kind| kind == "image")),
+                        .then(|| model.input.iter().any(|kind| kind.eq_ignore_ascii_case("image"))),
                     reasoning: model.reasoning,
                 },
             );
@@ -176,7 +279,7 @@ fn unconfigured_preset_route_methods_with(
 
 /// `[providers.<name>]` profile names, used to keep user profiles that happen
 /// to share a built-in preset's id.
-fn named_profile_names() -> HashSet<String> {
+pub fn named_profile_names() -> HashSet<String> {
     let Ok(path) = config_path() else {
         return HashSet::new();
     };
@@ -423,9 +526,21 @@ pub fn fetch_models(
     typed_api_key: Option<&str>,
     existing_profile: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
-    let exact = normalize_endpoint_url(base_url, false)?;
     let key = resolve_fetch_key(typed_api_key, existing_profile);
+    fetch_model_catalog(base_url, |request| match &key {
+        Some(secret) => request.bearer_auth(secret),
+        None => request,
+    }, extract_model_ids)
+}
+
+fn fetch_model_catalog<T>(
+    base_url: &str,
+    authenticate: impl Fn(reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder,
+    parse: impl Fn(&str) -> Result<Vec<T>, String>,
+) -> Result<(String, Vec<T>), String> {
+    let exact = normalize_endpoint_url(base_url, false)?;
     let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(12))
         .build()
         .map_err(|error| format!("Could not build HTTP client: {error}"))?;
@@ -439,11 +554,8 @@ pub fn fetch_models(
     let mut last_error = String::new();
     for candidate in candidates {
         let url = format!("{candidate}/models");
-        let mut request = client.get(&url).header("Accept", "application/json");
-        if let Some(secret) = key.as_deref().filter(|s| !s.is_empty()) {
-            request = request.bearer_auth(secret);
-        }
-        match request.send() {
+        let request = client.get(&url).header("Accept", "application/json");
+        match authenticate(request).send() {
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().unwrap_or_default();
@@ -451,7 +563,7 @@ pub fn fetch_models(
                     last_error = format!("GET {url} returned HTTP {}", status.as_u16());
                     continue;
                 }
-                match extract_model_ids(&body) {
+                match parse(&body) {
                     Ok(models) if !models.is_empty() => return Ok((candidate, models)),
                     Ok(_) => {
                         last_error = format!("{url} returned an empty model list.");
@@ -490,6 +602,13 @@ fn resolve_fetch_key(typed_api_key: Option<&str>, existing_profile: Option<&str>
 }
 
 fn extract_model_ids(body: &str) -> Result<Vec<String>, String> {
+    parse_model_catalog(body, |id, _| id.to_string())
+}
+
+fn parse_model_catalog<T>(
+    body: &str,
+    parse: impl Fn(&str, &serde_json::Value) -> T,
+) -> Result<Vec<T>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|_| "response was not valid JSON".to_string())?;
     let array = value
@@ -510,14 +629,131 @@ fn extract_model_ids(body: &str) -> Result<Vec<String>, String> {
         if let Some(id) = id {
             let clean = id.strip_prefix("models/").unwrap_or(id);
             if seen.insert(clean.to_string()) {
-                out.push(clean.to_string());
+                out.push(parse(clean, item));
             }
         }
     }
     Ok(out)
 }
 
+/// Reasoning capabilities advertised for the serving model, after checking
+/// which values this Jcode runtime can forward to Magpie.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MagpieEffort {
+    Unknown,
+    Unsupported,
+    RuntimeLimited,
+    Known {
+        levels: Vec<&'static str>,
+        fixed: bool,
+        default: Option<String>,
+    },
+}
+
+pub fn magpie_effort(model: &str) -> MagpieEffort {
+    read_magpie_effort(model).unwrap_or(MagpieEffort::Unknown)
+}
+
+fn read_magpie_effort(model: &str) -> Option<MagpieEffort> {
+    let content = std::fs::read_to_string(config_path().ok()?).ok()?;
+    let config = parse_config_or_default(&content).ok()?;
+    let profile = config.providers.get("magpie")?;
+    if profile.provider_type != NamedProviderType::OpenAiCompatible {
+        return None;
+    }
+    let key = profile.api_key_env.as_deref().and_then(|name| {
+        load_api_key_from_env_or_config(
+            name,
+            profile.env_file.as_deref().unwrap_or("openai-compatible.env"),
+        )
+    }).or_else(|| profile.api_key.clone());
+    let header = profile.auth_header.as_deref().unwrap_or("api-key");
+    let authenticate = |request: reqwest::blocking::RequestBuilder| match (&profile.auth, &key) {
+        (NamedProviderAuth::Bearer, Some(secret)) => request.bearer_auth(secret),
+        (NamedProviderAuth::Header, Some(secret)) => request.header(header, secret),
+        _ => request,
+    };
+    let configured_support = profile.models.iter()
+        .find(|row| row.id.eq_ignore_ascii_case(model))
+        .and_then(|row| row.reasoning);
+    if configured_support == Some(false) {
+        return Some(MagpieEffort::Unsupported);
+    }
+    let (_, rows) = fetch_model_catalog(&profile.base_url, authenticate, |body| {
+        parse_model_catalog(body, |id, row| (id.to_string(), parse_magpie_effort(row)))
+    }).ok()?;
+    let (_, capability) = rows.into_iter().find(|(id, _)| id == model)?;
+    if matches!(capability, MagpieEffort::Known { .. })
+        && configured_support != Some(true)
+        && profile.supports_reasoning_effort != Some(true)
+    {
+        // The installed harness has no catalog-based runtime opt-in. Avoid
+        // advertising selectable levels when this model is not opted in.
+        return Some(MagpieEffort::RuntimeLimited);
+    }
+    Some(capability)
+}
+
+fn parse_magpie_effort(row: &serde_json::Value) -> MagpieEffort {
+    if row.get("reasoning").and_then(|value| value.as_bool()) == Some(false) {
+        return MagpieEffort::Unsupported;
+    }
+    let Some(values) = ["reasoning_levels", "supported_reasoning_levels", "supported_reasoning_efforts"]
+        .iter()
+        .find_map(|field| row.get(field).and_then(|value| value.as_array()))
+    else {
+        return MagpieEffort::Unknown;
+    };
+    let advertised: Vec<_> = values.iter().filter_map(|value| {
+        value.as_str().or_else(|| value.get("effort").and_then(|value| value.as_str()))
+            .map(str::trim).filter(|value| !value.is_empty())
+    }).collect();
+    if advertised.is_empty() {
+        return MagpieEffort::Unknown;
+    }
+    let fixed = advertised.iter().all(|value| *value == advertised[0]);
+    let mut levels = Vec::new();
+    for value in &advertised {
+        // This runtime omits `none` from chat completions and rejects
+        // extension values such as `ultra`. Never turn those into aliases.
+        if let Some(level) = ["minimal", "low", "medium", "high", "xhigh", "max"]
+            .into_iter().find(|level| level == value)
+            && !levels.contains(&level)
+        {
+            levels.push(level);
+        }
+    }
+    let default = ["default_reasoning_effort", "default_reasoning_level"]
+        .iter().find_map(|field| row.get(field).and_then(|value| value.as_str()))
+        .filter(|value| advertised.contains(value))
+        .or_else(|| fixed.then_some(advertised[0]))
+        .map(str::to_string);
+    if levels.is_empty() && !fixed {
+        return MagpieEffort::RuntimeLimited;
+    }
+    MagpieEffort::Known { levels, fixed, default }
+}
+
+#[cfg(test)]
+#[test]
+fn magpie_reasoning_distinguishes_advertised_levels_from_runtime_support() {
+    use serde_json::json;
+    assert_eq!(parse_magpie_effort(&json!({"reasoning": false})), MagpieEffort::Unsupported);
+    assert_eq!(parse_magpie_effort(&json!({"reasoning": true})), MagpieEffort::Unknown);
+    assert_eq!(parse_magpie_effort(&json!({"reasoning_levels": ["ultra"]})), MagpieEffort::Known {
+        levels: vec![], fixed: true, default: Some("ultra".into()),
+    });
+    assert_eq!(parse_magpie_effort(&json!({
+        "supported_reasoning_levels": [{"effort": "none"}, {"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}],
+        "default_reasoning_effort": "high",
+    })), MagpieEffort::Known { levels: vec!["low", "high"], fixed: false, default: Some("high".into()) });
+}
+
 pub fn save(draft: CustomProviderDraft) -> Result<CustomProviderSummary, String> {
+    save_with_reload_status(draft).map(|(summary, _)| summary)
+}
+
+pub fn save_with_reload_status(draft: CustomProviderDraft) -> Result<(CustomProviderSummary, RuntimeReloadStatus), String> {
     let path = config_path()?;
     let summary = save_at(
         &path,
@@ -527,13 +763,12 @@ pub fn save(draft: CustomProviderDraft) -> Result<CustomProviderSummary, String>
         },
         &|env_key, env_file| load_api_key_from_env_or_config(env_key, env_file).is_some(),
     )?;
-    reload_runtime_server();
-    Ok(summary)
+    Ok((summary, reload_runtime_server_gracefully()))
 }
 
 pub fn save_at(
     path: &Path,
-    draft: CustomProviderDraft,
+    mut draft: CustomProviderDraft,
     store_key: &dyn Fn(&str, &str, &str) -> Result<(), String>,
     has_stored_key: &dyn Fn(&str, &str) -> bool,
 ) -> Result<CustomProviderSummary, String> {
@@ -562,6 +797,12 @@ pub fn save_at(
                 .into(),
         );
     };
+    for (id, edit) in &draft.model_settings {
+        if !seen.contains(id) {
+            return Err(format!("Model '{id}' is missing from the model list."));
+        }
+        edit.validate(id)?;
+    }
 
     let original_content = std::fs::read_to_string(path).unwrap_or_default();
     let existing_config = parse_config_or_default(&original_content)
@@ -625,20 +866,21 @@ pub fn save_at(
     let models: Vec<NamedProviderModelConfig> = model_ids
         .into_iter()
         .map(|id| {
-            if let Some(existing_model) = previous
+            let edit = draft.model_settings.remove(&id);
+            let mut model = previous
                 .and_then(|prev| prev.models.iter().find(|m| m.id == id))
                 .cloned()
-            {
-                existing_model
-            } else {
-                NamedProviderModelConfig {
+                .unwrap_or(NamedProviderModelConfig {
                     id,
                     reasoning: None,
                     reasoning_effort: None,
                     context_window: None,
                     input: Vec::new(),
-                }
+                });
+            if let Some(edit) = edit {
+                edit.apply(&mut model);
             }
+            model
         })
         .collect();
 
@@ -689,10 +931,13 @@ pub fn save_at(
 }
 
 pub fn make_default(name: &str) -> Result<Option<String>, String> {
+    make_default_with_reload_status(name).map(|(spec, _)| spec)
+}
+
+pub fn make_default_with_reload_status(name: &str) -> Result<(Option<String>, RuntimeReloadStatus), String> {
     let path = config_path()?;
     let spec = make_default_at(&path, name)?;
-    reload_runtime_server();
-    Ok(spec)
+    Ok((spec, reload_runtime_server_gracefully()))
 }
 
 pub fn make_default_at(path: &Path, name: &str) -> Result<Option<String>, String> {
@@ -719,10 +964,13 @@ pub fn make_default_at(path: &Path, name: &str) -> Result<Option<String>, String
 }
 
 pub fn remove(name: &str) -> Result<(), String> {
+    remove_with_reload_status(name).map(|_| ())
+}
+
+pub fn remove_with_reload_status(name: &str) -> Result<RuntimeReloadStatus, String> {
     let path = config_path()?;
     remove_at(&path, name)?;
-    reload_runtime_server();
-    Ok(())
+    Ok(reload_runtime_server_gracefully())
 }
 
 pub fn remove_at(path: &Path, name: &str) -> Result<(), String> {
@@ -740,22 +988,49 @@ pub fn remove_at(path: &Path, name: &str) -> Result<(), String> {
     write_atomic(path, updated.as_bytes())
 }
 
-/// Reload the shared background daemon so newly saved `[providers.<name>]`
-/// routes appear in live sessions immediately without dropping active work.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RuntimeReloadStatus {
+    NotRunning,
+    /// The reload command succeeded, including when the daemon was already current.
+    Reloaded,
+    Deferred,
+}
+
+const GRACEFUL_RELOAD_ARGS: [&str; 3] = ["server", "reload", "--quiet"];
+
 pub fn reload_runtime_server() {
-    let jcode = crate::platform::companion_executable("jcode");
+    reload_runtime_server_gracefully();
+}
+
+/// Ask the shared daemon to reload when safe, and refresh desktop account data.
+pub fn reload_runtime_server_gracefully() -> RuntimeReloadStatus {
     let legacy = jcode_sdk::api::legacy_socket_path();
-    if jcode_sdk::socket_accepts(&legacy) {
+    let status = if jcode_sdk::socket_accepts(&legacy) {
+        let jcode = crate::platform::companion_executable("jcode");
         let mut command = std::process::Command::new(&jcode);
         crate::platform::no_console_window(&mut command);
-        let _ = command
-            .args(["server", "reload", "--force", "--quiet"])
+        let result = command
+            .args(GRACEFUL_RELOAD_ARGS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
-    }
+        if result.is_ok_and(|status| status.success()) {
+            RuntimeReloadStatus::Reloaded
+        } else {
+            RuntimeReloadStatus::Deferred
+        }
+    } else {
+        RuntimeReloadStatus::NotRunning
+    };
     crate::accounts::request_refresh();
+    status
+}
+
+#[cfg(test)]
+#[test]
+fn custom_provider_reload_uses_non_forcing_args() {
+    assert_eq!(GRACEFUL_RELOAD_ARGS, ["server", "reload", "--quiet"]);
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1076,6 +1351,7 @@ mod tests {
                     "deepseek-ai/DeepSeek-V3".into(),
                     "Qwen/Qwen2.5-Coder-32B".into(),
                 ],
+                model_settings: Default::default(),
                 set_default: true,
                 model_catalog: true,
             },
@@ -1103,6 +1379,7 @@ mod tests {
                 api_key: None,
                 default_model: "Qwen/Qwen2.5-Coder-32B".into(),
                 models: vec!["Qwen/Qwen2.5-Coder-32B".into()],
+                model_settings: Default::default(),
                 set_default: true,
                 model_catalog: false,
             },
@@ -1174,6 +1451,124 @@ models = [
         assert!(
             configured_model_metadata_at(&temp.path().join("missing.toml")).is_empty()
         );
+    }
+
+    #[test]
+    fn model_settings_roundtrip_updates_two_exact_ids_and_preserves_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let fixture = r#"
+[provider]
+default_provider = "other"
+default_model = "shared"
+
+[providers.other]
+base_url = "http://127.0.0.1:9010/v1"
+models = [{ id = "Pool/Model", context_window = 8192 }]
+
+[providers.gateway-test]
+base_url = "https://gateway.example.test/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+api_key_env = "GATEWAY_TEST_KEY"
+env_file = "gateway-test.env"
+headers = { "X-Test-App" = "desktop" }
+default_model = "Pool/Model"
+extra_body = { service_tier = "priority" }
+supports_reasoning_effort = true
+model_catalog = true
+models = [
+  { id = "Pool/Model", context_window = 272000, reasoning = true, reasoning_effort = "high", input = ["text", "image"] },
+  { id = "pool/model", reasoning_effort = "ultra", input = ["text", "image", "audio"] },
+  { id = "untouched", context_window = 8192, reasoning = false, reasoning_effort = "none", input = ["audio"] },
+]
+"#;
+        std::fs::write(&path, fixture).unwrap();
+        let initial = model_settings_from_config(fixture, "gateway-test");
+        assert_eq!(initial["Pool/Model"].context_window, Some(272_000));
+        assert_eq!(initial["pool/model"].reasoning_effort.as_deref(), Some("ultra"));
+        let other = model_settings_from_config(fixture, "other");
+        assert_eq!(other["Pool/Model"].context_window, Some(8_192));
+        assert!(model_settings_from_config(fixture, "Gateway-Test").is_empty());
+
+        let draft = CustomProviderDraft {
+            original_name: Some("gateway-test".into()),
+            name: "gateway-test".into(),
+            base_url: "https://gateway.example.test/v1".into(),
+            default_model: "Pool/Model".into(),
+            models: vec!["pool/model".into(), "untouched".into()],
+            model_catalog: true,
+            model_settings: [
+                ("Pool/Model".into(), ModelSettingsEdit {
+                    context_window: Some(None),
+                    reasoning: Some(None),
+                    reasoning_effort: Some(None),
+                    image_input: Some(None),
+                }),
+                ("pool/model".into(), ModelSettingsEdit {
+                    context_window: Some(Some(196_607)),
+                    reasoning: Some(Some(false)),
+                    image_input: Some(Some(false)),
+                    ..ModelSettingsEdit::default()
+                }),
+            ].into(),
+            ..CustomProviderDraft::default()
+        };
+        save_at(&path, draft, &|_, _, _| panic!("key write"), &|_, _| true).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let settings = model_settings_from_config(&saved, "gateway-test");
+        assert_eq!(settings["Pool/Model"], ModelSettings::default());
+        assert_eq!(settings["pool/model"], ModelSettings {
+            context_window: Some(196_607),
+            reasoning: Some(false),
+            reasoning_effort: Some("ultra".into()),
+            image_input: Some(false),
+        });
+        assert_eq!(settings["untouched"], initial["untouched"]);
+        assert_eq!(model_settings_from_config(&saved, "other"), other);
+
+        let before = parse_config_or_default(fixture).unwrap();
+        let after = parse_config_or_default(&saved).unwrap();
+        let previous = &before.providers["gateway-test"];
+        let profile = &after.providers["gateway-test"];
+        assert!(matches!(&profile.auth, NamedProviderAuth::Header));
+        assert_eq!(profile.auth_header, previous.auth_header);
+        assert_eq!(profile.api_key_env, previous.api_key_env);
+        assert_eq!(profile.env_file, previous.env_file);
+        assert_eq!(profile.headers, previous.headers);
+        assert_eq!(profile.extra_body, previous.extra_body);
+        assert_eq!(profile.supports_reasoning_effort, previous.supports_reasoning_effort);
+        assert_eq!(profile.default_model, previous.default_model);
+        assert_eq!(profile.models[1].input, ["text", "audio"]);
+        assert_eq!(profile.models[2].input, ["audio"]);
+        assert_eq!(after.provider.default_provider, before.provider.default_provider);
+        assert_eq!(after.provider.default_model, before.provider.default_model);
+    }
+
+    #[test]
+    fn invalid_model_settings_leave_config_and_credentials_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let original = "# keep this config\n";
+        std::fs::write(&path, original).unwrap();
+        for (edit, field) in [
+            (ModelSettingsEdit { context_window: Some(Some(0)), ..Default::default() }, "context_window"),
+            (ModelSettingsEdit { reasoning_effort: Some(Some("none".into())), ..Default::default() }, "reasoning_effort"),
+            (ModelSettingsEdit { reasoning_effort: Some(Some("ultra".into())), ..Default::default() }, "reasoning_effort"),
+        ] {
+            let draft = CustomProviderDraft {
+                name: "gateway-test".into(),
+                base_url: "https://gateway.example.test/v1".into(),
+                api_key: Some("fixture-key".into()),
+                default_model: "Pool/Model".into(),
+                model_settings: [("Pool/Model".into(), edit)].into(),
+                ..CustomProviderDraft::default()
+            };
+            let error = save_at(&path, draft, &|_, _, _| panic!("key write"), &|_, _| false)
+                .unwrap_err();
+            assert!(error.contains("Pool/Model") && error.contains(field), "{error}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
     }
 
     #[test]

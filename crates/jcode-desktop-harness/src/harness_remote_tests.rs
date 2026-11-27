@@ -45,6 +45,12 @@ struct Server {
 }
 impl Server {
     fn new() -> (JcodeClient, Self) {
+        Self::with_reply(|_| None)
+    }
+
+    fn with_reply(
+        mut reply: impl FnMut(&ApiRequest) -> Option<ApiEvent> + Send + 'static,
+    ) -> (JcodeClient, Self) {
         let (socket, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         let writer = Arc::new(Mutex::new(server));
@@ -52,7 +58,7 @@ impl Server {
         let (tx, requests) = channel();
         std::thread::spawn(move || {
             while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
-                let event = match &frame.request {
+                let fallback = || match &frame.request {
                     ApiRequest::Hello { .. } => ApiEvent::HelloOk {
                         version: jcode_sdk::api::API_VERSION_MAJOR,
                         server: "remote-test".into(),
@@ -99,6 +105,7 @@ impl Server {
                     },
                     _ => ApiEvent::Ok,
                 };
+                let event = reply(&frame.request).unwrap_or_else(fallback);
                 if !matches!(frame.request, ApiRequest::Hello { .. } | ApiRequest::Ping) {
                     let _ = tx.send(frame.request.clone());
                 }
@@ -150,6 +157,39 @@ impl Server {
             .shutdown(std::net::Shutdown::Both)
             .unwrap();
     }
+}
+
+#[test]
+fn archive_sidebar_session_persists_unwritten_draft_and_restores_bookmark() {
+    let mut first_archive = true;
+    let (client, server) = Server::with_reply(move |request| {
+        if matches!(request, ApiRequest::ArchiveSession { .. })
+            && std::mem::take(&mut first_archive)
+        {
+            return Some(ApiEvent::Error {
+                code: jcode_sdk::api::ErrorCode::UnknownSession,
+                message: "session does not exist".into(),
+            });
+        }
+        None
+    });
+    let id = "same-id";
+    archive_sidebar_session(&client, id).unwrap();
+    let archive = ApiRequest::ArchiveSession { session_id: id.into() };
+    assert_eq!(server.next(), archive);
+    assert_eq!(server.next(), ApiRequest::AttachSession { session_id: id.into() });
+    for saved in [true, false] {
+        assert_eq!(server.next(), ApiRequest::SetSessionSaved {
+            session_id: id.into(), saved, label: None,
+        });
+    }
+    assert_eq!(server.next(), archive);
+    assert_eq!(server.next(), ApiRequest::DetachSession { session_id: id.into() });
+    assert!(server.requests.try_recv().is_err());
+
+    archive_sidebar_session(&client, id).unwrap();
+    assert_eq!(server.next(), archive);
+    assert!(server.requests.try_recv().is_err());
 }
 
 fn wait_update(
@@ -224,6 +264,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::RuntimeCommand(
             jcode_sdk::api::RuntimeCommand::Memory,
             vec!["search".into(), "remote/path".into()],
+            None,
         ))
         .unwrap();
     assert!(
@@ -234,6 +275,29 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(u, Update::Event { session_id, event: ApiEvent::RuntimeCommandResult { session_id: inner, data, message, .. } }
         if session_id == &ui_id && inner == &ui_id && data["runtime"] == "remote-test" && message == "Remote runtime result")
     });
+
+    let (reply, result) = async_channel::bounded(1);
+    commands
+        .send(SessionCommand::RuntimeCommand(
+            jcode_sdk::api::RuntimeCommand::Swarm,
+            Vec::new(),
+            Some(reply),
+        ))
+        .unwrap();
+    assert!(matches!(server.next(), ApiRequest::RuntimeCommand {
+        session_id, command: jcode_sdk::api::RuntimeCommand::Swarm, args,
+    } if session_id == "same-id" && args.is_empty()));
+    let output = result.try_recv().or_else(|_| {
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(10));
+            if let Ok(output) = result.try_recv() {
+                return Ok(output);
+            }
+        }
+        result.try_recv()
+    }).unwrap().unwrap();
+    assert_eq!(output.session_id, ui_id);
+    assert_eq!(output.command, jcode_sdk::api::RuntimeCommand::Swarm);
 
     commands.send(SessionCommand::Cancel).unwrap();
     commands

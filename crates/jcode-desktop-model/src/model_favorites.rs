@@ -15,17 +15,19 @@ pub fn path() -> Option<PathBuf> {
     )
 }
 
-/// The picker's stored lists: favorite route specs and hidden
-/// provider/channel group keys (`provider|api_method|channel`).
+/// The picker's stored lists: favorite route specs, hidden provider/channel
+/// group keys (`provider|api_method|channel`), and hidden individual model
+/// route specs (`magpie:codex/gpt-6.2-sol`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lists {
     pub favorites: Vec<String>,
     pub hidden_groups: Vec<String>,
+    pub hidden_models: Vec<String>,
 }
 
 /// Stored lists in stored order. Missing or corrupt data reads as empty
-/// rather than failing the picker; files written before `hidden_groups`
-/// existed still load.
+/// rather than failing the picker; files written before `hidden_groups` or
+/// `hidden_models` existed still load.
 pub fn load(path: &Path) -> Lists {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Lists::default();
@@ -36,22 +38,26 @@ pub fn load(path: &Path) -> Lists {
         favorites: Vec<String>,
         #[serde(default)]
         hidden_groups: Vec<String>,
+        #[serde(default)]
+        hidden_models: Vec<String>,
     }
     serde_json::from_str::<Stored>(&content)
         .map(|stored| Lists {
             favorites: stored.favorites,
             hidden_groups: stored.hidden_groups,
+            hidden_models: stored.hidden_models,
         })
         .unwrap_or_default()
 }
 
-/// Write both lists through a temporary file so a crash mid-write cannot
+/// Write all lists through a temporary file so a crash mid-write cannot
 /// leave a truncated store behind.
 pub fn save(path: &Path, lists: &Lists) -> io::Result<()> {
     #[derive(serde::Serialize)]
     struct Stored<'a> {
         favorites: &'a [String],
         hidden_groups: &'a [String],
+        hidden_models: &'a [String],
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -59,6 +65,7 @@ pub fn save(path: &Path, lists: &Lists) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(&Stored {
         favorites: &lists.favorites,
         hidden_groups: &lists.hidden_groups,
+        hidden_models: &lists.hidden_models,
     })?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
@@ -100,6 +107,22 @@ mod tests {
         let lists = load(&path);
         assert_eq!(lists.favorites, ["magpie:codex/gpt-6.2-sol"]);
         assert!(lists.hidden_groups.is_empty());
+        assert!(lists.hidden_models.is_empty());
+    }
+
+    #[test]
+    fn files_without_hidden_models_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("favorites.json");
+        std::fs::write(
+            &path,
+            r#"{"favorites": ["magpie:codex/gpt-6.2-sol"], "hidden_groups": ["p|m|c"]}"#,
+        )
+        .unwrap();
+        let lists = load(&path);
+        assert_eq!(lists.favorites, ["magpie:codex/gpt-6.2-sol"]);
+        assert_eq!(lists.hidden_groups, ["p|m|c"]);
+        assert!(lists.hidden_models.is_empty());
     }
 
     #[test]
@@ -112,6 +135,7 @@ mod tests {
                 "openai-api:atlas-1".to_string(),
             ],
             hidden_groups: vec!["magpie|openai-compatible:magpie|group".to_string()],
+            hidden_models: vec!["openai-api:atlas-2".to_string()],
         };
         save(&path, &lists).unwrap();
         assert_eq!(load(&path), lists);

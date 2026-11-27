@@ -203,7 +203,10 @@ impl Theme {
 
     fn configured(mut theme: Self) -> Self {
         let config = crate::config::get();
-        theme.apply_fonts(&config.appearance);
+        theme.apply_fonts(
+            &config.appearance,
+            cfg!(target_os = "windows") && crate::config::is_zh_preview_executable(),
+        );
         for (role, value) in &config.appearance.colors {
             match parse_color(value) {
                 Some(color) => theme.set_color(role, color),
@@ -213,11 +216,16 @@ impl Theme {
         theme
     }
 
-    fn apply_fonts(&mut self, appearance: &crate::config::AppearanceConfig) {
+    fn apply_fonts(&mut self, appearance: &crate::config::AppearanceConfig, zh_preview: bool) {
+        if zh_preview {
+            self.FONT_UI = "Segoe UI";
+            self.FONT_MONO = "Cascadia Code";
+        }
         if let Some(font) = appearance.ui_font.as_deref() {
             self.FONT_UI = Box::leak(font.to_owned().into_boxed_str());
         }
-        self.FONT_AI = appearance.ai_font.as_deref().map_or(self.FONT_UI, |font| {
+        let prose_default = if zh_preview { "Palatino Linotype" } else { self.FONT_UI };
+        self.FONT_AI = appearance.ai_font.as_deref().map_or(prose_default, |font| {
             Box::leak(font.to_owned().into_boxed_str())
         });
         if let Some(font) = appearance.mono_font.as_deref() {
@@ -379,10 +387,11 @@ pub enum ThemePreset {
     #[default]
     PureBlack,
     Glass,
+    Terracotta,
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::WarmNeutral,
         Self::WarmStudio,
         Self::NeutralDark,
@@ -401,6 +410,7 @@ impl ThemePreset {
         Self::DarkNeutral,
         Self::PureBlack,
         Self::Glass,
+        Self::Terracotta,
     ];
     pub const fn id(self) -> &'static str {
         match self {
@@ -422,6 +432,7 @@ impl ThemePreset {
             Self::DarkNeutral => "dark-neutral",
             Self::PureBlack => "pure-black",
             Self::Glass => "glass",
+            Self::Terracotta => "terracotta",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -444,6 +455,7 @@ impl ThemePreset {
             Self::DarkNeutral => "Dark Neutral",
             Self::PureBlack => "Pure Black",
             Self::Glass => "Glass",
+            Self::Terracotta => "Terracotta",
         }
     }
     const fn index(self) -> usize {
@@ -466,6 +478,7 @@ impl ThemePreset {
             Self::DarkNeutral => 15,
             Self::PureBlack => 16,
             Self::Glass => 17,
+            Self::Terracotta => 18,
         }
     }
     pub fn from_id(value: &str) -> Self {
@@ -686,6 +699,7 @@ fn raw_themes() -> [Theme; ThemePreset::ALL.len()] {
         palettes::dark_neutral(),
         palettes::pure_black(),
         palettes::glass(),
+        palettes::TERRACOTTA.theme(),
     ]
     .map(|mut theme| {
         palettes::apply_code_colors(&mut theme);
@@ -879,7 +893,7 @@ mod tests {
             ai_font: Some("Urbanist".into()),
             ..Default::default()
         };
-        theme.apply_fonts(&appearance);
+        theme.apply_fonts(&appearance, false);
         assert_eq!(theme.FONT_AI, "Urbanist");
         assert_eq!(theme.FONT_UI, original_ui);
         assert_eq!(theme.FONT_MONO, original_mono);
@@ -888,11 +902,35 @@ mod tests {
             ui_font: Some("Inter".into()),
             mono_font: Some("Test Mono".into()),
             ..Default::default()
-        });
+        }, false);
         assert_eq!(fallback.FONT_AI, "Inter");
         assert_eq!(fallback.FONT_UI, "Inter");
         assert_eq!(fallback.FONT_MONO, "Test Mono");
         assert_eq!(interpolate(&theme, &theme, 0.5).FONT_AI, "Urbanist");
+    }
+
+    #[test]
+    fn zh_preview_fonts_use_claude_light_roles_without_overriding_config() {
+        let mut theme = Theme::defaults();
+        let colors = (theme.BG, theme.ACCENT);
+        theme.apply_fonts(&Default::default(), true);
+        assert_eq!((theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
+            ("Segoe UI", "Palatino Linotype", "Cascadia Code"));
+        assert_eq!((theme.BG, theme.ACCENT), colors);
+        theme.apply_fonts(&crate::config::AppearanceConfig {
+            ui_font: Some("Custom Sans".into()),
+            ..Default::default()
+        }, true);
+        assert_eq!((theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
+            ("Custom Sans", "Palatino Linotype", "Cascadia Code"));
+        theme.apply_fonts(&crate::config::AppearanceConfig {
+            ui_font: Some("Custom Sans".into()),
+            ai_font: Some("Custom Serif".into()),
+            mono_font: Some("Custom Mono".into()),
+            ..Default::default()
+        }, true);
+        assert_eq!((theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
+            ("Custom Sans", "Custom Serif", "Custom Mono"));
     }
 
     #[test]

@@ -161,6 +161,12 @@ pub enum Update {
         saved: bool,
         error: String,
     },
+    ArchivedSessions { result: Result<Vec<SessionInfo>, String> },
+    SessionArchiveSettled {
+        session_id: String,
+        archived: bool,
+        error: Option<String>,
+    },
     /// The control connection died; the bridge will retry.
     Disconnected {
         reason: String,
@@ -242,6 +248,13 @@ pub enum Command {
         command: jcode_sdk::api::RuntimeCommand,
         args: Vec<String>,
     },
+    /// A runtime command with a reply for its originating UI control.
+    RuntimeCommandWithReply {
+        session_id: String,
+        command: jcode_sdk::api::RuntimeCommand,
+        args: Vec<String>,
+        reply: RuntimeCommandReply,
+    },
     SessionOperation {
         session_id: String,
         operation: SessionOperation,
@@ -252,6 +265,11 @@ pub enum Command {
     SetSessionSaved {
         session_id: String,
         saved: bool,
+    },
+    ListArchivedSessions,
+    SetSessionArchived {
+        session_id: String,
+        archived: bool,
     },
     /// Retain a fork child connection and queue its first prompt after adoption.
     ForkedInternal {
@@ -266,6 +284,9 @@ pub enum Command {
         request_id: Option<String>,
     },
 }
+
+pub type RuntimeCommandReply =
+    async_channel::Sender<Result<jcode_sdk::api::RuntimeCommandOutput, String>>;
 
 #[derive(Clone, Debug)]
 pub enum SessionOperation {
@@ -306,7 +327,7 @@ enum SessionCommand {
     },
     Transfer,
     SetModel(String),
-    RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>),
+    RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>, Option<RuntimeCommandReply>),
     Operation(SessionOperation),
     Stop,
 }
@@ -1023,7 +1044,20 @@ fn run_with_transports(
                 send_to_session_worker(
                     &mut workers,
                     session_id,
-                    SessionCommand::RuntimeCommand(command, args),
+                    SessionCommand::RuntimeCommand(command, args, None),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::RuntimeCommandWithReply {
+                session_id,
+                command,
+                args,
+                reply,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RuntimeCommand(command, args, Some(reply)),
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -1035,6 +1069,52 @@ fn run_with_transports(
                 send_to_session_worker(&mut workers, session_id, command, |session_id| {
                     spawn_session_worker(session_id, &updates, &transports)
                 });
+            }
+            Command::ListArchivedSessions => {
+                let replies = updates.clone();
+                if let Err(error) = std::thread::Builder::new().name("jcode-bridge-archived-list".into()).spawn(move || {
+                    let result = connect("archived-list").and_then(|client| client.request(jcode_sdk::api::ApiRequest::ListSessions {
+                        include_archived: true, limit: None,
+                    })).map_err(|error| error.to_string()).and_then(|reply| match reply.event {
+                        ApiEvent::Sessions { mut sessions } => {
+                            sessions.retain(|session| session.archived);
+                            sessions.sort_by_key(|session| std::cmp::Reverse(session.archived_at_ms));
+                            Ok(sessions)
+                        }
+                        ApiEvent::Error { message, .. } => Err(message),
+                        _ => Err("Unexpected archived session list reply".into()),
+                    });
+                    let _ = replies.send(Update::ArchivedSessions { result });
+                }) {
+                    let _ = updates.send(Update::ArchivedSessions { result: Err(error.to_string()) });
+                }
+            }
+            Command::SetSessionArchived { session_id, archived } => {
+                let replies = updates.clone();
+                let transports = transports.clone();
+                let id = session_id.clone();
+                if let Err(error) = std::thread::Builder::new().name("jcode-bridge-archive".into()).spawn(move || {
+                    let result = (|| -> Result<(), String> {
+                        let address = remote::SessionAddress::parse(&session_id)?;
+                        let client = match &address.host {
+                            Some(host) => transports.connect(host),
+                            None => connect("archive"),
+                        }.map_err(|error| error.to_string())?;
+                        let result = if archived {
+                            archive_sidebar_session(&client, &address.session_id)
+                        } else {
+                            client.restore_session(&address.session_id)
+                        };
+                        result.map_err(|error| error.to_string())
+                    })();
+                    let _ = replies.send(Update::SessionArchiveSettled {
+                        session_id, archived, error: result.err(),
+                    });
+                }) {
+                    let _ = updates.send(Update::SessionArchiveSettled {
+                        session_id: id, archived, error: Some(error.to_string()),
+                    });
+                }
             }
             Command::SetSessionSaved { session_id, saved } => {
                 let operation = SessionCommand::Operation(SessionOperation::SetSaved(saved, None));
@@ -1939,6 +2019,30 @@ fn set_saved_detached(
     }
 }
 
+fn archive_sidebar_session(client: &JcodeClient, id: &str) -> jcode_sdk::Result<()> {
+    match client.archive_session(id) {
+        Err(error)
+            if matches!(
+                error.kind,
+                jcode_sdk::ErrorKind::Harness(jcode_sdk::api::ErrorCode::UnknownSession)
+            ) => {}
+        result => return result,
+    }
+
+    // The list includes live drafts, but the archive API requires a snapshot.
+    // Bookmarking forces the first save even when the conversation is empty.
+    let session = client.attach_session(id)?;
+    let result = (|| {
+        client.set_session_saved(id, true, None)?;
+        if !session.saved {
+            client.set_session_saved(id, false, None)?;
+        }
+        client.archive_session(id)
+    })();
+    let _ = client.detach_session(id);
+    result
+}
+
 /// One session's dedicated API connection, including an adopted client's reconnect.
 fn session_worker_with_transports(
     session_id: String,
@@ -2322,12 +2426,18 @@ fn session_worker_with_connector(
                             });
                         }
                     }
-                    SessionCommand::RuntimeCommand(command, args) => {
-                        // Route through the session's own client and native id,
-                        // including remote transports, never the local runtime.
-                        match client.runtime_command(real_id, command, args) {
-                            Ok(mut output) => {
-                                output.session_id = session_id.clone();
+                    SessionCommand::RuntimeCommand(command, args, reply) => {
+                        // Use the session's native id on its own connection, including SSH.
+                        let result = client.runtime_command(real_id, command, args).map(|mut output| {
+                            output.session_id = session_id.clone();
+                            output
+                        });
+                        if let Some(reply) = reply {
+                            let _ = reply.try_send(result.map_err(|error| error.to_string()));
+                            continue;
+                        }
+                        match result {
+                            Ok(output) => {
                                 let _ = updates.send(Update::Event {
                                     session_id: session_id.clone(),
                                     event: ApiEvent::RuntimeCommandResult {

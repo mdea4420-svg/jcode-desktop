@@ -125,6 +125,24 @@ pub(super) const SLATE: Palette = Palette {
     warn: 0xe2c796,
 };
 
+// Warm paper surfaces and a terracotta accent for focus and links.
+pub(super) const TERRACOTTA: Palette = Palette {
+    bg: 0xf0ebe3,
+    panel: 0xfcf9f3,
+    raised: 0xece5db,
+    border: 0xcfc1b2,
+    text: 0x29241f,
+    muted: 0x63574c,
+    accent: 0x973f2a,
+    secondary: 0x526246,
+    keyword: 0x774365,
+    string: 0x416445,
+    number: 0x7b522a,
+    error: 0xa13838,
+    ok: 0x416445,
+    warn: 0x795317,
+};
+
 // Clean white paper and blue links, without cream or rose surface tints.
 pub(super) const PAPER: Palette = Palette {
     bg: 0xf0f1f3,

@@ -270,6 +270,7 @@ impl Panel {
             models,
             set_default: editor.set_default,
             model_catalog: editor.model_catalog,
+            model_settings: Default::default(),
         };
         if self.preview_state.is_some() || crate::harness::screenshot_mode() {
             editor.notice = Some((

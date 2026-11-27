@@ -358,6 +358,72 @@ pub fn set_display(key: &str, value: &str) -> Result<DisplayConfig, String> {
     Ok(next)
 }
 
+/// The saved preference, with live changes applied until restart.
+pub fn text_scale() -> f32 {
+    #[cfg(any(test, feature = "test-support"))]
+    let current = TEXT_SCALE.get();
+    #[cfg(not(any(test, feature = "test-support")))]
+    let current = *TEXT_SCALE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    current.unwrap_or_else(|| get().appearance.text_scale)
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+static TEXT_SCALE: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEXT_SCALE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn set_text_scale(percent: u16) -> std::io::Result<()> {
+    let scale = checked_text_scale(percent)?;
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let mut current = TEXT_SCALE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        persist_text_scale_at(&path(), std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(), scale)?;
+        *current = Some(scale);
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    TEXT_SCALE.set(Some(scale));
+    Ok(())
+}
+
+/// Isolate simulated settings changes, including when a test panics.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_test_text_scale<R>(run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<f32>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEXT_SCALE.set(self.0);
+        }
+    }
+    let _restore = Restore(TEXT_SCALE.replace(None));
+    run()
+}
+
+fn checked_text_scale(percent: u16) -> std::io::Result<f32> {
+    if !(75..=200).contains(&percent) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Text size must be 75–200%"));
+    }
+    Ok(f32::from(percent) / 100.0)
+}
+
+#[cfg(any(test, not(feature = "test-support")))]
+fn persist_text_scale_at(path: &std::path::Path, standalone: bool, scale: f32) -> std::io::Result<()> {
+    persist_value_at(path, standalone, "appearance", "text_scale", &format!("{scale:.2}"))
+}
+
+/// Whether this process is the renamed Simplified Chinese preview binary.
+pub fn is_zh_preview_executable() -> bool {
+    static PREVIEW: OnceLock<bool> = OnceLock::new();
+    *PREVIEW.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_stem().map(|name| name.to_os_string()))
+            .is_some_and(|name| name.eq_ignore_ascii_case("jcode-desktop-zh-cn"))
+    })
+}
+
 pub fn get() -> &'static DesktopConfig {
     CONFIG.get_or_init(load)
 }
@@ -1138,6 +1204,28 @@ mod tests {
         .unwrap();
         assert!(!config.workspace.sidebar);
         assert_eq!(config.appearance.text_scale, 1.0);
+    }
+
+    #[test]
+    fn text_scale_persists_and_preserves_other_appearance_settings() {
+        assert!(checked_text_scale(74).is_err());
+        assert!(checked_text_scale(201).is_err());
+        for standalone in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            let section = if standalone { "appearance" } else { "desktop.appearance" };
+            fs::write(&path, format!("# keep\n[{section}]\ntheme = \"terracotta\"\n")).unwrap();
+            for percent in [75, 115, 200, 100] {
+                let scale = checked_text_scale(percent).unwrap();
+                persist_text_scale_at(&path, standalone, scale).unwrap();
+                let text = fs::read_to_string(&path).unwrap();
+                let config = parse(&text, standalone).unwrap();
+                assert_eq!(config.appearance.text_scale, scale);
+                assert_eq!(config.appearance.theme, "terracotta");
+                assert!(text.starts_with("# keep\n"));
+                assert_eq!(text.matches("text_scale =").count(), 1);
+            }
+        }
     }
 
     #[test]

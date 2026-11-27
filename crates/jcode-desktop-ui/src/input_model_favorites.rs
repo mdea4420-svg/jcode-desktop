@@ -69,6 +69,7 @@ impl Store {
             let lists = store::Lists {
                 favorites: self.specs.to_vec(),
                 hidden_groups: self.hidden.to_vec(),
+                hidden_models: store::load(&path).hidden_models,
             };
             if let Err(error) = store::save(&path, &lists) {
                 eprintln!("[model-favorites] could not save: {error}");
