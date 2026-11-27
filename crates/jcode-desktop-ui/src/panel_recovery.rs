@@ -1,5 +1,6 @@
 //! Native recovery actions. Route changes never pass through the composer.
 use super::*;
+use crate::locale::tr;
 use gpui::AnyElement;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +143,8 @@ fn action_pill(id: &'static str, index: usize, label: &'static str) -> gpui::Sta
 
 impl Panel {
     pub(crate) fn toggle_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.effort_picker = None;
+        self.swarm.focus = None;
         if self.recovery_picker_open {
             self.recovery_picker_open = false;
         } else if self.model_browser.is_some() {
@@ -181,19 +184,20 @@ impl Panel {
                 div()
                     .flex()
                     .justify_between()
-                    .child("Choose a model")
+                    .child(tr("Choose a model", "选择模型"))
                     .child(
                         div()
                             .id("recovery-model-close")
                             .debug_selector(|| "recovery-model-close".into())
                             .cursor_pointer()
-                            .child("Close")
+                            .child(tr("Close", "关闭"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.recovery_picker_open = false;
                                 cx.notify();
                             })),
                     ),
             )
+            .child(tr("No models available yet.", "暂无可用模型。"))
             .when(self.available_models.is_empty(), |el| {
                 el.child(
                     div()
@@ -208,7 +212,7 @@ impl Panel {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                .child("Connect account")
+                                .child(tr("Connect account", "连接账户"))
                                 .on_click(cx.listener(|this, _, _, cx| this.open_login_picker(cx))),
                         )
                         .child(
@@ -220,7 +224,7 @@ impl Panel {
                                 .rounded_md()
                                 .cursor_pointer()
                                 .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                .child("Refresh choices")
+                                .child(tr("Refresh choices", "刷新模型列表"))
                                 .on_click(cx.listener(|this, _, _, _| {
                                     this.bridge.send(Command::RefreshRuntime {
                                         session_id: this.session_id.clone(),
@@ -267,11 +271,15 @@ impl Panel {
                     .child(copy_pill("recovery-copy", index, details))
                     .when(kind != RecoveryKind::Other, |el| {
                         el.child(
-                            action_pill("recovery-choose-model", index, "Choose model")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_recovery_models(cx);
-                                    cx.stop_propagation();
-                                })),
+                            action_pill(
+                                "recovery-choose-model",
+                                index,
+                                tr("Choose model", "选择模型"),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_recovery_models(cx);
+                                cx.stop_propagation();
+                            })),
                         )
                     })
                     .when(

@@ -98,10 +98,6 @@ pub(super) struct VoiceState {
     peak: f32,
     /// The end of this attempt was already logged.
     end_logged: bool,
-    /// The idle microphone/shortcut swap, animating in its own view.
-    swap: Option<Entity<VoiceSwap>>,
-    /// The colors last handed to `swap`.
-    swap_colors: Option<(gpui::Hsla, gpui::Hsla)>,
 }
 
 /// Timestamped voice lifecycle line in the Desktop log. Never transcript text.
@@ -913,10 +909,8 @@ impl Panel {
         )
     }
 
-    /// Voice pill on the right of the composer's pill row: microphone plus its
-    /// keybinding, so the shortcut is visible without hovering. While
-    /// voice is active it fills with the accent. No glow or halo.
-    pub(super) fn render_voice_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// In-box microphone button with its shortcut and state in the tooltip.
+    pub(super) fn render_voice_tab(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let phase = self.voice.phase;
         let active = phase != Phase::Idle;
@@ -929,56 +923,12 @@ impl Panel {
         let tooltip_status = voice_tooltip(label, &self.status_line());
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
         let size = VOICE_BUTTON_SIZE;
-        let keycap_color = if active {
-            theme.BG.opacity(0.8)
-        } else {
-            theme.TEXT_FAINT
-        };
-        // Idle, the button alternates between the microphone and its
-        // shortcut instead of showing both side by side. While voice is
-        // active, or with reduced motion, it holds the microphone.
-        let alternate =
-            !active && !cx.reduce_motion() && !crate::config::get().appearance.reduce_motion;
-        let faces = if alternate {
-            // The faces crossfade in their own small view, so each animation
-            // frame redraws only this button. Notifying the panel would
-            // rebuild the transcript and composer and everything observing
-            // the panel, 30 times a second during every crossfade.
-            let swap = self
-                .voice
-                .swap
-                .get_or_insert_with(|| cx.new(VoiceSwap::new))
-                .clone();
-            // Compare against the colors last handed over, not by reading the
-            // swap view: a view that reads another is built again whenever
-            // that one is updated.
-            let colors = (icon_color.into(), keycap_color.into());
-            if self.voice.swap_colors != Some(colors) {
-                self.voice.swap_colors = Some(colors);
-                swap.update(cx, |swap, cx| {
-                    swap.colors = Some(colors);
-                    cx.notify();
-                });
-            }
-            swap.into_any_element()
-        } else {
-            self.voice.swap = None;
-            self.voice.swap_colors = None;
-            div()
-                .absolute()
-                .inset_0()
-                .child(voice_microphone_face(icon_color.into()))
-                .child(voice_shortcut_face(keycap_color.into()).opacity(0.))
-                .into_any_element()
-        };
-        let button = div()
+        div()
             .id("voice-toggle")
             .debug_selector(|| "voice-toggle".into())
             .relative()
             .flex_none()
-            .h(px(size))
-            .min_w(px(size))
-            .px(px(5.5))
+            .size(px(size))
             .rounded_full()
             .overflow_hidden()
             .flex()
@@ -1000,17 +950,7 @@ impl Panel {
                 window.dispatch_action(Box::new(ToggleVoice), cx);
                 cx.stop_propagation();
             }))
-            // Invisible keycap sizes the pill so both faces fit.
-            .child(
-                div()
-                    .invisible()
-                    .child(voice_shortcut_keycap(keycap_color.into(), &theme)),
-            )
-            .child(faces);
-        div()
-            .flex_none()
-            .h(px(size))
-            .child(button)
+            .child(voice_microphone_face(icon_color.into()))
             .into_any_element()
     }
 }
@@ -1599,7 +1539,7 @@ mod tests {
                 let input = vcx.debug_bounds("prompt-input").unwrap();
                 let button = vcx.debug_bounds("voice-toggle").unwrap();
                 let icon = vcx.debug_bounds("voice-microphone-icon").unwrap();
-                let shortcut = vcx.debug_bounds("voice-shortcut").unwrap();
+                let editor = vcx.debug_bounds("prompt-editor").unwrap();
                 // The voice button sits inside the input box, at its right.
                 assert!(
                     button.left() >= input.left()
@@ -1612,15 +1552,10 @@ mod tests {
                     input.right() - button.right() < px(16.),
                     "voice hugs the input's right edge"
                 );
-                assert_eq!(button.size.height, px(VOICE_BUTTON_SIZE));
-                // Microphone and keybinding share one slot and alternate,
-                // rather than sitting side by side.
+                assert_eq!(button.size, gpui::size(px(VOICE_BUTTON_SIZE), px(VOICE_BUTTON_SIZE)));
                 assert!(icon.left() >= button.left() && icon.right() <= button.right());
-                assert!(shortcut.left() >= button.left() && shortcut.right() <= button.right());
-                assert!(
-                    icon.right() > shortcut.left() && shortcut.right() > icon.left(),
-                    "faces overlap in one slot: {icon:?} {shortcut:?}"
-                );
+                assert!(editor.right() <= button.left());
+                assert!(vcx.debug_bounds("voice-shortcut").is_none());
                 if phase == Phase::Idle {
                     assert!(
                         vcx.debug_bounds("voice-ready-status").is_none(),

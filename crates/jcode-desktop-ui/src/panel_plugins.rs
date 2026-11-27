@@ -1,5 +1,6 @@
 //! `/plugins` and plugin slash commands in the chat panel.
 use super::*;
+use crate::locale::{is_zh, tr};
 
 impl Panel {
     /// `/plugins [enable|disable|new|reload] [name]`.
@@ -15,25 +16,33 @@ impl Panel {
             ("list" | "status", _) => Item::Assistant(crate::plugins::summary_markdown()),
             ("enable" | "disable", Some(name)) => {
                 match crate::plugins::set_enabled(name, action == "enable") {
-                    Ok(report) => Item::Assistant(format!(
-                        "Plugin `{name}` {}d.\n\n{}",
-                        action,
-                        crate::plugins::report_markdown(&report)
-                    )),
+                    Ok(report) => {
+                        let summary = if is_zh() {
+                            let status = if action == "enable" { "开启" } else { "关闭" };
+                            format!("已{status}插件 `{name}`。")
+                        } else {
+                            format!("Plugin `{name}` {action}d.")
+                        };
+                        Item::Assistant(format!("{summary}\n\n{}", crate::plugins::report_markdown(&report)))
+                    }
                     Err(error) => Item::Error(error),
                 }
             }
             ("new", Some(name)) => match crate::plugins::create(name, code) {
                 Ok(root) => Item::Assistant(if code {
-                    format!(
-                        "Created a code plugin at `{}`. Edit `index.mjs`, then run `/plugins reload`. Try `/standup`, and open its panel from the sidebar after restarting Desktop.",
-                        root.display()
-                    )
+                    let path = root.display();
+                    if is_zh() {
+                        format!("已在 `{path}` 创建代码插件。编辑 `index.mjs` 后运行 `/plugins reload`。可试用 `/standup`，重启桌面端后可从侧栏打开插件面板。")
+                    } else {
+                        format!("Created a code plugin at `{path}`. Edit `index.mjs`, then run `/plugins reload`. Try `/standup`, and open its panel from the sidebar after restarting Desktop.")
+                    }
                 } else {
-                    format!(
-                        "Created a starter plugin at `{}`. Try `/hello`, then edit its files and run `/plugins reload`.",
-                        root.display()
-                    )
+                    let path = root.display();
+                    if is_zh() {
+                        format!("已在 `{path}` 创建示例插件。可先试用 `/hello`。编辑插件文件后，运行 `/plugins reload` 加载更改。")
+                    } else {
+                        format!("Created a starter plugin at `{path}`. Try `/hello`, then edit its files and run `/plugins reload`.")
+                    }
                 }),
                 Err(error) => Item::Error(error),
             },
@@ -41,7 +50,10 @@ impl Panel {
                 Item::Assistant(crate::plugins::report_markdown(&crate::plugins::sync_now()))
             }
             _ => Item::Error(
-                "Usage: `/plugins`, `/plugins enable <name>`, `/plugins disable <name>`, `/plugins new <name>`, `/plugins reload`.".into(),
+                tr(
+                    "Usage: `/plugins`, `/plugins enable <name>`, `/plugins disable <name>`, `/plugins new <name>`, `/plugins reload`.",
+                    "用法：`/plugins` 查看列表，`/plugins enable <name>` 开启，`/plugins disable <name>` 关闭，`/plugins new <name>` 新建，`/plugins reload` 重新加载。",
+                ).into(),
             ),
         };
         self.items.push(item);

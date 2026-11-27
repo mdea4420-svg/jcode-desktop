@@ -1,5 +1,6 @@
 //! A non-blocking startup notification with a three-second countdown.
 use super::*;
+use crate::locale::tr;
 use gpui::{Animation, AnimationExt};
 
 const COUNTDOWN: Duration = Duration::from_secs(3);
@@ -114,14 +115,17 @@ impl Workspace {
                             .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(theme.TEXT)
-                            .child("Jcode Desktop is in beta testing"),
+                            .child(tr("Jcode Desktop is in beta testing", "Jcode Desktop 正在测试阶段")),
                     )
                     .child(
                         div()
                             .debug_selector(|| "desktop-beta-message".into())
                             .text_size(px(12.0))
                             .text_color(theme.TEXT_DIM)
-                            .child("Expect bugs. Please report anything that goes wrong."),
+                            .child(tr(
+                                "Expect bugs. Please report anything that goes wrong.",
+                                "如遇异常问题欢迎随时反馈。",
+                            )),
                     ),
             )
             .child(
@@ -133,7 +137,9 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.ACCENT.opacity(0.15)))
                     .tooltip(|_, cx| {
-                        cx.new(|_| super::remotes::HeaderTooltip("Dismiss notification".into()))
+                        cx.new(|_| {
+                            super::remotes::HeaderTooltip(tr("Dismiss notification", "关闭提示").into())
+                        })
                             .into()
                     })
                     .on_click(cx.listener(|this, _, window, cx| {

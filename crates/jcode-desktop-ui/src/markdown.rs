@@ -1332,7 +1332,7 @@ fn code_block_with_selection(
                         div()
                             .flex_none()
                             .font_family(Theme::global().FONT_MONO)
-                            .text_size(px(12.5))
+                            .text_size(px(12.5 * crate::config::text_scale()))
                             .line_height(relative(1.5))
                             .text_color(Theme::global().CODE_GUTTER)
                             .text_right()
@@ -1905,7 +1905,7 @@ fn render_document_with_prompt_background(
                     .when(!reasoning, |el| el.mt_2())
                     .child(
                         div()
-                            .text_size(size)
+                            .text_size(size * crate::config::text_scale())
                             .font_weight(weight)
                             .text_color(if reasoning {
                                 Theme::global().REASONING
@@ -1922,7 +1922,7 @@ fn render_document_with_prompt_background(
             }
             Block::Reasoning(text) => div()
                 .debug_selector(|| "restored-reasoning".into())
-                .text_size(px(12.0))
+                .text_size(px(12.0 * crate::config::text_scale()))
                 .text_color(Theme::global().REASONING)
                 .line_height(relative(1.55))
                 .child(render_document_with_prompt_background(
@@ -2124,7 +2124,7 @@ fn list_row(
                 .flex_none()
                 .min_w(px(14.0))
                 .text_color(marker_color)
-                .text_size(px(12.5))
+                .text_size(px(12.5 * crate::config::text_scale()))
                 .line_height(relative(1.55))
                 .child(marker),
         )
@@ -2178,7 +2178,7 @@ fn table(
         .rounded_md()
         .border_1()
         .border_color(Theme::global().PANEL_BORDER)
-        .text_size(px(12.5))
+        .text_size(px(12.5 * crate::config::text_scale()))
         .child(
             div()
                 .flex()

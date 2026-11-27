@@ -1,5 +1,6 @@
 //! Read-only update summary and versioned history.
 use super::*;
+use crate::locale::{is_zh, tr};
 use crate::update_notes::{self, View};
 
 /// Comfortable reading measure. Long lines are hard to track back to the
@@ -14,6 +15,27 @@ const PROSE_FONT: &str = ".SystemUIFont";
 const PROSE_FONT: &str = "Segoe UI";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const PROSE_FONT: &str = "Inter";
+
+fn localized_release_text(text: &str) -> &str {
+    if !is_zh() {
+        return text;
+    }
+    match text {
+        "Past sessions are back in the sidebar." => "历史会话重新显示在侧栏。",
+        "The sidebar lists every past session again instead of hiding older ones behind Show past sessions. Past sessions sit below live ones with dimmer titles." =>
+            "侧栏直接列出所有历史会话。它们显示在进行中的会话下方，标题使用较淡的颜色。",
+        "Windows finds and starts the bundled harness bridge automatically, recovers dropped named-pipe connections, and restores the existing window when the app is reopened." =>
+            "Windows 版会自动查找并启动随附的会话桥接程序，在命名管道断开后重新连接，并在再次打开应用时恢复已有窗口。",
+        "Windows cold starts launch exactly one harness bridge. A reconnect during startup no longer spawns a duplicate." =>
+            "Windows 版冷启动时只启动一个会话桥接程序，启动期间重新连接也不会重复启动。",
+        "Highlights" => "更新亮点",
+        "Improvements" => "改进",
+        "Fixes" => "修复",
+        "No new changes in this build" => "此构建暂无新增变更",
+        "Latest updates" => "最新更新",
+        _ => text,
+    }
+}
 
 // One sentence per row with a quiet bullet. No bold leads: they made every
 // row compete for attention.
@@ -226,7 +248,7 @@ impl Panel {
                                             .text_size(px(24.))
                                             .line_height(px(32.))
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .child(overview.headline.unwrap_or(overview.title)),
+                                            .child(localized_release_text(overview.headline.as_deref().unwrap_or(&overview.title)).to_owned()),
                                     )
                                     .child(running_build()),
                             )
@@ -249,8 +271,8 @@ impl Panel {
                                     .flex()
                                     .flex_col()
                                     .gap(px(12.))
-                                    .child(section_label(section.label))
-                                    .child(update_entries(section.entries))
+                                    .child(section_label(localized_release_text(&section.label).to_owned()))
+                                    .child(update_entries(section.entries.into_iter().map(|entry| localized_release_text(&entry).to_owned()).collect()))
                             })),
                     );
                 } else {
@@ -261,7 +283,7 @@ impl Panel {
                         .flex()
                         .flex_col()
                         .gap_3()
-                        .child(section_label(summary.heading))
+                        .child(section_label(localized_release_text(&summary.heading).to_owned()))
                         .when(!summary.entries.is_empty(), |el| {
                             el.child(update_entries(summary.entries.clone()))
                         })
@@ -269,7 +291,7 @@ impl Panel {
                             el.child(
                                 div()
                                     .text_color(theme.TEXT_DIM)
-                                    .child("Git history wasn’t included in this build."),
+                                    .child(tr("Git history wasn’t included in this build.", "此构建未包含 Git 历史记录。")),
                             )
                             .when(!has_overview, |el| {
                                 el.child(markdown::render(
@@ -291,10 +313,12 @@ impl Panel {
                                         panel.changelog_view = View::History;
                                         cx.notify();
                                     }))
-                                    .child(if summary.remaining > 0 {
-                                        format!("See all changes · {} more", summary.remaining)
+                                    .child(if summary.remaining == 0 {
+                                        tr("See all changes", "查看全部变更").into()
+                                    } else if is_zh() {
+                                        format!("查看全部变更 · 还有 {} 条", summary.remaining)
                                     } else {
-                                        "See all changes".into()
+                                        format!("See all changes · {} more", summary.remaining)
                                     }),
                             ),
                         ),
@@ -373,17 +397,17 @@ impl Panel {
                                 .mr_2()
                                 .text_size(px(14.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("Changelog"),
+                                .child(tr("Changelog", "更新日志")),
                         )
                         .child(self.update_view_button(
                             View::Latest,
-                            "Highlights",
+                            tr("Highlights", "更新亮点"),
                             "updates-latest",
                             cx,
                         ))
                         .child(self.update_view_button(
                             View::History,
-                            "All changes",
+                            tr("All changes", "全部变更"),
                             "updates-history",
                             cx,
                         ))
@@ -398,7 +422,7 @@ impl Panel {
                                         cx,
                                     )
                                 })
-                                .child("Close"),
+                                .child(tr("Close", "关闭")),
                         ),
                 ),
             )

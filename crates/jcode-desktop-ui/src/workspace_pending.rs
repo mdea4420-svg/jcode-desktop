@@ -34,7 +34,81 @@ pub(super) fn remote_draft_host(id: &str) -> Option<&str> {
     (!request.is_empty() && crate::remote_targets::validate_host(host).is_ok()).then_some(host)
 }
 
+pub(super) fn draft_session_info(
+    session_id: String,
+    title: Option<String>,
+    working_dir: Option<String>,
+) -> jcode_sdk::SessionInfo {
+    jcode_sdk::SessionInfo {
+        user_connected: false,
+        session_id,
+        title,
+        working_dir,
+        status: "starting".into(),
+        transcript_bytes: None,
+        saved: false,
+        updated_at_ms: None,
+        last_active_at_ms: None,
+        archived: false,
+        archived_at_ms: None,
+        save_label: None,
+        parent_session_id: None,
+        agent_label: None,
+        swarm_status: None,
+        edit_stats: None,
+    }
+}
+
 impl Workspace {
+    pub(super) fn activate_or_open_project_directory(
+        &mut self,
+        directory: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = self.project_key_for_directory(&directory);
+        self.sidebar_projects.collapsed.insert(key, false);
+        let replace = self.slots.get(self.active).filter(|slot| {
+            let panel = slot.panel.read(cx);
+            !slot.closing && panel.is_untouched_empty_chat()
+                && !self.sessions.iter().any(|session| {
+                    session.session_id == panel.session_id
+                        && (session.saved || session.transcript_bytes.is_some_and(|bytes| bytes > 0))
+                })
+        });
+        let Some(slot) = replace else {
+            self.open_local_draft(Some(directory), cx);
+            return;
+        };
+        let old = slot.panel.read(cx);
+        if old.working_dir.as_deref() == Some(directory.as_str()) {
+            self.set_active(self.active, cx);
+            self.focus_pending = true;
+            return;
+        }
+        let draft = old.input.read(cx).snapshot();
+        let old_id = old.session_id.clone();
+        if !Panel::is_pending_session_id(&old_id) {
+            self.bridge.send(Command::Unwatch { session_id: old_id.clone() });
+            self.sessions.retain(|session| session.session_id != old_id);
+        }
+
+        let request_id = next_draft_id();
+        let panel = self.new_session_panel(request_id.clone(), Some("New session".into()), Some(directory.clone()), cx);
+        panel.read(cx).input.clone().update(cx, |input, cx| input.restore(draft, cx));
+        self.slots[self.active].panel = panel;
+        for (pending, _) in &mut self.pending_collection_drafts {
+            if *pending == old_id {
+                pending.clone_from(&request_id);
+            }
+        }
+        self.set_active(self.active, cx);
+        self.focus_pending = true;
+        self.bridge.send(Command::CreateSession {
+            working_dir: Some(directory),
+            request_id: Some(request_id),
+        });
+    }
+
     pub(super) fn open_default_draft(&mut self, directory: Option<String>, cx: &mut Context<Self>) {
         if let Some(host) = self.remotes.default_host.clone() {
             self.open_remote_draft(host, cx);
@@ -109,27 +183,7 @@ impl Workspace {
         title: String,
         cx: &mut Context<Self>,
     ) {
-        let inserted = self.open_session(
-            jcode_sdk::SessionInfo {
-                user_connected: false,
-                session_id: request_id.clone(),
-                title: Some(title),
-                working_dir: directory.clone(),
-                status: "starting".into(),
-                transcript_bytes: None,
-                saved: false,
-                updated_at_ms: None,
-                last_active_at_ms: None,
-                archived: false,
-                archived_at_ms: None,
-                save_label: None,
-                parent_session_id: None,
-                agent_label: None,
-                swarm_status: None,
-                edit_stats: None,
-            },
-            cx,
-        );
+        let inserted = self.open_session(draft_session_info(request_id, Some(title), directory), cx);
         // The editor must be hit-testable and visible in the very next frame,
         // rather than waiting for either backend creation or a width tween.
         // Snap sibling demotions too. Otherwise the old full-width panel can

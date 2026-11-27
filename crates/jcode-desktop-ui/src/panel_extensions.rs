@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::extensions::{ExtensionPaths, ExtensionTab, mcp, skills};
+use crate::locale::tr;
 
 /// The overlay's open state. Lists are read once on open and after each
 /// edit — reads are a handful of small JSON files and directory scans,
@@ -43,6 +44,7 @@ pub(super) struct ExtensionsState {
     pub mcp_form: Option<McpForm>,
     /// New-skill form.
     pub skill_form: Option<SkillForm>,
+    pub plugin_form: Option<PluginForm>,
     /// Import-skill path field (folder picker fallback).
     pub skill_import: Option<Entity<PromptInput>>,
     /// Error line from the last failed mutation.
@@ -105,6 +107,12 @@ pub(super) struct SkillForm {
     pub error: Option<String>,
 }
 
+pub(super) struct PluginForm {
+    pub name: Entity<PromptInput>,
+    pub code: bool,
+    pub error: Option<String>,
+}
+
 /// One row of the Plugins tab.
 pub(super) struct PluginRow {
     pub name: String,
@@ -113,6 +121,13 @@ pub(super) struct PluginRow {
     pub code: bool,
     pub source: String,
     pub enabled: bool,
+    pub root: PathBuf,
+    pub description: Option<String>,
+    pub commands: Vec<String>,
+    pub skills: usize,
+    pub hook_events: usize,
+    pub mcp_servers: usize,
+    pub applets: usize,
 }
 
 thread_local! {
@@ -125,20 +140,15 @@ impl ExtensionsState {
     pub(super) fn reload(&mut self) {
         self.mcp = mcp::list_mcp(&self.paths);
         self.skills = skills::list_skills(&self.paths);
-        let (plugins, errors) = crate::plugins::plugins();
-        self.plugins = plugins
-            .iter()
-            .map(|plugin| PluginRow {
-                name: plugin.name.clone(),
-                version: plugin.version.clone().unwrap_or_default(),
-                code: plugin.main_script().is_some() || plugin.code.is_some(),
-                source: plugin.source.label().to_string(),
-                enabled: plugin.enabled,
-            })
-            .collect();
-        self.mcp
-            .notices
-            .extend(errors.into_iter().map(|error| format!("plugins: {error}")));
+        let (plugins, errors) = crate::plugins::plugins_in(&self.plugin_layout());
+        self.plugins = plugins.iter().map(PluginRow::from_plugin).collect();
+        self.mcp.notices.extend(errors.into_iter().map(|error| {
+            format!("{}{error}", tr("plugins: ", "插件："))
+        }));
+    }
+
+    pub(super) fn plugin_layout(&self) -> jcode_plugins::Layout {
+        crate::plugins::layout_for_paths(&self.paths)
     }
 
     pub(super) fn query(&self, cx: &App) -> String {
@@ -210,7 +220,7 @@ impl Panel {
         );
         let Some(paths) = paths else {
             self.items.push(Item::Error(
-                "Extensions need a home directory (`~/.jcode`).".into(),
+                tr("Extensions need a home directory (`~/.jcode`).", "扩展需要可用的主目录（`~/.jcode`）。").into(),
             ));
             cx.notify();
             return;
@@ -231,6 +241,8 @@ impl Panel {
         self.login = None;
         self.recovery_picker_open = false;
         self.model_browser = None;
+        self.swarm.focus = None;
+        self.effort_picker = None;
         if self.model_picker_open {
             self.close_model_picker(cx);
         }
@@ -244,12 +256,12 @@ impl Panel {
         let weak = cx.weak_entity();
         let cancel = weak.clone();
         let search = cx.new(|cx| {
-            let mut search = PromptInput::new(cx, "Filter…", |_, _, _, _| {})
+            let mut search = PromptInput::new(cx, crate::locale::tr("Filter…", "筛选…"), |_, _, _, _| {})
                 .without_command_completion()
                 .with_on_overlay_cancel(move |app| {
                     let restored = cancel.update(app, |panel, cx| {
-                        panel.close_extensions(cx);
-                        Some(panel.input_focus_handle(cx))
+                        panel.extensions_cancel(cx);
+                        panel.extensions.is_none().then(|| panel.input_focus_handle(cx))
                     });
                     if let Ok(Some(focus)) = &restored
                         && let Some(window) = app.active_window()
@@ -286,6 +298,7 @@ impl Panel {
             confirm: None,
             mcp_form: None,
             skill_form: None,
+            plugin_form: None,
             skill_import: None,
             error: None,
         };
@@ -356,7 +369,7 @@ impl Panel {
 
     /// The cancel callback every form field shares: backs out of a sub-view
     /// (form, confirm) first, closes the overlay from the list.
-    fn extensions_cancel(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(super) fn extensions_cancel(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(state) = self.extensions.as_mut() else {
             return false;
         };
@@ -364,6 +377,8 @@ impl Panel {
             state.mcp_form = None;
         } else if state.skill_form.is_some() {
             state.skill_form = None;
+        } else if state.plugin_form.take().is_some() {
+            state.focus_pending = true;
         } else if state.skill_import.is_some() {
             state.skill_import = None;
         } else if state.confirm.is_some() {
@@ -402,16 +417,9 @@ impl Panel {
         let skill_count = state.skills.len();
         let plugin_count = state.plugins.len();
         let active = state.tab;
-        let tab_pill = |tab: ExtensionTab, label: String, cx: &mut Context<Self>| {
-            pill(
-                format!("extensions-tab-{}", label.clone()),
-                format!(
-                    "extensions-tab-{}",
-                    label.split(' ').next().unwrap_or_default().to_lowercase()
-                ),
-                label,
-                active == tab,
-            )
+        let tab_pill = |tab: ExtensionTab, slug: &'static str, label: String, cx: &mut Context<Self>| {
+            let id = format!("extensions-tab-{slug}");
+            pill(id.clone(), id, label, active == tab)
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -421,6 +429,9 @@ impl Panel {
                         state.error = None;
                         state.mcp_form = None;
                         state.skill_form = None;
+                        if state.plugin_form.take().is_some() {
+                            state.focus_pending = true;
+                        }
                         state.skill_import = None;
                         state.scroll.set_offset(point(px(0.), px(0.)));
                         LAST_TAB.with(|last| last.set(tab));
@@ -438,7 +449,7 @@ impl Panel {
         let body = match active {
             ExtensionTab::Mcp => self.render_extensions_mcp(&query, cx),
             ExtensionTab::Skills => self.render_extensions_skills(&query, cx),
-            ExtensionTab::Plugins => self.render_extensions_plugins(cx),
+            ExtensionTab::Plugins => self.render_extensions_plugins(&query, cx),
             ExtensionTab::Last => unreachable!("Last resolves at open"),
         };
 
@@ -527,22 +538,25 @@ impl Panel {
                                                 .flex_none()
                                                 .text_size(px(14.))
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                .child("Extensions"),
+                                                .child(crate::locale::tr("Extensions", "扩展管理")),
                                         )
                                         .child(div().flex_1().min_w_0())
                                         .child(tab_pill(
                                             ExtensionTab::Mcp,
+                                            "mcp",
                                             format!("MCP {mcp_count}"),
                                             cx,
                                         ))
                                         .child(tab_pill(
                                             ExtensionTab::Skills,
-                                            format!("Skills {skill_count}"),
+                                            "skills",
+                                            format!("{} {skill_count}", crate::locale::tr("Skills", "技能")),
                                             cx,
                                         ))
                                         .child(tab_pill(
                                             ExtensionTab::Plugins,
-                                            format!("Plugins {plugin_count}"),
+                                            "plugins",
+                                            format!("{} {plugin_count}", crate::locale::tr("Plugins", "插件")),
                                             cx,
                                         ))
                                         .child(
@@ -561,7 +575,7 @@ impl Panel {
                                             pill(
                                                 "extensions-close",
                                                 "extensions-close".to_string(),
-                                                "Close",
+                                                crate::locale::tr("Close", "关闭"),
                                                 false,
                                             )
                                             .on_mouse_down(
@@ -607,7 +621,7 @@ impl Panel {
                                         .flex_none()
                                         .text_size(px(10.))
                                         .text_color(theme.TEXT_FAINT)
-                                        .child("Changes apply to new sessions."),
+                                        .child(tr("Changes apply to new sessions.", "更改会在新会话中生效。")),
                                 ),
                         ),
                 )
@@ -643,6 +657,10 @@ pub(super) fn screenshot_fixture_paths() -> (ExtensionPaths, tempfile::TempDir) 
     let jcode_home = base.join("jcode_home");
     let user_home = base.join("home");
     let project = base.join("project");
+    if screenshot_tab() == Some(ExtensionTab::Plugins) {
+        jcode_plugins::scaffold::create(&jcode_home.join("plugins"), "project-notes")
+            .expect("offline plugins fixture");
+    }
     let put = |path: PathBuf, text: &str| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, text).unwrap();

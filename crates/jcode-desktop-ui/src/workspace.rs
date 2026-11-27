@@ -4,6 +4,8 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+use crate::locale::{is_zh, tr};
+
 #[path = "workspace_commands.rs"]
 mod commands;
 
@@ -39,6 +41,9 @@ mod changelog_panel;
 #[path = "workspace_publish.rs"]
 mod publish_panel;
 
+#[path = "workspace_project_creation.rs"]
+mod project_creation;
+
 #[path = "workspace_responsive.rs"]
 mod responsive;
 
@@ -52,16 +57,22 @@ pub(crate) mod change_review;
 mod account_menu;
 #[path = "sidebar_account.rs"]
 mod sidebar_account;
+#[path = "sidebar_runtime.rs"]
+mod sidebar_runtime;
 #[path = "sidebar_collections.rs"]
 mod sidebar_collections;
 #[path = "sidebar_edits.rs"]
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
 mod sidebar_gesture;
+#[path = "sidebar_project_menu.rs"]
+mod sidebar_project_menu;
 #[path = "sidebar_projects.rs"]
 mod sidebar_projects;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
+#[path = "sidebar_session_archive.rs"]
+mod sidebar_session_archive;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
 #[path = "sidebar_worktrees.rs"]
@@ -622,6 +633,8 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     sidebar_view: SidebarView,
     #[serde(default)]
+    recent_sessions_collapsed: bool,
+    #[serde(default)]
     tutorial_page: usize,
     slots: Vec<SlotSnapshot>,
     active: usize,
@@ -636,6 +649,8 @@ pub struct WorkspaceSnapshot {
     hints_overlay: bool,
     #[serde(default)]
     folder_picker_sets_default: bool,
+    #[serde(default)]
+    folder_picker_creates_project: bool,
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
     folder_search: Option<PromptInputSnapshot>,
@@ -748,17 +763,21 @@ pub struct Workspace {
     show_beta_notice: bool,
     account_sign_in: account_sign_in::State,
     account_menu: account_menu::State,
+    sidebar_runtime: sidebar_runtime::State,
     compact_sidebar_open: bool,
     compact_sidebar_motion: responsive::VisibilityMotion,
     last_canvas_width: Option<f32>,
     // Temporarily hidden. Keep the renderer available for re-enabling later.
     show_minimap: bool,
+    text_scale_error: Option<String>,
     layout_mode: crate::config::LayoutMode,
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
+    recent_sessions_collapsed: bool,
     worktrees: sidebar_worktrees::State,
     /// User-created collections of sessions (issue #7).
     collections: sidebar_collections::State,
+    session_archive: sidebar_session_archive::State,
     /// Drafts started inside a collection: (draft request id, collection id).
     pending_collection_drafts: Vec<(String, String)>,
     tutorial_page: usize,
@@ -832,6 +851,7 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_projects: sidebar_projects::State,
+    project_menu: sidebar_project_menu::State,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     /// Session row under the pointer. Hovering swaps its spinner for actions.
@@ -859,8 +879,10 @@ pub struct Workspace {
     gesture_seen: Option<Instant>,
     /// Settles horizontal strip pans onto the nearest panel edge.
     scroll_snap: scroll_snap::ScrollSnap,
+    project_folder_menu: Option<gpui::Point<gpui::Pixels>>,
     /// Saving a preference rather than opening a new session.
     folder_picker_sets_default: bool,
+    folder_picker_creates_project: bool,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
@@ -1082,7 +1104,9 @@ impl Workspace {
             show_beta_notice: snapshot.is_none() && !single_panel,
             account_sign_in: account_sign_in::State::startup(),
             account_menu: account_menu::State::startup(),
+            sidebar_runtime: sidebar_runtime::State::default(),
             show_minimap: false,
+            text_scale_error: None,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
             sidebar_custom_width: SIDEBAR_WIDTH,
@@ -1092,8 +1116,10 @@ impl Workspace {
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            recent_sessions_collapsed: false,
             worktrees: sidebar_worktrees::State::default(),
             collections: Default::default(),
+            session_archive: Default::default(),
             pending_collection_drafts: Vec::new(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
@@ -1148,6 +1174,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_projects: Default::default(),
+            project_menu: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -1162,7 +1189,9 @@ impl Workspace {
             gesture: StripGesture::default(),
             gesture_seen: None,
             scroll_snap: Default::default(),
+            project_folder_menu: None,
             folder_picker_sets_default: false,
+            folder_picker_creates_project: false,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -1467,18 +1496,22 @@ impl Workspace {
             show_beta_notice: false,
             account_sign_in: account_sign_in::State::default(),
             account_menu: account_menu::State::default(),
+            sidebar_runtime: sidebar_runtime::State::default(),
             show_sidebar: true,
             sidebar_custom_width: SIDEBAR_WIDTH,
             sidebar_resizing: false,
             show_minimap: false,
+            text_scale_error: None,
             layout_mode: crate::config::LayoutMode::FolderTabs,
             folder_frame: Default::default(),
             compact_sidebar_open: false,
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
+            recent_sessions_collapsed: false,
             worktrees: sidebar_worktrees::State::default(),
             collections: Default::default(),
+            session_archive: Default::default(),
             pending_collection_drafts: Vec::new(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
@@ -1533,6 +1566,7 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_projects: Default::default(),
+            project_menu: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -1547,7 +1581,9 @@ impl Workspace {
             gesture: StripGesture::default(),
             gesture_seen: None,
             scroll_snap: Default::default(),
+            project_folder_menu: None,
             folder_picker_sets_default: false,
+            folder_picker_creates_project: false,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -1656,6 +1692,7 @@ impl Workspace {
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
             sidebar_view: self.sidebar_view,
+            recent_sessions_collapsed: self.recent_sessions_collapsed,
             tutorial_page: self.tutorial_page,
             slots: slots
                 .iter()
@@ -1684,6 +1721,7 @@ impl Workspace {
             overview: self.overview,
             hints_overlay: self.hints_overlay,
             folder_picker_sets_default: self.folder_picker_sets_default,
+            folder_picker_creates_project: self.folder_picker_creates_project,
             folder_picker_dir: self.folder_picker_dir.clone(),
             folder_picker_error: self.folder_picker_error.clone(),
             folder_search,
@@ -1696,6 +1734,7 @@ impl Workspace {
         self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
         self.sidebar_view = snapshot.sidebar_view;
+        self.recent_sessions_collapsed = snapshot.recent_sessions_collapsed;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
         // Saved indices refer to the saved slot list. Some saved slots are
@@ -1917,6 +1956,7 @@ impl Workspace {
             transition::policy(Transition::Hints).duration,
         );
         self.folder_picker_sets_default = snapshot.folder_picker_sets_default;
+        self.folder_picker_creates_project = snapshot.folder_picker_creates_project;
         self.folder_picker_dir = snapshot.folder_picker_dir;
         self.folder_picker_error = snapshot.folder_picker_error;
         self.focus_restore = match snapshot.focus {
@@ -1942,16 +1982,27 @@ impl Workspace {
         let weak = cx.weak_entity();
         let change_weak = weak.clone();
         let cancel = weak.clone();
+        let creating = self.folder_picker_creates_project;
         cx.new(|cx| {
-            PromptInput::new(
+            let input = PromptInput::new(
                 cx,
                 if self.folder_picker_sets_default {
-                    "enter a directory path, then press enter to set default"
+                    tr("enter a directory path, then press enter to set default", "输入目录路径，按回车设为默认目录")
+                } else if self.folder_picker_creates_project {
+                    tr("Enter a project name", "输入项目名称")
                 } else {
-                    "type a folder name or path, then press enter"
+                    tr("type a folder name or path, then press enter", "输入文件夹名称或路径，按回车打开")
                 },
                 move |query, _, _, app| {
-                    let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+                    if creating {
+                        // The input is still being updated by its Submit action.
+                        let weak = weak.clone();
+                        app.defer(move |app| {
+                            let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+                        });
+                    } else {
+                        let _ = weak.update(app, |this, cx| this.open_searched_folder(&query, cx));
+                    }
                 },
             )
             .with_on_overlay_cancel(move |app| {
@@ -1959,8 +2010,18 @@ impl Workspace {
                 true
             })
             .with_on_change(move |_, app| {
-                let _ = change_weak.update(app, |_, cx| cx.notify());
-            })
+                let _ = change_weak.update(app, |this, cx| {
+                    if this.folder_picker_creates_project {
+                        this.folder_picker_error = None;
+                    }
+                    cx.notify();
+                });
+            });
+            if creating {
+                input.without_command_completion().with_untrimmed_submission()
+            } else {
+                input
+            }
         })
     }
 
@@ -2066,6 +2127,7 @@ impl Workspace {
     /// sidebar and every open panel for no user-visible result.
     fn apply(&mut self, mut update: Update, cx: &mut Context<Self>) -> bool {
         if let Update::Sessions { sessions } = &mut update {
+            sessions.retain(|session| !self.session_archive.excludes(&session.session_id));
             // A desktop window can disappear while its daemon-owned sessions keep
             // running. Those panels are restored from the workspace snapshot before
             // the asynchronous session catalog arrives. Older runtimes and bounded
@@ -2074,6 +2136,7 @@ impl Workspace {
             for slot in &self.slots {
                 let panel = slot.panel.read(cx);
                 if !panel.session_id.starts_with("session_")
+                    || self.session_archive.excludes(&panel.session_id)
                     || sessions
                         .iter()
                         .any(|session| session.session_id == panel.session_id)
@@ -2139,11 +2202,10 @@ impl Workspace {
                 self.status = "connected".into();
                 if let Some(state) = self.resume.as_mut() {
                     state.start_on_close = true;
-                } else if self
-                    .slots
-                    .get(self.active)
-                    .is_some_and(|slot| slot.panel.read(cx).is_startup_draft())
-                {
+                } else if self.slots.get(self.active).is_some_and(|slot| {
+                    let panel = slot.panel.read(cx);
+                    panel.is_startup_draft() || panel.is_changelog()
+                }) {
                     self.start_default_startup(cx);
                 }
             }
@@ -2425,6 +2487,10 @@ impl Workspace {
                 }
                 self.bridge.send(Command::RefreshSessions);
             }
+            Update::SessionArchiveSettled { session_id, archived, error } => {
+                self.settle_sidebar_archive(session_id, archived, error);
+            }
+            Update::ArchivedSessions { result } => self.load_sidebar_archive(result),
             Update::SessionSaveFailed {
                 session_id,
                 saved,
@@ -2448,7 +2514,6 @@ impl Workspace {
                 // Undo the optimistic sidebar state from a pin click.
                 self.bridge.send(Command::RefreshSessions);
             }
-            Update::ArchivedSessions { .. } | Update::SessionArchiveSettled { .. } => {}
             Update::TodoState { session_id, state } => {
                 for slot in &self.slots {
                     if slot.panel.read(cx).session_id == session_id {
@@ -2530,23 +2595,25 @@ impl Workspace {
         true
     }
 
+    fn new_session_panel(
+        &self,
+        session_id: String,
+        title: Option<String>,
+        directory: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Entity<Panel> {
+        let panel = cx.new(|cx| Panel::new(session_id, title, directory, self.bridge.clone(), cx));
+        Panel::connect_input(&panel, cx);
+        panel
+    }
+
     /// Open `session` as a panel immediately to the right of the focused panel,
     /// mirroring niri's "new column opens right of the focused column".
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
         let width_fraction = spawned_panel_width(self.row_indices(self.active_row).count());
-        let bridge = self.bridge.clone();
         let session_id = session.session_id.clone();
-        let panel = cx.new(|cx| {
-            Panel::new(
-                session.session_id.clone(),
-                session.title.clone(),
-                session.working_dir.clone(),
-                bridge,
-                cx,
-            )
-        });
-        Panel::connect_input(&panel, cx);
+        let panel = self.new_session_panel(session_id.clone(), session.title, session.working_dir, cx);
         if !Panel::is_pending_session_id(&session_id) {
             panel.update(cx, |panel, cx| panel.prefetch_persisted_history(cx));
             self.bridge.send(Command::Watch { session_id });
@@ -3784,14 +3851,25 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Open Jcode's own directory browser. This deliberately does not call the
-    /// platform path prompt, so the workflow stays inside the application.
-    /// A session's working directory is fixed by the runtime, so choosing a
-    /// different folder intentionally opens a new session instead of silently
-    /// changing the meaning of an existing transcript.
+    /// The Chinese preview uses the platform folder prompt for project selection.
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if is_zh() {
+            self.choose_existing_project_folder(window, cx);
+        } else {
+            self.show_project_folder_picker(false, window, cx);
+        }
+    }
+
+    fn show_project_folder_picker(
+        &mut self,
+        create: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_folder_menu = None;
         self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
+        self.folder_picker_creates_project = create;
         self.folder_picker_dir = Some(
             self.default_working_dir()
                 .map(PathBuf::from)
@@ -3809,6 +3887,10 @@ impl Workspace {
     }
 
     fn open_searched_folder(&mut self, query: &str, cx: &mut Context<Self>) {
+        if self.folder_picker_creates_project {
+            self.create_project_folder(query, cx);
+            return;
+        }
         if self.folder_picker_sets_default {
             self.set_searched_default_directory(query, cx);
             return;
@@ -3860,6 +3942,46 @@ impl Workspace {
         cx.notify();
     }
 
+    fn create_project_folder(&mut self, draft: &str, cx: &mut Context<Self>) {
+        let Some(parent) = self.folder_picker_dir.as_ref() else {
+            return;
+        };
+        let name = draft.trim();
+        if !project_creation::valid_project_name(name) {
+            self.folder_picker_error = Some(tr(
+                "Enter a single folder name of up to 80 characters.",
+                "请输入不超过 80 个字符的有效文件夹名称。",
+            ).into());
+            self.restore_project_name_draft(draft, cx);
+            cx.notify();
+            return;
+        }
+        let path = parent.join(name);
+        if let Err(error) = std::fs::create_dir(&path) {
+            self.folder_picker_error = Some(if is_zh() {
+                format!("无法创建文件夹「{}」：{error}", path.display())
+            } else {
+                format!("Could not create ‘{}’: {error}", path.display())
+            });
+            self.restore_project_name_draft(draft, cx);
+            cx.notify();
+            return;
+        }
+        self.close_folder_picker(cx);
+        let directory = path.to_string_lossy().into_owned();
+        self.register_project(&directory);
+        self.activate_or_open_project_directory(directory, cx);
+    }
+
+    fn restore_project_name_draft(&self, draft: &str, cx: &mut Context<Self>) {
+        if !draft.is_empty()
+            && let Some(search) = &self.folder_search
+            && search.read(cx).content.is_empty()
+        {
+            search.update(cx, |input, cx| input.set_content(draft.to_owned(), cx));
+        }
+    }
+
     fn choose_browsed_folder(&mut self, cx: &mut Context<Self>) {
         if self.folder_picker_sets_default {
             if let Some(path) = self.folder_picker_dir.clone() {
@@ -3883,6 +4005,7 @@ impl Workspace {
     fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
         self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
+        self.folder_picker_creates_project = false;
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
         self.folder_search = None;
@@ -5424,7 +5547,8 @@ impl Workspace {
         self.daemon_running.get(session_id).cloned()
     }
 
-    fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_sidebar(&mut self, fullscreen: bool, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.project_menu.load();
         let active_id = self
             .slots
             .get(self.active)
@@ -5503,6 +5627,7 @@ impl Workspace {
                 });
             }
         }
+        catalog.retain(|session| !self.session_archive.excludes(&session.session_id));
         let ordered_sessions = sidebar_session_order(&catalog);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
@@ -5543,6 +5668,27 @@ impl Workspace {
             .filter(|slot| slot.closing)
             .map(|slot| slot.panel.read(cx).session_id.clone())
             .collect::<HashSet<_>>();
+        let ordered_sessions = ordered_sessions.into_iter().filter(|session| {
+            self.project_menu.show_removed || !self.project_menu.has_removed()
+                || self.collections.collection_of(&session.session_id).is_some()
+                || !self.project_menu.get(&self.sidebar_projects.project(session).0.key)
+                    .is_some_and(|p| p.removed)
+        }).collect::<Vec<_>>();
+        let chinese = is_zh();
+        let home = crate::platform_dirs::home_string();
+        let mut recent = Vec::with_capacity(6);
+        for session in ordered_sessions.iter().filter(|session| {
+            !session.archived && !nested.contains(&session.session_id)
+                && !closing_sessions.contains(&session.session_id)
+        }) {
+            let stamp = sidebar_session_recency_ms(session);
+            let index = recent.partition_point(|(time, _)| *time >= stamp);
+            if index < 5 {
+                recent.insert(index, (stamp, session.clone()));
+                recent.truncate(5);
+            }
+        }
+        let mut recent_ids = recent.iter().map(|(_, session)| session.session_id.clone()).collect::<HashSet<_>>();
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
             .filter(|session| {
@@ -5607,7 +5753,8 @@ impl Workspace {
                 .collections
                 .collection_of(&session.session_id)
                 .map(|c| (c.id.clone(), c.name.clone()));
-            let (project, subdirectory) = match collection {
+            // Collection members keep their directory as a detail on the row.
+            let (mut project, subdirectory) = match collection {
                 // Inside a collection, the session's folder is a detail line.
                 Some((id, name)) => (
                     sidebar_projects::Project {
@@ -5619,12 +5766,23 @@ impl Workspace {
                 ),
                 None => self.sidebar_projects.project(&session),
             };
+            if let Some(name) = self.project_menu.get(&project.key).and_then(|p| p.name.as_ref()) {
+                project.label.clone_from(name);
+            }
             // Collections mix folders, so they never split into checkouts.
             let checkout = if sidebar_collections::id_from_key(&project.key).is_some() {
                 None
             } else {
                 self.sidebar_projects.checkout(&session)
             };
+            if chinese && sidebar_collections::id_from_key(&project.key).is_none()
+                && sidebar_projects::is_noise_project_key(&project.key, home.as_deref(), self.project_menu.get(&project.key))
+            {
+                if recent_ids.insert(session.session_id.clone()) {
+                    recent.push((sidebar_session_recency_ms(&session), session));
+                }
+                continue;
+            }
             let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
                 Some(index) => index,
                 None => {
@@ -5669,6 +5827,16 @@ impl Workspace {
                 section: None,
                 agents,
             });
+        }
+        recent.sort_by_key(|(stamp, _)| std::cmp::Reverse(*stamp));
+        let has_recent = !recent.is_empty();
+        for project in self.registered_sidebar_projects() {
+            if groups.iter().any(|(existing, _, _)| existing.key == project.key) {
+                continue;
+            }
+            groups.push((project, 0, 0));
+            members.push(Vec::new());
+            project_checkouts.push(Vec::new());
         }
         // The main working tree leads, then worktrees in order of first use.
         for checkouts in &mut project_checkouts {
@@ -5723,11 +5891,41 @@ impl Workspace {
                 let default = sidebar_collections::id_from_key(&project.key).is_none()
                     && any_live
                     && *live == 0;
-                headers && self.sidebar_projects.collapsed(&project.key, default)
+                let archived = self.project_menu.get(&project.key).is_some_and(|p| p.archived || p.removed);
+                headers && self.sidebar_projects.collapsed(&project.key, default || archived)
             })
             .collect::<Vec<_>>();
         let mut ordered_sessions = Vec::new();
-        for (index, rows) in members.into_iter().enumerate() {
+        let mut project_order = (0..members.len()).collect::<Vec<_>>();
+        project_order.sort_by_key(|&index| {
+            let key = &groups[index].0.key;
+            if sidebar_collections::id_from_key(key).is_some() { return if chinese { 5 } else { 0 }; }
+            match self.project_menu.get(key) {
+                Some(p) if p.removed => 4,
+                Some(p) if p.archived => 3,
+                Some(p) if p.pinned => 1,
+                _ => 2,
+            }
+        });
+        for index in project_order {
+            let rows = std::mem::take(&mut members[index]);
+            if rows.is_empty() {
+                ordered_sessions.push(SidebarRow {
+                    open: false,
+                    live: false,
+                    session: pending::draft_session_info(format!("project-header://{}", groups[index].0.key), None, None),
+                    project: index,
+                    subdirectory: None,
+                    header: true,
+                    collapsed: true,
+                    divider: false,
+                    checkout: None,
+                    checkout_header: false,
+                    section: None,
+                    agents: (0, 0),
+                });
+                continue;
+            }
             let collapsed = collapsed_projects[index];
             let mut previous: Option<(bool, bool)> = None;
             let mut previous_checkout: Option<Option<String>> = None;
@@ -5746,10 +5944,10 @@ impl Workspace {
                 previous_checkout = Some(checkout);
                 // Live includes externally connected user clients, while
                 // row.open continues to mean navigation to a local panel.
-                if !collapsed && previous.is_none_or(|(live, _)| live != row.live) {
+                if !chinese && !collapsed && previous.is_none_or(|(live, _)| live != row.live) {
                     row.section = Some(if row.live { "Live" } else { "Past" });
                 }
-                row.divider = !row.live
+                row.divider = !chinese && !row.live
                     && previous.is_some_and(|(live, saved)| !live && saved && !row.session.saved);
                 previous = Some((row.live, row.session.saved));
                 ordered_sessions.push(row);
@@ -5770,6 +5968,7 @@ impl Workspace {
                 let session = &row.session;
                 let selected = active_id.as_deref() == Some(session.session_id.as_str());
                 SidebarSessionLayout {
+                    text_scale: crate::config::text_scale().to_bits(),
                     session_id: session.session_id.clone(),
                     open: row.open,
                     project: row.project,
@@ -5787,7 +5986,6 @@ impl Workspace {
                             .edit_stats
                             .as_ref()
                             .is_some_and(sidebar_edits::has_changes)),
-                    menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                 }
             })
             .collect::<Vec<_>>();
@@ -5818,14 +6016,121 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         list = list.child(self.render_sidebar_quick_actions(cx));
+        if !recent.is_empty() {
+            let collapsed = self.recent_sessions_collapsed;
+            let mut section = div().flex_none().flex().flex_col().px_2().pb_2().child(
+                div()
+                    .id("sidebar-recent-toggle")
+                    .debug_selector(|| "sidebar-recent-toggle".into())
+                    .h(scaled_text(24.0).max(px(24.0)))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .rounded_full()
+                    .text_size(scaled_text(11.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .cursor_pointer()
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .child(if collapsed { "›" } else { "⌄" })
+                    .child(tr("Recent sessions", "最近会话"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.recent_sessions_collapsed = !this.recent_sessions_collapsed;
+                        cx.notify();
+                    })),
+            );
+            // Keep Projects reachable even when enlarged recent rows fill the sidebar.
+            let mut recent_rows = div()
+                .id("sidebar-recent-rows")
+                .debug_selector(|| "sidebar-recent-rows".into())
+                .max_h((window.viewport_size().height * 0.32).min(px(180.0)))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .py(px(4.0));
+            for (_, session) in recent.into_iter().filter(|_| !collapsed) {
+                let id = session.session_id.clone();
+                let selected = active_id.as_deref() == Some(id.as_str());
+                let (_, title) = sidebar_session_title_with_open_title(
+                    &session,
+                    open_titles.get(&id).map(String::as_str),
+                );
+                let tooltip = gpui::SharedString::from(title.clone());
+                let show_title_hint = self.collections.menu.is_none() && self.project_menu.open.is_none();
+                let context_id = id.clone();
+                let button_id = id.clone();
+                recent_rows = recent_rows.child(
+                    div()
+                        .id(gpui::SharedString::from(format!("sidebar-recent-session-{id}")))
+                        .debug_selector(move || format!("sidebar-recent-session-{id}").into())
+                        .h(scaled_text(24.0).max(px(24.0)))
+                        .flex_none()
+                        .min_w_0()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .rounded_full()
+                        .text_size(scaled_text(12.0))
+                        .cursor_pointer()
+                        .text_color(Theme::global().TEXT)
+                        .when(selected, |el| el.bg(Theme::global().PANEL_BG))
+                        .hover(move |el| sidebar_session_hover(el, selected))
+                        .child(div().id("recent-session-title").flex_1().min_w_0().truncate().child(title)
+                            .when(show_title_hint, |label| {
+                                label.tooltip(move |_, cx| {
+                                    cx.new(|_| remotes::HeaderTooltip(tooltip.clone())).into()
+                                })
+                            }))
+                        .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.open_session_menu(&context_id, event.position, cx);
+                        }))
+                        .child(sidebar_worktrees::header_action(
+                            format!("sidebar-recent-menu-{button_id}").into(),
+                            "",
+                            div().child("⋯").into_any_element(),
+                            true,
+                            "sidebar-recent-session",
+                        ).on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.open_session_menu(&button_id, event.position, cx);
+                        })))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.activate_session(session.clone(), window, cx);
+                        })),
+                );
+            }
+            if !collapsed {
+                section = section.child(recent_rows);
+            }
+            list = list.child(section);
+        }
+        list = list.children(self.render_session_menu_popup(window, cx));
+        let first_project_row = ordered_sessions.iter().position(|row| {
+            sidebar_collections::id_from_key(&groups[row.project].0.key).is_none()
+        });
+        let projects_heading_in_list = first_project_row.filter(|&index| !chinese && index > 0);
+        let first_collection_row = chinese.then(|| ordered_sessions.iter().position(|row| {
+            sidebar_collections::id_from_key(&groups[row.project].0.key).is_some()
+        })).flatten();
         if let Some(applets) = self.sidebar_applets.take() {
             list = list.child(applets);
         }
         if let Some(form) = self.render_worktree_form(cx) {
             list = list.child(form);
         }
-        if let Some(form) = self.render_collection_form(cx) {
-            list = list.child(form);
+        if chinese || first_project_row.is_none() {
+            list = list.child(self.render_sidebar_projects_section(cx));
+        }
+        if !chinese {
+            list = list.child(self.render_sidebar_collections_section(cx));
+            if let Some(form) = self.render_collection_form(cx) {
+                list = list.child(form);
+            }
         }
         // Collections with no chats yet have no row to carry a header.
         let empty_collections = self
@@ -5840,8 +6145,13 @@ impl Workspace {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
-            list = list.child(empty);
+        if !chinese {
+            if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
+                list = list.child(empty);
+            }
+            if first_project_row == Some(0) {
+                list = list.child(self.render_sidebar_projects_section(cx));
+            }
         }
         if !self.sidebar_selection.ids.is_empty() {
             list = list.child(
@@ -5852,7 +6162,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(px(11.0))
+                    .text_size(scaled_text(11.0))
                     .child(format!("{} selected", self.sidebar_selection.ids.len()))
                     .child(
                         div()
@@ -5863,7 +6173,7 @@ impl Workspace {
                             .rounded_md()
                             .bg(Theme::global().ACCENT_DIM)
                             .cursor_pointer()
-                            .child("Close selected")
+                            .child(tr("Close selected", "关闭选中会话"))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
@@ -5882,7 +6192,18 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            let dock = self.render_project_dock(&groups, &ordered_sessions, cx);
+            let dock = if chinese { None } else { self.render_project_dock(&groups, &ordered_sessions, cx) };
+            if let Some((project, _, _)) = groups.iter().find(|(project, _, _)| {
+                self.project_menu.open.as_deref() == Some(project.key.as_str())
+            }) {
+                let mut position = self.project_menu.anchor;
+                position.x += px(6.0);
+                list = list.child(gpui::deferred(
+                    gpui::anchored().position(position).child(
+                        self.render_project_menu(project, window.viewport_size().height, cx),
+                    ),
+                ).with_priority(10));
+            }
             list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
@@ -5899,6 +6220,12 @@ impl Workspace {
                                 .relative()
                                 .when(sidebar_index == 0, |el| el.pt_2())
                                 .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
+                            if projects_heading_in_list == Some(sidebar_index) {
+                                list = list.pt_3().child(this.render_sidebar_projects_section(cx));
+                            }
+                            if first_collection_row == Some(sidebar_index) {
+                                list = list.pt_3().child(this.render_sidebar_collections_section(cx));
+                            }
                             if row.header {
                                 let (project, _, count) = &groups[row.project];
                                 let header = if sidebar_collections::id_from_key(&project.key).is_some() {
@@ -5907,7 +6234,7 @@ impl Workspace {
                                     this.render_project_header(row.project, project, *count, collapsed_projects[row.project], project_branches[row.project].clone(), cx)
                                 };
                                 list = list
-                                    .when(sidebar_index > 0, |el| el.pt_3())
+                                    .when(sidebar_index > 0 && projects_heading_in_list != Some(sidebar_index), |el| el.pt_3())
                                     .child(header);
                             }
                             if row.checkout_header {
@@ -5923,10 +6250,10 @@ impl Workspace {
                                         .ml(px(if checkout_rows[row.project] { 30.0 } else { 20.0 }))
                                         .mt(px(2.0))
                                         .mb(px(2.0))
-                                        .text_size(px(9.0))
+                                        .text_size(scaled_text(9.0))
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(Theme::global().TEXT_FAINT)
-                                        .child(section),
+                                        .child(if section == "Live" { tr("Live", "进行中") } else { tr("Past", "历史") }),
                                 );
                             }
                             if row.divider {
@@ -5987,8 +6314,6 @@ impl Workspace {
                             let release_out_id = session.session_id.clone();
                             let menu_id = session.session_id.clone();
                             let context_id = session.session_id.clone();
-                            let menu_open = this.collections.menu.as_deref() == Some(session.session_id.as_str());
-                            let menu_session = session.session_id.clone();
                             let selection_order = selection_order.clone();
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
                             let working = activity.is_some();
@@ -6048,7 +6373,7 @@ impl Workspace {
                                     .border_color(gpui::rgba(0x00000000))
                                     .when(group_selected, |el| el.bg(Theme::global().ACCENT_DIM).border_color(Theme::global().ACCENT))
                                     .pr(px(crate::scrollbar::GUTTER + 8.0))
-                                    .when(!selected, |el| el.hover(move |el| el.bg(Theme::global().PANEL_BG)))
+                                    .hover(move |el| sidebar_session_hover(el, selected || group_selected))
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
                                         cx.listener(move |this, event: &gpui::MouseDownEvent, window, _cx| {
@@ -6066,12 +6391,10 @@ impl Workspace {
                                         this.finish_sidebar_gesture(&release_out_id, false, event, window, cx);
                                     }))
                                     // Right-click opens the same menu as the row's ⋯ button.
-                                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |this, _, window, cx| {
+                                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                         window.prevent_default();
                                         cx.stop_propagation();
-                                        this.sidebar_gesture = None;
-                                        this.collections.menu = Some(context_id.clone());
-                                        cx.notify();
+                                        this.open_session_menu(&context_id, event.position, cx);
                                     }))
                                     .on_scroll_wheel(cx.listener(|this, _, _, _| {
                                         this.sidebar_gesture = None;
@@ -6081,19 +6404,19 @@ impl Workspace {
                                             .flex()
                                             .items_center()
                                             .gap_1()
-                                            .h(px(18.0))
+                                            .h(scaled_text(18.0).max(px(18.0)))
                                             .child(
                                                 div()
                                                     .w(px(16.0))
                                                     .flex_none()
-                                                    .text_size(px(12.0))
+                                                    .text_size(scaled_text(12.0))
                                                     .child(icon),
                                             )
                                             .child({
                                                 let container = div()
                                                     .flex_1()
                                                     .min_w_0()
-                                                    .max_h(px(18.0))
+                                                    .max_h(scaled_text(18.0))
                                                     .truncate()
                                                     .debug_selector(move || {
                                                         format!(
@@ -6101,7 +6424,7 @@ impl Workspace {
                                                         )
                                                         .into()
                                                     })
-                                                    .text_size(px(12.0))
+                                                    .text_size(scaled_text(12.0))
                                                     .line_height(relative(1.5))
                                                     // Past sessions stay listed but read dimmer than live ones.
                                                     .when(!live, |el| el.text_color(Theme::global().TEXT_DIM));
@@ -6119,20 +6442,31 @@ impl Workspace {
                                                     .id(("sidebar-agents", sidebar_index))
                                                     .debug_selector(move || format!("sidebar-agents-{sidebar_index}"))
                                                     .flex_none()
-                                                    .h(px(16.0))
+                                                    .h(scaled_text(16.0).max(px(16.0)))
                                                     .px(px(6.0))
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(3.0))
                                                     .rounded_full()
                                                     .bg(if agent_working > 0 { Theme::global().ACCENT_DIM } else { Theme::global().TOOL_BG })
-                                                    .text_size(px(9.0))
+                                                    .text_size(scaled_text(9.0))
                                                     .text_color(Theme::global().TEXT_DIM)
-                                                    .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(format!(
-                                                        "{agent_total} swarm agent{} in this checkout{}",
-                                                        if agent_total == 1 { "" } else { "s" },
-                                                        if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
-                                                    ).into())).into())
+                                                    .tooltip(move |_, cx| {
+                                                        let summary = if is_zh() {
+                                                            if agent_working > 0 {
+                                                                format!("当前工作区有 {agent_total} 个子代理，{agent_working} 个运行中")
+                                                            } else {
+                                                                format!("当前工作区有 {agent_total} 个子代理")
+                                                            }
+                                                        } else {
+                                                            format!(
+                                                                "{agent_total} swarm agent{} in this checkout{}",
+                                                                if agent_total == 1 { "" } else { "s" },
+                                                                if agent_working > 0 { format!(", {agent_working} working") } else { String::new() },
+                                                            )
+                                                        };
+                                                        cx.new(|_| remotes::HeaderTooltip(summary.into())).into()
+                                                    })
                                                     .child(gpui::svg().data(include_bytes!("../../../assets/icons/swarm.svg").as_slice()).size(px(9.0)).text_color(Theme::global().TEXT_DIM))
                                                     .child(agent_total.to_string()),
                                             ))
@@ -6152,23 +6486,14 @@ impl Workspace {
                                                         .justify_center()
                                                         .rounded_full()
                                                         .cursor_pointer()
-                                                        .text_size(px(12.0))
+                                                        .text_size(scaled_text(12.0))
                                                         .text_color(Theme::global().TEXT_DIM)
                                                         .hover(|el| el.bg(Theme::global().TOOL_BG))
-                                                        .tooltip(|_, cx| {
-                                                            cx.new(|_| remotes::HeaderTooltip("Move to collection".into())).into()
-                                                        })
                                                         .child("⋯")
-                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                                             window.prevent_default();
                                                             cx.stop_propagation();
-                                                            this.sidebar_gesture = None;
-                                                            this.collections.menu = if this.collections.menu.as_deref() == Some(menu_id.as_str()) {
-                                                                None
-                                                            } else {
-                                                                Some(menu_id.clone())
-                                                            };
-                                                            cx.notify();
+                                                            this.open_session_menu(&menu_id, event.position, cx);
                                                         })),
                                                 ))
                                                 // Pinning is /save: pinned sessions sort to the top.
@@ -6240,7 +6565,7 @@ impl Workspace {
                                                 .items_center()
                                                 .gap_2()
                                                 .min_w_0()
-                                                .text_size(px(9.0))
+                                                .text_size(scaled_text(9.0))
                                                 .text_color(Theme::global().TEXT_DIM)
                                                 .child(
                                                     div()
@@ -6265,29 +6590,42 @@ impl Workspace {
                                         )
                                     }),
                             );
-                            if menu_open {
-                                let menu = this.render_collection_menu(&menu_session, cx);
-                                list = list.child(div().ml(px(28.0)).mr(px(crate::scrollbar::GUTTER + 8.0)).mb_1().child(menu));
-                            }
                             list.into_any_element()
                         })
                     },
                 )
                 .size_full(),
             ));
-            list = list.children(dock);
+            if let Some(dock) = dock {
+                list = list.child(
+                    div().flex_none().w_full().border_t_1().border_color(Theme::global().PANEL_BORDER)
+                        .child(div().px_2().child(sidebar_section_label(tr("Jump to project", "快速跳转"))))
+                        .child(dock),
+                );
+            }
+        }
+        if chinese && (!empty_collections.is_empty() || self.collections.form.is_some()) {
+            if first_collection_row.is_none() {
+                list = list.child(self.render_sidebar_collections_section(cx));
+            }
+            if let Some(form) = self.render_collection_form(cx) {
+                list = list.child(form);
+            }
+            if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
+                list = list.child(empty);
+            }
         }
 
-        if self.sidebar_session_layout.is_empty() {
+        if self.sidebar_session_layout.is_empty() && (!chinese || !has_recent) {
             list = list.child(
                 div()
                     .p_4()
                     .text_size(px(11.0))
                     .text_color(Theme::global().TEXT_DIM)
                     .child(if self.connected {
-                        "no previous sessions"
+                        tr("no previous sessions", "暂无历史会话")
                     } else {
-                        "loading sessions..."
+                        tr("loading sessions...", "正在加载会话…")
                     }),
             );
         }
@@ -6418,7 +6756,7 @@ impl Workspace {
                                                         cx.notify();
                                                     }),
                                                 )
-                                                .child("chat"),
+                                                .child(tr("chat", "会话")),
                                         )
                                         .child(self.render_tutorial_tab(cx))
                                         .child(
@@ -6459,7 +6797,7 @@ impl Workspace {
                                                         cx.notify();
                                                     }),
                                                 )
-                                                .child("files"),
+                                                .child(tr("files", "文件")),
                                         )
                                         .child(
                                             div()
@@ -6499,7 +6837,7 @@ impl Workspace {
                                                         cx.notify();
                                                     }),
                                                 )
-                                                .child("accounts"),
+                                                .child(tr("accounts", "账户")),
                                         )
                                         .child(self.render_preference_tab(
                                             SidebarView::Theme,
@@ -6541,7 +6879,7 @@ impl Workspace {
                                                         )
                                                     }),
                                                 )
-                                                .child("orchestration"),
+                                                .child(tr("orchestration", "任务编排")),
                                         )
                                         .child(
                                             div()
@@ -6573,7 +6911,7 @@ impl Workspace {
                                                         );
                                                     }),
                                                 )
-                                                .child("todos"),
+                                                .child(tr("todos", "待办")),
                                         )
                                         .child(
                                             div()
@@ -6629,35 +6967,7 @@ impl Workspace {
                                                         this.open_gmail(&OpenGmail, window, cx)
                                                     }),
                                                 )
-                                                .child("email"),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("sidebar-open-folder")
-                                                .debug_selector(|| "sidebar-open-folder".into())
-                                                .flex_none()
-                                                .border_1()
-                                                .border_color(Theme::global().PANEL_BORDER)
-                                                .px_2()
-                                                .py_1()
-                                                .rounded_t_md()
-                                                .h(px(30.0))
-                                                .flex()
-                                                .items_center()
-                                                .cursor_pointer()
-                                                .text_size(px(11.0))
-                                                .text_color(Theme::global().TEXT_DIM)
-                                                .hover(|el| {
-                                                    el.bg(Theme::global().HEADER_BG)
-                                                        .text_color(Theme::global().TEXT)
-                                                })
-                                                .on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(|this, _event, window, cx| {
-                                                        this.open_folder(&OpenFolder, window, cx);
-                                                    }),
-                                                )
-                                                .child("folder"),
+                                                .child(tr("email", "邮件")),
                                         )
                                         .child(
                                             div()
@@ -6714,7 +7024,18 @@ impl Workspace {
                         el.pr(px(crate::scrollbar::GUTTER))
                     })
                     .child(match self.sidebar_view {
-                        SidebarView::Sessions => list.into_any_element(),
+                        SidebarView::Sessions => {
+                            let archive = self.render_sidebar_archives(cx);
+                            let toggle = self.render_sidebar_archive_toggle(cx);
+                            let error = self.render_sidebar_archive_error(cx);
+                            if let Some(archive) = archive {
+                                div().flex_1().min_h_0().flex().flex_col()
+                                    .child(toggle).children(error).child(archive).into_any_element()
+                            } else {
+                                div().flex_1().min_h_0().flex().flex_col()
+                                    .child(list).children(error).child(toggle).into_any_element()
+                            }
+                        }
                         SidebarView::Learn => self.render_tutorial_guides(cx),
                         SidebarView::Files => self.render_files_sidebar(cx),
                         SidebarView::Theme => self.render_theme_settings(cx),
@@ -6725,7 +7046,7 @@ impl Workspace {
                                 .p_4()
                                 .text_size(px(11.0))
                                 .text_color(Theme::global().TEXT_DIM)
-                                .child("No connected accounts")
+                                .child(tr("No connected accounts", "暂无已连接账户"))
                                 .into_any_element()
                         }),
                     })
@@ -6835,7 +7156,7 @@ impl Workspace {
                     .pb(px(2.0))
                     .text_size(px(10.0))
                     .text_color(Theme::global().TEXT_DIM)
-                    .child("accounts"),
+                    .child(tr("accounts", "账户")),
             );
 
         let active = self.slots.get(self.active).and_then(|slot| {
@@ -7290,7 +7611,11 @@ impl Workspace {
                     cx.notify();
                 }),
             )
-            .child(label)
+            .child(match label {
+                "theme" => tr("theme", "主题"),
+                "settings" => tr("settings", "设置"),
+                _ => label,
+            })
             .into_any_element()
     }
 
@@ -7305,11 +7630,11 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .text_size(px(11.0))
-            .child(div().text_size(px(14.0)).child("Theme"))
+            .child(div().text_size(px(14.0)).child(tr("Theme", "主题")))
             .child(
                 div()
                     .text_color(Theme::global().TEXT_DIM)
-                    .child("Choose a palette. Changes save automatically."),
+                    .child(tr("Choose a palette. Changes save automatically.", "选择配色，改动会自动保存。")),
             );
         for (index, preset) in ThemePreset::ALL.into_iter().enumerate() {
             picker = picker.child(
@@ -7342,6 +7667,43 @@ impl Workspace {
         picker.into_any_element()
     }
 
+    fn render_text_size_setting(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let current = (crate::config::text_scale() * 100.0).round() as u16;
+        let theme = Theme::global();
+        let mut controls = div().flex().items_center().gap_1();
+        for (id, label, target) in [
+            ("settings-text-smaller", "−", current.saturating_sub(5).max(75)),
+            ("settings-text-larger", "+", (current + 5).min(200)),
+            ("settings-text-reset", tr("Reset", "重置"), 100),
+        ] {
+            if id == "settings-text-larger" {
+                controls = controls.child(div().px_1().child(format!("{current}%")));
+            }
+            controls = controls.child(
+                div().id(id).debug_selector(move || id.into())
+                    .px_2().py_1().rounded_full().bg(theme.TOOL_BG)
+                    .when(target == current, |el| el.text_color(theme.TEXT_DIM))
+                    .when(target != current, |el| {
+                        el.cursor_pointer().hover(|el| el.bg(Theme::global().HEADER_BG))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.text_scale_error = crate::config::set_text_scale(target)
+                                    .err().map(|error| error.to_string());
+                                cx.refresh_windows();
+                                cx.notify();
+                            }))
+                    })
+                    .child(label),
+            );
+        }
+        div().flex_none().px_2().py_2().rounded_sm().bg(theme.PANEL_BG)
+            .flex().flex_col().gap_1()
+            .child(tr("Text size", "字号"))
+            .child(controls)
+            .when_some(self.text_scale_error.clone(), |el, error| {
+                el.child(div().text_color(theme.ERROR).child(format!("{}: {error}", tr("Could not save text size", "无法保存字号"))))
+            })
+    }
+
     fn render_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut settings = div()
             .id("workspace-settings")
@@ -7352,17 +7714,18 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .text_size(px(11.0))
-            .child(div().text_size(px(14.0)).child("Settings"))
+            .child(div().text_size(px(14.0)).child(tr("Settings", "设置")))
+            .child(self.render_text_size_setting(cx))
             .child(
                 div()
                     .text_color(Theme::global().TEXT_DIM)
-                    .child("Current window"),
+                    .child(tr("Current window", "当前窗口")),
             );
         for (id, label, enabled) in [
-            ("settings-minimap", "Workspace minimap", self.show_minimap),
+            ("settings-minimap", tr("Workspace minimap", "工作区缩略图"), self.show_minimap),
             (
                 "settings-showcase",
-                "Show pressed shortcuts",
+                tr("Show pressed shortcuts", "显示按下的快捷键"),
                 self.showcase_mode,
             ),
         ] {
@@ -7399,7 +7762,7 @@ impl Workspace {
                             } else {
                                 Theme::global().TEXT_DIM
                             })
-                            .child(if enabled { "On" } else { "Off" }),
+                            .child(if enabled { tr("On", "开") } else { tr("Off", "关") }),
                     ),
             );
         }
@@ -7993,6 +8356,9 @@ impl Workspace {
     }
 
     fn render_folder_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.folder_picker_creates_project {
+            return self.render_project_creation(cx);
+        }
         let Some(directory) = self.folder_picker_dir.clone() else {
             return div().into_any_element();
         };
@@ -8051,7 +8417,7 @@ impl Workspace {
             };
             let sets_default = self.folder_picker_sets_default;
             let reason = if sets_default && self.pinned_working_dir.as_deref() == path.to_str() {
-                "current default".into()
+                tr("current default", "当前默认目录").into()
             } else {
                 reason
             };
@@ -8164,9 +8530,9 @@ impl Workspace {
                             .justify_between()
                             .child(div().text_size(px(14.0)).child(
                                 if self.folder_picker_sets_default {
-                                    "Default directory"
+                                    tr("Default directory", "默认目录")
                                 } else {
-                                    "open folder"
+                                    tr("open folder", "打开项目文件夹")
                                 },
                             ))
                             .child(
@@ -8180,7 +8546,7 @@ impl Workspace {
                                         cx.stop_propagation();
                                         this.close_folder_picker(cx);
                                     }))
-                                    .child("cancel"),
+                                    .child(tr("cancel", "取消")),
                             ),
                     )
                     .child(
@@ -8219,7 +8585,7 @@ impl Workspace {
                                             }
                                         }),
                                     )
-                                    .child("⌂  home"),
+                                    .child(tr("⌂  home", "⌂  主目录")),
                             )
                             .child(
                                 div()
@@ -8237,7 +8603,7 @@ impl Workspace {
                                             this.browse_to(filesystem_root(), cx);
                                         }),
                                     )
-                                    .child("▣  computer"),
+                                    .child(tr("▣  computer", "▣  此电脑")),
                             ),
                     )
                     .when_some(self.folder_search.clone(), |el, search| {
@@ -8295,9 +8661,9 @@ impl Workspace {
                                     }
                                 }))
                                 .child(if self.folder_picker_sets_default {
-                                    "Set as default"
+                                    tr("Set as default", "设为默认目录")
                                 } else {
-                                    "open this folder"
+                                    tr("open this folder", "打开此文件夹")
                                 }),
                         ),
                     ),
@@ -8309,6 +8675,8 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Workspace");
+        self.close_archived_sidebar_panels(window, cx);
+        self.refresh_project_labels(cx);
         Theme::sync_window_background(window, &mut self.window_background);
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing
@@ -8573,7 +8941,7 @@ impl Render for Workspace {
                 el.child(folder_surface::background(self.folder_frame.clone()))
             })
             .font_family(Theme::global().FONT_UI)
-            .text_size(px(14.0 * crate::config::get().appearance.text_scale))
+            .text_size(scaled_text(14.0))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(Self::toggle_voice))
@@ -8592,7 +8960,18 @@ impl Render for Workspace {
                     cx.notify();
                 }
             }))
+            .capture_key_down(cx.listener(Self::dismiss_project_folder_menu_on_escape))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if (this.project_menu.open.is_some() || this.collections.menu.is_some())
+                    && event.keystroke.key == "escape"
+                {
+                    this.project_menu.close();
+                    this.collections.menu = None;
+                    this.focus_pending = true;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if this.rename_editor.is_some() && event.keystroke.key == "escape" {
                     this.close_rename_editor(cx);
                     cx.stop_propagation();
@@ -8644,6 +9023,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))
+            .on_action(cx.listener(Self::toggle_project_folder_menu))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::toggle_overview))
             .capture_action(cx.listener(Self::toggle_onboarding_simulator))
@@ -8670,7 +9050,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
-                        root.child(self.render_sidebar(fullscreen, cx))
+                        root.child(self.render_sidebar(fullscreen, window, cx))
                             .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
@@ -8728,13 +9108,14 @@ impl Render for Workspace {
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
                 |root| {
-                    root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
+                    root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, window, cx))
                 },
             )
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))
             })
+            .children(self.render_project_folder_menu(window, cx))
             .when(
                 self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
                 |root| root.child(self.render_folder_picker(cx)),
@@ -9058,6 +9439,7 @@ fn ranked_folder_matches_for_sessions(
 /// and saved divider. Titles stay in a fixed-height box and do not belong here.
 #[derive(Debug, PartialEq, Eq)]
 struct SidebarSessionLayout {
+    text_scale: u32,
     session_id: String,
     open: bool,
     project: usize,
@@ -9069,8 +9451,6 @@ struct SidebarSessionLayout {
     selected: bool,
     saved: bool,
     details: bool,
-    /// The row's "Move to collection" menu is open beneath it.
-    menu: bool,
 }
 
 struct SidebarRow {
@@ -9115,7 +9495,7 @@ fn sync_sidebar_session_layout(
         state.remeasure_items(first..new_len);
     }
     // Hints give the scrollbar a useful initial size without measuring history.
-    state.clone().with_uniform_item_height(px(46.0));
+    state.clone().with_uniform_item_height(scaled_text(46.0));
     *previous = next;
 }
 
@@ -9136,6 +9516,50 @@ fn sidebar_session_title_with_open_title(
         icon,
         crate::panel::folder_session_title(&session.session_id, title).to_string(),
     )
+}
+
+fn sidebar_session_hover(style: gpui::StyleRefinement, selected: bool) -> gpui::StyleRefinement {
+    let style = style.shadow(vec![
+        gpui::BoxShadow::new(px(0.0), px(2.0), gpui::rgba(0x0b0b0b1a).into())
+            .blur_radius(px(7.0)),
+        gpui::BoxShadow::new(px(0.0), px(1.0), gpui::rgba(0x0b0b0b14).into())
+            .blur_radius(px(2.0)),
+    ]);
+    if selected {
+        style
+    } else {
+        style.bg(Theme::global().PANEL_BG)
+    }
+}
+
+fn scaled_text(size: f32) -> gpui::Pixels {
+    px(size * crate::config::text_scale())
+}
+
+fn sidebar_section_label(label: &'static str) -> gpui::Div {
+    div()
+        .px_2()
+        .py_1()
+        .text_size(scaled_text(11.0))
+        .text_color(Theme::global().TEXT_DIM)
+        .child(label)
+}
+
+fn sidebar_section_heading(
+    id: &'static str,
+    label: &'static str,
+    button: impl gpui::IntoElement,
+) -> gpui::Div {
+    div()
+        .debug_selector(move || id.into())
+        .flex_none()
+        .pl_2()
+        .pr(px(crate::scrollbar::GUTTER + 4.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .child(sidebar_section_label(label))
+        .child(button)
 }
 
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
@@ -9829,6 +10253,7 @@ mod tests {
             layout_mode: crate::config::LayoutMode::Normal,
             recent_accounts: Vec::new(),
             sidebar_view: SidebarView::Sessions,
+            recent_sessions_collapsed: true,
             tutorial_page: 0,
             slots: vec![SlotSnapshot {
                 panel: PanelSnapshot {
@@ -9861,6 +10286,7 @@ mod tests {
             overview: true,
             hints_overlay: true,
             folder_picker_sets_default: false,
+            folder_picker_creates_project: false,
             folder_picker_dir: Some(PathBuf::from("/workspace/src")),
             folder_picker_error: Some("example".into()),
             folder_search: None,
@@ -9874,6 +10300,7 @@ mod tests {
 
         let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         legacy.as_object_mut().unwrap().remove("layout_mode");
+        legacy.as_object_mut().unwrap().remove("recent_sessions_collapsed");
         legacy["slots"][0]["panel"]
             .as_object_mut()
             .unwrap()
@@ -9881,6 +10308,7 @@ mod tests {
         let legacy = WorkspaceSnapshot::decode(&serde_json::to_vec(&legacy).unwrap())
             .expect("old workspace snapshot remains compatible");
         assert_eq!(legacy.layout_mode, crate::config::LayoutMode::FolderTabs);
+        assert!(!legacy.recent_sessions_collapsed);
         assert_eq!(legacy.slots[0].panel.terminal_output_cursor, None);
     }
 
@@ -10037,6 +10465,7 @@ mod tests {
                     layout_mode: crate::config::LayoutMode::FolderTabs,
                     recent_accounts: Vec::new(),
                     sidebar_view: SidebarView::Sessions,
+                    recent_sessions_collapsed: false,
                     tutorial_page: 0,
                     slots: vec![SlotSnapshot {
                         panel: PanelSnapshot {
@@ -10078,6 +10507,7 @@ mod tests {
                     overview: false,
                     hints_overlay: false,
                     folder_picker_sets_default: false,
+                    folder_picker_creates_project: false,
                     folder_picker_dir: None,
                     folder_picker_error: None,
                     folder_search: None,
@@ -11388,6 +11818,278 @@ mod tests {
             );
         });
         std::fs::remove_dir_all(project).unwrap();
+    }
+
+    #[gpui::test]
+    fn project_folder_menu_opens_sessions_and_shows_sidebar_groups(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing-project");
+        std::fs::create_dir(&existing).unwrap();
+
+        for (trigger, choice, project, create) in [
+            ("composer-project-folder", "project-folder-open", existing.clone(), false),
+            ("sidebar-project-folder", "project-folder-create", root.path().join("new-project"), true),
+        ] {
+            let (bridge, commands) = harness::spawn_recording();
+            let (workspace, vcx) = cx.add_window_view(move |_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.open_local_draft(None, cx);
+                workspace.bridge = bridge;
+                workspace
+            });
+            vcx.run_until_parked();
+            let bounds = vcx.debug_bounds(trigger).expect("project entry control");
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            let menu = vcx.debug_bounds("project-folder-menu").expect("project choices");
+            let viewport = vcx.update(|window, _| window.viewport_size());
+            assert!(menu.right() <= viewport.width && menu.bottom() <= viewport.height);
+            assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+            let choice = vcx.debug_bounds(choice).unwrap();
+            vcx.simulate_click(choice.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("project-folder-menu").is_none());
+            assert_eq!(vcx.debug_bounds("folder-picker-overlay").is_some(), create);
+
+            if create {
+                assert!(!project.exists());
+                vcx.simulate_input("new-project");
+                let choose = vcx.debug_bounds("project-creation-location").unwrap();
+                vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+                vcx.simulate_path_prompt_response(|options| {
+                    assert!(options.directories && !options.files && !options.multiple);
+                    None
+                });
+                vcx.run_until_parked();
+                assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
+                let choose = vcx.debug_bounds("project-creation-location").unwrap();
+                vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+                vcx.simulate_path_prompt_response(|_| Some(vec![root.path().to_path_buf()]));
+                vcx.run_until_parked();
+                assert!(!project.exists());
+                vcx.simulate_keystrokes("enter");
+            } else {
+                vcx.simulate_path_prompt_response(|options| {
+                    assert!(options.directories && !options.files && !options.multiple);
+                    Some(vec![project.clone()])
+                });
+            }
+            vcx.run_until_parked();
+
+            assert!(project.is_dir());
+            assert!(matches!(
+                commands.try_recv().unwrap(),
+                Command::CreateSession { working_dir: Some(directory), .. }
+                    if Path::new(&directory) == project
+            ));
+            workspace.read_with(vcx, |workspace, cx| {
+                assert_eq!(workspace.slots.len(), 1);
+                assert!(workspace.project_menu.get(&project.to_string_lossy()).unwrap().registered);
+                let active = workspace.slots[workspace.active].panel.read(cx);
+                assert_eq!(active.working_dir.as_deref().map(Path::new), Some(project.as_path()));
+                assert!(workspace.sessions.is_empty());
+            });
+            assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+            assert!(vcx.debug_bounds("sidebar-project-0").is_some());
+        }
+    }
+
+    #[gpui::test]
+    fn project_menu_pins_archives_and_restores_without_changing_sessions(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().to_string_lossy().into_owned();
+        let mut session = session_info("session_fox_project_menu", Some("project chat"));
+        session.working_dir = Some(key.clone());
+        let (workspace, vcx) = cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(Update::Sessions { sessions: vec![session] }, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let header = vcx.debug_bounds("sidebar-project-0").unwrap();
+        let viewport = vcx.update(|window, _| window.viewport_size());
+        let trigger = vcx.debug_bounds("sidebar-project-menu-button-0").unwrap();
+        vcx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        workspace.update(vcx, |workspace, cx| {
+            workspace.project_menu.anchor.y = viewport.height - px(4.0);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let menu = vcx.debug_bounds("sidebar-project-menu").unwrap();
+        assert!(menu.bottom() <= viewport.height);
+        assert!(vcx.debug_bounds("project-menu-close").unwrap().bottom() <= menu.bottom());
+        assert_eq!(vcx.debug_bounds("sidebar-project-0"), Some(header));
+        let close = vcx.debug_bounds("project-menu-close").unwrap();
+        vcx.simulate_click(close.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        for button in [
+            "sidebar-project-menu-button-0", "project-pin",
+            "sidebar-project-menu-button-0", "project-archive",
+            "sidebar-project-menu-button-0", "project-remove", "project-confirm-remove",
+            "sidebar-removed-projects", "sidebar-project-menu-button-0", "project-restore-removed",
+        ] {
+            let bounds = vcx.debug_bounds(button).unwrap_or_else(|| panic!("missing {button}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            if button == "project-confirm-remove" {
+                assert!(vcx.debug_bounds("sidebar-project-0").is_none());
+            }
+        }
+        workspace.read_with(vcx, |workspace, _| {
+            let prefs = workspace.project_menu.get(&key).unwrap();
+            assert!(prefs.pinned && prefs.archived && !prefs.removed);
+            assert_eq!(workspace.sessions.len(), 1);
+        });
+        assert!(directory.path().is_dir());
+        assert!(vcx.debug_bounds("sidebar-project-0").is_some());
+    }
+
+    #[gpui::test]
+    fn session_archive_menu_allows_ready_panel_but_blocks_streaming(cx: &mut gpui::TestAppContext) {
+        const ID: &str = "session_fox_archive_menu";
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            let session = session_info(ID, None);
+            let slot = workspace.open_session(session.clone(), cx);
+            workspace.sessions = vec![session];
+            workspace.slots[slot].panel.update(cx, |panel, _| {
+                panel.status = "streaming".into();
+            });
+            workspace
+        });
+        vcx.run_until_parked();
+        while commands.try_recv().is_ok() {}
+        let menu = vcx.debug_bounds("sidebar-recent-menu-session_fox_archive_menu").unwrap();
+        vcx.simulate_click(menu.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let disabled = vcx.debug_bounds("sidebar-delete-session").expect("delete stays visible while streaming");
+        vcx.simulate_click(disabled.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err());
+        workspace.update(vcx, |workspace, cx| {
+            assert!(workspace.sidebar_archive_blocker(ID, cx).is_some());
+            let panel = workspace.slots.iter().find(|slot| slot.panel.read(cx).session_id == ID).unwrap().panel.clone();
+            panel.update(cx, |panel, _| panel.status = "connected".into());
+            assert!(workspace.sidebar_archive_blocker(ID, cx).is_none());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let delete = vcx.debug_bounds("sidebar-delete-session").unwrap();
+        vcx.simulate_click(delete.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err());
+        vcx.simulate_prompt_answer(tr("Delete conversation", "删除会话"));
+        vcx.run_until_parked();
+        assert!(matches!(commands.try_recv().unwrap(), Command::SetSessionArchived { session_id, archived: true } if session_id == ID));
+    }
+
+    #[gpui::test]
+    fn session_archive_requires_confirmation_and_preserves_failed_sessions(cx: &mut gpui::TestAppContext) {
+        const ID: &str = "session_fox_archive_menu";
+        const RECENT: &str = "sidebar-recent-session-session_fox_archive_menu";
+        const NEIGHBOR: &str = "sidebar-recent-session-session_fox_archive_neighbor";
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(move |_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.bridge = bridge;
+            workspace.sessions = vec![
+                session_info(ID, Some("Example chat")),
+                session_info("session_fox_archive_neighbor", Some("Neighbor chat")),
+            ];
+            workspace
+        });
+        vcx.run_until_parked();
+        let neighbor = vcx.debug_bounds(NEIGHBOR).unwrap();
+        let body = vcx.debug_bounds("workspace-body").unwrap();
+        for answer in [tr("Cancel", "取消"), tr("Delete conversation", "删除会话")] {
+            let menu = vcx.debug_bounds("sidebar-recent-menu-session_fox_archive_menu").unwrap();
+            vcx.simulate_click(menu.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds(NEIGHBOR), Some(neighbor));
+            assert_eq!(vcx.debug_bounds("workspace-body"), Some(body));
+            let popup = vcx.debug_bounds("sidebar-collection-menu").unwrap();
+            assert!(popup.left() > menu.center().x);
+            let delete = vcx.debug_bounds("sidebar-delete-session").unwrap();
+            vcx.simulate_click(delete.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert!(commands.try_recv().is_err());
+            vcx.simulate_prompt_answer(answer);
+            vcx.run_until_parked();
+        }
+        assert!(matches!(commands.try_recv().unwrap(), Command::SetSessionArchived { session_id, archived: true } if session_id == ID));
+        for error in [Some("example failure".to_owned()), None] {
+            let failed = error.is_some();
+            workspace.update(vcx, |workspace, cx| {
+                workspace.apply(Update::SessionArchiveSettled {
+                    session_id: ID.into(), archived: true, error,
+                }, cx);
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds(RECENT).is_some(), failed);
+        }
+        assert!(matches!(commands.try_recv().unwrap(), Command::RefreshSessions));
+        let archive = vcx.debug_bounds("sidebar-archive-toggle").unwrap();
+        vcx.simulate_click(archive.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(matches!(commands.try_recv().unwrap(), Command::ListArchivedSessions));
+        let restore = vcx.debug_bounds("restore-archived-session").unwrap();
+        vcx.simulate_click(restore.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(matches!(commands.try_recv().unwrap(), Command::SetSessionArchived { session_id, archived: false } if session_id == ID));
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(Update::SessionArchiveSettled {
+                session_id: ID.into(), archived: false, error: None,
+            }, cx);
+            let mut stale = session_info(ID, Some("Example chat"));
+            stale.archived = true;
+            workspace.apply(Update::ArchivedSessions { result: Ok(vec![stale]) }, cx);
+            assert!(!workspace.session_archive.excludes(ID));
+            workspace.apply(Update::ArchivedSessions { result: Ok(vec![]) }, cx);
+            workspace.apply(Update::Sessions {
+                sessions: vec![session_info(ID, Some("Example chat"))],
+            }, cx);
+            cx.notify();
+        });
+        assert!(matches!(commands.try_recv().unwrap(), Command::RefreshSessions));
+        assert!(matches!(commands.try_recv().unwrap(), Command::ListArchivedSessions));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("restore-archived-session").is_none());
+        let archive = vcx.debug_bounds("sidebar-archive-toggle").unwrap();
+        vcx.simulate_click(archive.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds(RECENT).is_some());
+    }
+
+    #[gpui::test]
+    fn recent_sessions_can_be_collapsed_and_reopened(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        const SESSION: &str = "session_fox_1234567890_deadbeef";
+        workspace.update(vcx, |workspace, cx| {
+            workspace.apply(
+                Update::Sessions { sessions: vec![session_info(SESSION, Some("fox work"))] },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+
+        let row = "sidebar-recent-session-session_fox_1234567890_deadbeef";
+        assert!(vcx.debug_bounds(row).is_some());
+        for collapsed in [true, false] {
+            let toggle = vcx.debug_bounds("sidebar-recent-toggle").unwrap();
+            vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds(row).is_none(), collapsed);
+            workspace.read_with(vcx, |workspace, _| {
+                assert_eq!(workspace.recent_sessions_collapsed, collapsed);
+            });
+        }
     }
 
     /// Clicking a sidebar row must open and activate that session through the
@@ -15425,6 +16127,61 @@ mod tests {
             cx.run_until_parked();
         }
         panic!("sidebar tab {selector} was not reachable");
+    }
+
+    #[gpui::test]
+    fn settings_text_scale_updates_input_and_sidebar_without_growing_hover_rows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        crate::config::with_test_text_scale(|| {
+            let (workspace, vcx) = cx.add_window_view(|_, cx| {
+                let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+                workspace.push_test_panel("typography-test", cx);
+                workspace.apply(Update::Sessions {
+                    sessions: (0..5).map(|i| session_info(
+                        &format!("session_fox_20261126_typography_{i}"), Some("Long session title"),
+                    )).collect(),
+                }, cx);
+                workspace
+            });
+            vcx.run_until_parked();
+            let row = "sidebar-recent-session-session_fox_20261126_typography_0";
+            let before = vcx.debug_bounds(row).unwrap();
+            let before_input = vcx.debug_bounds("prompt-editor").unwrap().size.height;
+            vcx.update(|window, cx| window.simulate_mouse_move(before.center(), cx));
+            vcx.run_until_parked();
+            assert_eq!(vcx.debug_bounds(row).unwrap(), before);
+
+            click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
+            for (selector, expected) in [("settings-text-larger", 105), ("settings-text-smaller", 100)] {
+                let button = vcx.debug_bounds(selector).unwrap();
+                vcx.simulate_click(button.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+                assert_eq!((crate::config::text_scale() * 100.0).round() as u16, expected);
+            }
+            for _ in 0..20 {
+                let button = vcx.debug_bounds("settings-text-larger").unwrap();
+                vcx.simulate_click(button.center(), gpui::Modifiers::default());
+                vcx.run_until_parked();
+            }
+            assert_eq!(crate::config::text_scale(), 2.0);
+            assert!(vcx.debug_bounds("prompt-editor").unwrap().size.height > before_input);
+            click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
+            let recent = vcx.debug_bounds("sidebar-recent-rows").unwrap();
+            let sidebar = vcx.debug_bounds("sidebar-session-list").unwrap();
+            assert_eq!(vcx.debug_bounds(row).unwrap().size.height, before.size.height * 2.0);
+            assert!(recent.size.height < before.size.height * 10.0);
+            assert!(recent.bottom() < sidebar.bottom());
+            assert!(vcx.debug_bounds("sidebar-session-0").is_some());
+
+            click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
+            let button = vcx.debug_bounds("settings-text-reset").unwrap();
+            vcx.simulate_click(button.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            assert_eq!(crate::config::text_scale(), 1.0);
+            click_sidebar_navigation(&workspace, vcx, "sidebar-sessions-tab");
+            assert_eq!(vcx.debug_bounds(row).unwrap().size.height, before.size.height);
+        });
     }
 
     #[gpui::test]

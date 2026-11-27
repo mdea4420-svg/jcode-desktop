@@ -5,7 +5,11 @@
 //! until saved into Jcode's private `provider-<name>.env` file.
 
 use super::*;
-use crate::custom_providers::{CustomProviderDraft, CustomProviderSummary};
+use crate::custom_providers::{CustomProviderDraft, CustomProviderSummary, RuntimeReloadStatus};
+use crate::locale::{is_zh, tr};
+#[path = "panel_custom_api_model_settings.rs"]
+mod model_settings;
+use model_settings::ModelSettingsEditor;
 
 pub(super) struct CustomApiEditor {
     pub original_name: Option<String>,
@@ -14,8 +18,11 @@ pub(super) struct CustomApiEditor {
     pub api_key: Entity<LoginInput>,
     pub name: Entity<PromptInput>,
     pub default_model: Entity<PromptInput>,
+    default_model_filter: Entity<PromptInput>,
+    models_expanded: bool,
     pub extra_models: Entity<PromptInput>,
     pub fetched_models: Vec<String>,
+    model_settings: ModelSettingsEditor,
     pub set_default: bool,
     pub model_catalog: bool,
     pub fetching: bool,
@@ -25,6 +32,7 @@ pub(super) struct CustomApiEditor {
 }
 
 fn plain_field(placeholder: &'static str, initial: &str, cx: &mut Context<Panel>) -> Entity<PromptInput> {
+    let editor = cx.weak_entity();
     let entity = cx.new(|cx| {
         let mut field =
             PromptInput::new(cx, placeholder, |_, _, _, _| {}).without_command_completion();
@@ -32,7 +40,9 @@ fn plain_field(placeholder: &'static str, initial: &str, cx: &mut Context<Panel>
         if !initial.is_empty() {
             field.set_content(initial.to_string(), cx);
         }
-        field
+        field.with_on_change(move |_, app| {
+            let _ = editor.update(app, |_, cx| cx.notify());
+        })
     });
     entity
 }
@@ -70,32 +80,35 @@ impl Panel {
             .unwrap_or_default();
         let extra_initial = others.join(", ");
         let key_placeholder = if existing.as_ref().is_some_and(|p| p.has_api_key) {
-            "Stored securely — leave blank to keep, or paste a new key"
+            tr("Stored securely — leave blank to keep, or paste a new key", "已安全保存。留空保留原密钥，或粘贴新密钥")
         } else {
-            "sk-... (optional for localhost / LAN servers)"
+            tr("sk-... (optional for localhost / LAN servers)", "sk-...（本机或局域网服务可留空）")
         };
 
         let base_url = plain_field(
-            "https://api.example.com/v1  or  http://127.0.0.1:3425/v1",
+            tr("https://api.example.com/v1  or  http://127.0.0.1:3425/v1", "https://api.example.com/v1 或 http://127.0.0.1:3425/v1"),
             base_initial,
             cx,
         );
         let name = plain_field(
-            "Optional name (auto-filled from URL, e.g. siliconflow)",
+            tr("Optional name (auto-filled from URL, e.g. siliconflow)", "选填，根据 URL 自动填写，例如 siliconflow"),
             name_initial,
             cx,
         );
         let default_model = plain_field(
-            "Default model ID (e.g. deepseek-ai/DeepSeek-V3 or gpt-4o)",
+            tr("Default model ID (e.g. deepseek-ai/DeepSeek-V3 or gpt-4o)", "默认模型 ID，例如 deepseek-ai/DeepSeek-V3 或 gpt-4o"),
             default_initial,
             cx,
         );
+        let default_model_filter = plain_field(tr("Filter /models…", "筛选已拉取模型…"), "", cx);
         let extra_models = plain_field(
-            "Optional extra model IDs, comma-separated (or click Fetch /models)",
+            tr("Optional extra model IDs, comma-separated (or click Fetch /models)", "选填，用逗号分隔额外模型 ID，也可点击拉取 /models"),
             &extra_initial,
             cx,
         );
         let api_key = cx.new(|cx| LoginInput::new(cx, key_placeholder));
+        let offline = self.preview_state.is_some() || cfg!(test) || crate::harness::screenshot_mode();
+        let model_settings = ModelSettingsEditor::new(name_initial, offline, cx);
 
         let Some(state) = self.login.as_mut() else {
             return;
@@ -103,6 +116,7 @@ impl Panel {
         state.provider = None;
         state.complete = false;
         state.error = None;
+        state.custom_api_reload = None;
         state.focus_pending = true;
         state.scroll.set_offset(point(px(0.), px(0.)));
         state.custom_api = Some(CustomApiEditor {
@@ -112,8 +126,11 @@ impl Panel {
             api_key,
             name,
             default_model,
+            default_model_filter,
+            models_expanded: false,
             extra_models,
             fetched_models: existing.as_ref().map(|p| p.models.clone()).unwrap_or_default(),
+            model_settings,
             set_default: existing.as_ref().map_or(true, |p| p.is_default),
             model_catalog: existing.as_ref().map_or(true, |p| p.model_catalog),
             fetching: false,
@@ -150,22 +167,17 @@ impl Panel {
         }
         let base_url = editor.base_url.read(cx).content.to_string();
         let existing_name = editor.original_name.clone();
-        // Peek secret without clearing it so Save still has the key afterwards.
-        let secret = editor.api_key.update(cx, |input, cx| {
-            let taken = input.take(cx);
-            taken
-        });
-        // Put the secret back into the masked field immediately if non-empty.
-        let secret_for_fetch = (!secret.trim().is_empty()).then(|| secret.clone());
-        let restore = secret;
-        if offline {
+        if offline || cfg!(test) {
             editor.notice = Some((
-                "Network fetch is disabled in offline preview.".into(),
+                tr("Network fetch is disabled in offline preview.", "离线预览无法拉取模型目录。").into(),
                 true,
             ));
             cx.notify();
             return;
         }
+        let secret = editor.api_key.update(cx, |input, cx| input.take(cx));
+        let secret_for_fetch = (!secret.trim().is_empty()).then(|| secret.clone());
+        let restore = secret;
         editor.fetching = true;
         editor.notice = None;
         let api_key_entity = editor.api_key.clone();
@@ -222,7 +234,11 @@ impl Panel {
                             .update(cx, |input, cx| input.set_content(rest.join(", "), cx));
                         editor.fetched_models = models;
                         editor.notice = Some((
-                            format!("Fetched {count} models from {working_base}. Click a model pill below to pick the default."),
+                            if is_zh() {
+                                format!("已从 {working_base} 拉取 {count} 个模型。点击下方模型可设为默认。")
+                            } else {
+                                format!("Fetched {count} models from {working_base}. Click a model pill below to pick the default.")
+                            },
                             false,
                         ));
                     }
@@ -251,14 +267,23 @@ impl Panel {
         let base_url = editor.base_url.read(cx).content.to_string();
         let name = editor.name.read(cx).content.to_string();
         let default_model = editor.default_model.read(cx).content.to_string();
-        let extra = crate::custom_providers::parse_model_list(
-            editor.extra_models.read(cx).content.as_ref(),
-        );
-        let mut models = Vec::new();
-        for id in extra.into_iter().chain(editor.fetched_models.iter().cloned()) {
-            if !models.contains(&id) {
-                models.push(id);
+        let models = editor.model_ids(cx);
+        let model_settings = match editor.model_settings.pending_edits(&models, cx) {
+            Ok(edits) => edits,
+            Err((id, error)) => {
+                editor.model_settings.target = Some(id);
+                editor.notice = Some((error, true));
+                cx.notify();
+                return;
             }
+        };
+        if self.preview_state.is_some() || crate::harness::screenshot_mode() {
+            editor.notice = Some((
+                tr("Saving endpoints is disabled in offline preview.", "离线预览无法保存端点。").into(),
+                true,
+            ));
+            cx.notify();
+            return;
         }
         let secret = editor.api_key.update(cx, |input, cx| input.take(cx));
         let draft = CustomProviderDraft {
@@ -268,18 +293,10 @@ impl Panel {
             api_key: (!secret.trim().is_empty()).then_some(secret.clone()),
             default_model,
             models,
+            model_settings,
             set_default: editor.set_default,
             model_catalog: editor.model_catalog,
-            model_settings: Default::default(),
         };
-        if self.preview_state.is_some() || crate::harness::screenshot_mode() {
-            editor.notice = Some((
-                "Saving endpoints is disabled in offline preview.".into(),
-                true,
-            ));
-            cx.notify();
-            return;
-        }
         editor.saving = true;
         editor.notice = None;
         let restore_on_err = secret;
@@ -295,22 +312,25 @@ impl Panel {
                     &|_, _, _| Ok(()),
                     &|_, _| true,
                 )
+                .map(|summary| (summary, RuntimeReloadStatus::NotRunning))
             } else {
-                crate::custom_providers::save(draft)
+                crate::custom_providers::save_with_reload_status(draft)
             }
         });
         editor.task = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
             let _ = this.update(cx, |panel, cx| {
                 match result {
-                    Ok(summary) => {
+                    Ok((summary, reload)) => {
                         let route_spec = summary.route_spec();
+                        panel.input.update(cx, |input, _| input.load_configured_model_meta());
                         if let Some(state) = panel.login.as_mut() {
                             state.custom_api = None;
                             state.provider = None;
                             state.complete = true;
                             state.busy = false;
                             state.error = None;
+                            state.custom_api_reload = Some(reload);
                         }
                         if let Some(session_id) = panel.login_target_session() {
                             panel.bridge.send(Command::RefreshRuntime {
@@ -371,10 +391,10 @@ impl Panel {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::custom_providers::make_default(&name) })
+                .spawn(async move { crate::custom_providers::make_default_with_reload_status(&name) })
                 .await;
             let _ = this.update(cx, |panel, cx| match result {
-                Ok(spec) => {
+                Ok((spec, reload)) => {
                     if let Some(session_id) = target {
                         bridge.send(Command::RefreshRuntime {
                             session_id: session_id.clone(),
@@ -382,6 +402,10 @@ impl Panel {
                         if let Some(model) = spec.or(fallback_spec) {
                             bridge.send(Command::SetModel { session_id, model });
                         }
+                    }
+                    if let Some(state) = panel.login.as_mut() {
+                        state.custom_api_reload = Some(reload);
+                        state.error = None;
                     }
                     panel.refresh_login_status(cx);
                 }
@@ -411,15 +435,23 @@ impl Panel {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::custom_providers::remove(&name) })
+                .spawn(async move { crate::custom_providers::remove_with_reload_status(&name) })
                 .await;
             let _ = this.update(cx, |panel, cx| {
-                if let Err(error) = result {
-                    if let Some(state) = panel.login.as_mut() {
-                        state.error = Some(error);
-                        cx.notify();
+                match result {
+                    Ok(reload) => {
+                        if let Some(state) = panel.login.as_mut() {
+                            state.custom_api_reload = Some(reload);
+                            state.error = None;
+                        }
                     }
-                    return;
+                    Err(error) => {
+                        if let Some(state) = panel.login.as_mut() {
+                            state.error = Some(error);
+                            cx.notify();
+                        }
+                        return;
+                    }
                 }
                 if let Some(session_id) = target {
                     bridge.send(Command::RefreshRuntime { session_id });
@@ -432,7 +464,7 @@ impl Panel {
 
     pub(super) fn custom_api_matches_query(&self, query: &str) -> bool {
         let q = query.trim().to_ascii_lowercase();
-        if q.is_empty() || "custom api openai compatible third party gateway".contains(&q) {
+        if q.is_empty() || custom_api_keyword_matches(&q) {
             return true;
         }
         self.login.as_ref().is_some_and(|state| {
@@ -453,10 +485,6 @@ impl Panel {
             return None;
         }
         let theme = Theme::global();
-        let selecting = self
-            .login
-            .as_ref()
-            .is_some_and(|state| state.selection_only);
         let items: Vec<CustomProviderSummary> = self
             .login
             .as_ref()
@@ -474,7 +502,7 @@ impl Panel {
                                 .models
                                 .iter()
                                 .any(|m| m.to_ascii_lowercase().contains(&q))
-                            || "custom api openai compatible third party gateway".contains(&q)
+                            || custom_api_keyword_matches(&q)
                     })
                     .cloned()
                     .collect()
@@ -506,42 +534,40 @@ impl Panel {
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme.TEXT)
-                                    .child("Custom API endpoints"),
+                                    .child(tr("Custom API endpoints", "自定义 API 端点")),
                             )
                             .when(!items.is_empty(), |el| {
                                 el.child(pill_badge(items.len().to_string(), theme.TEXT_DIM))
                             }),
                     )
-                    .when(!selecting, |el| {
-                        el.child(
-                            div()
-                                .id("custom-api-add")
-                                .debug_selector(|| "custom-api-add".into())
-                                .px_3()
-                                .py_1()
-                                .rounded_full()
-                                .bg(theme.ACCENT.opacity(0.16))
-                                .text_color(theme.ACCENT)
-                                .text_size(px(12.))
-                                .cursor_pointer()
-                                .hover(|el| el.bg(theme.ACCENT.opacity(0.28)))
-                                .child("+ Add custom API")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_custom_api_editor(None, cx);
-                                })),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .id("custom-api-add")
+                            .debug_selector(|| "custom-api-add".into())
+                            .px_3()
+                            .py_1()
+                            .rounded_full()
+                            .bg(theme.ACCENT.opacity(0.16))
+                            .text_color(theme.ACCENT)
+                            .text_size(px(12.))
+                            .cursor_pointer()
+                            .hover(|el| el.bg(theme.ACCENT.opacity(0.28)))
+                            .child(tr("+ Add custom API", "+ 添加自定义 API"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_custom_api_editor(None, cx);
+                            })),
+                    ),
             )
             .child(
                 div()
                     .px_2()
                     .text_size(px(11.))
                     .text_color(theme.TEXT_DIM)
-                    .child("Connect any OpenAI-compatible third-party API (Base URL + API key + /models)."),
+                    .child(tr("Connect any OpenAI-compatible third-party API (Base URL + API key + /models).", "连接兼容 OpenAI 的第三方 API，支持基础 URL、API 密钥和 /models。")),
             );
 
         for item in items {
-            section = section.child(self.render_custom_api_row(item, selecting, cx));
+            section = section.child(self.render_custom_api_row(item, cx));
         }
         Some(section.into_any_element())
     }
@@ -549,7 +575,6 @@ impl Panel {
     fn render_custom_api_row(
         &self,
         item: CustomProviderSummary,
-        selecting: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -557,7 +582,9 @@ impl Panel {
         let row_id = format!("custom-api-row-{name}");
         let row_selector = row_id.clone();
         let model_count = item.models.len();
-        let model_label = if model_count == 1 {
+        let model_label = if is_zh() {
+            format!("{model_count} 个模型")
+        } else if model_count == 1 {
             "1 model".to_string()
         } else {
             format!("{model_count} models")
@@ -582,54 +609,48 @@ impl Panel {
             .child(pill_badge(model_label, theme.TEXT_DIM))
             .child(pill_badge(
                 if item.has_api_key {
-                    "API key"
+                    tr("API key", "API 密钥")
                 } else {
-                    "Local / no key"
+                    tr("Local / no key", "本地 / 免密钥")
                 },
                 theme.TEXT_DIM,
             ));
         if item.is_default {
-            header = header.child(pill_badge("Default", theme.ACCENT));
+            header = header.child(pill_badge(tr("Default", "默认"), theme.ACCENT));
         }
 
-        let mut actions = div().flex().flex_none().items_center().gap_1p5();
-        if selecting {
-            actions = actions.child(pill_badge("Select", theme.ACCENT));
-        } else {
-            let use_item = item.clone();
-            let use_id = format!("custom-api-use-{name}");
-            let use_sel = use_id.clone();
-            actions = actions.child(
-                action_pill(use_id, use_sel, if item.is_default { "Use now" } else { "Set default" }, false)
+        let use_item = item.clone();
+        let use_id = format!("custom-api-use-{name}");
+        let use_label = if item.is_default { tr("Use now", "立即使用") } else { tr("Set default", "设为默认") };
+        let edit_item = item.clone();
+        let edit_id = format!("custom-api-edit-{name}");
+        let remove_name = item.name.clone();
+        let rm_id = format!("custom-api-remove-{name}");
+        let actions = div().flex().flex_none().items_center().gap_1p5()
+            .child(
+                action_pill(use_id.clone(), use_id, use_label, false)
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.activate_custom_provider(use_item.clone(), window, cx);
                     })),
-            );
-            let edit_item = item.clone();
-            let edit_id = format!("custom-api-edit-{name}");
-            let edit_sel = edit_id.clone();
-            actions = actions.child(
-                action_pill(edit_id, edit_sel, "Edit", false)
+            )
+            .child(
+                action_pill(edit_id.clone(), edit_id, tr("Edit", "编辑"), false)
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.open_custom_api_editor(Some(edit_item.clone()), cx);
                     })),
-            );
-            let remove_name = item.name.clone();
-            let rm_id = format!("custom-api-remove-{name}");
-            let rm_sel = rm_id.clone();
-            actions = actions.child(
-                action_pill(rm_id, rm_sel, "Remove", true)
+            )
+            .child(
+                action_pill(rm_id.clone(), rm_id, tr("Remove", "移除"), true)
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.delete_custom_provider(remove_name.clone(), cx);
                     })),
             );
-        }
 
         let click_item = item.clone();
         div()
@@ -676,12 +697,8 @@ impl Panel {
                     ),
             )
             .child(actions)
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if selecting {
-                    this.activate_custom_provider(click_item.clone(), window, cx);
-                } else {
-                    this.open_custom_api_editor(Some(click_item.clone()), cx);
-                }
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_custom_api_editor(Some(click_item.clone()), cx);
             }))
             .into_any_element()
     }
@@ -694,41 +711,10 @@ impl Panel {
         let theme = Theme::global();
         let editing = editor.original_name.as_deref();
         let heading = match editing {
-            Some(name) => format!("Edit custom API · {name}"),
-            None => "Add custom OpenAI-compatible API".to_string(),
+            Some(name) => format!("{} · {name}", tr("Edit custom API", "编辑自定义 API")),
+            None => tr("Add custom OpenAI-compatible API", "添加兼容 OpenAI 的自定义 API").into(),
         };
-        let selected_default = editor.default_model.read(cx).content.trim().to_string();
         let api_key_entity = editor.api_key.clone();
-
-        let mut model_chips = div().flex().flex_wrap().gap_1p5();
-        for model in editor.fetched_models.iter().take(24) {
-            let active = model == &selected_default;
-            let model_id = model.clone();
-            let chip_id = format!("custom-api-model-{model_id}");
-            let default_field = editor.default_model.clone();
-            model_chips = model_chips.child(
-                div()
-                    .id(SharedString::from(chip_id))
-                    .px_2p5()
-                    .py(px(3.))
-                    .rounded_full()
-                    .bg(if active {
-                        theme.ACCENT.opacity(0.22)
-                    } else {
-                        theme.PANEL_BG
-                    })
-                    .text_size(px(11.))
-                    .text_color(if active { theme.ACCENT } else { theme.TEXT_DIM })
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                    .child(model.clone())
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        default_field
-                            .update(cx, |input, cx| input.set_content(model_id.clone(), cx));
-                        cx.notify();
-                    })),
-            );
-        }
 
         div()
             .debug_selector(|| "custom-api-editor".into())
@@ -751,7 +737,7 @@ impl Panel {
                             .child(heading),
                     )
                     .child(
-                        login_button("custom-api-back", "Back").on_click(cx.listener(
+                        login_button("custom-api-back", tr("Back", "返回")).on_click(cx.listener(
                             |this, _, _, cx| {
                                 this.close_custom_api_editor(cx);
                             },
@@ -759,16 +745,16 @@ impl Panel {
                     ),
             )
             .child(field_block(
-                "Base URL",
-                "OpenAI-compatible root URL (https://.../v1, or http://127.0.0.1:PORT/v1 for local gateways).",
+                tr("Base URL", "基础 URL"),
+                tr("OpenAI-compatible root URL (https://.../v1, or http://127.0.0.1:PORT/v1 for local gateways).", "兼容 OpenAI 的基础地址。例如 https://…/v1，本地网关可用 http://127.0.0.1:PORT/v1。"),
                 editor.base_url.clone().into_any_element(),
             ))
             .child(field_block(
-                "API key",
+                tr("API key", "API 密钥"),
                 if editor.has_existing_key {
-                    "Stored in Jcode's private env file. Leave blank to keep your existing key."
+                    tr("Stored in Jcode's private env file. Leave blank to keep your existing key.", "密钥保存在 Jcode 的私有环境变量文件中。留空可保留原密钥。")
                 } else {
-                    "Stored in Jcode's private env file, never in plaintext config.toml or chat."
+                    tr("Stored in Jcode's private env file, never in plaintext config.toml or chat.", "密钥保存在 Jcode 的私有环境变量文件中，不会明文写入 config.toml 或聊天记录。")
                 },
                 div()
                     .flex()
@@ -776,7 +762,7 @@ impl Panel {
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(editor.api_key.clone()))
                     .child(
-                        login_button("custom-api-paste-key", "Paste").on_click(cx.listener(
+                        login_button("custom-api-paste-key", tr("Paste", "粘贴")).on_click(cx.listener(
                             move |_, _, window, cx| {
                                 api_key_entity.update(cx, |input, cx| input.paste(window, cx));
                             },
@@ -785,8 +771,8 @@ impl Panel {
                     .into_any_element(),
             ))
             .child(field_block(
-                "Endpoint name",
-                "Used as the route prefix in /model (for example siliconflow:deepseek-v3).",
+                tr("Endpoint name", "端点名称"),
+                tr("Used as the route prefix in /model (for example siliconflow:deepseek-v3).", "用作 /model 中的线路前缀，例如 siliconflow:deepseek-v3。"),
                 editor.name.clone().into_any_element(),
             ))
             .child(
@@ -804,7 +790,7 @@ impl Panel {
                                 div()
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Default model"),
+                                    .child(tr("Default model", "默认模型")),
                             )
                             .child(
                                 div()
@@ -822,9 +808,9 @@ impl Panel {
                                     })
                                     .when(editor.fetching, |el| el.opacity(0.6))
                                     .child(if editor.fetching {
-                                        "Fetching /models…"
+                                        tr("Fetching /models…", "正在拉取 /models…")
                                     } else {
-                                        "Fetch /models"
+                                        tr("Fetch /models", "拉取 /models")
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.fetch_custom_api_models(cx);
@@ -832,13 +818,16 @@ impl Panel {
                             ),
                     )
                     .child(editor.default_model.clone())
-                    .when(!editor.fetched_models.is_empty(), |el| el.child(model_chips)),
+                    .when(!editor.fetched_models.is_empty(), |el| {
+                        el.child(self.render_custom_api_default_models(editor, cx))
+                    }),
             )
             .child(field_block(
-                "Extra models (optional)",
-                "Comma-separated model IDs exposed in /model alongside the default model.",
+                tr("Extra models (optional)", "额外模型（可选）"),
+                tr("Comma-separated model IDs exposed in /model alongside the default model.", "用逗号分隔模型 ID。这些模型与默认模型一起显示在 /model 中。"),
                 editor.extra_models.clone().into_any_element(),
             ))
+            .children(self.render_custom_model_settings(editor, cx))
             .child(
                 div()
                     .flex()
@@ -848,9 +837,9 @@ impl Panel {
                     .child(toggle_pill(
                         "custom-api-toggle-default",
                         if editor.set_default {
-                            "Default provider: On"
+                            tr("Default provider: On", "默认提供商：开启")
                         } else {
-                            "Default provider: Off"
+                            tr("Default provider: Off", "默认提供商：关闭")
                         },
                         editor.set_default,
                         cx.listener(|this, _, _, cx| {
@@ -865,9 +854,9 @@ impl Panel {
                     .child(toggle_pill(
                         "custom-api-toggle-catalog",
                         if editor.model_catalog {
-                            "Sync /models catalog: On"
+                            tr("Sync /models catalog: On", "同步 /models 目录：开启")
                         } else {
-                            "Sync /models catalog: Off"
+                            tr("Sync /models catalog: Off", "同步 /models 目录：关闭")
                         },
                         editor.model_catalog,
                         cx.listener(|this, _, _, cx| {
@@ -911,16 +900,16 @@ impl Panel {
                             })
                             .when(editor.saving, |el| el.opacity(0.6))
                             .child(if editor.saving {
-                                "Saving…"
+                                tr("Saving…", "正在保存…")
                             } else {
-                                "Save & connect"
+                                tr("Save & connect", "保存并连接")
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.submit_custom_api(cx);
                             })),
                     )
                     .child(
-                        login_button("custom-api-cancel", "Cancel").on_click(cx.listener(
+                        login_button("custom-api-cancel", tr("Cancel", "取消")).on_click(cx.listener(
                             |this, _, _, cx| {
                                 this.close_custom_api_editor(cx);
                             },
@@ -929,6 +918,190 @@ impl Panel {
             )
             .into_any_element()
     }
+
+    fn render_custom_api_default_models(
+        &self,
+        editor: &CustomApiEditor,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        const COLLAPSED_LIMIT: usize = 8;
+        let theme = Theme::global();
+        let filter = &editor.default_model_filter.read(cx).content;
+        let query = filter.trim().to_lowercase();
+        let selected_default = editor.default_model.read(cx).content.trim();
+        let mut visible: Vec<_> = editor
+            .fetched_models
+            .iter()
+            .filter(|model| query.is_empty() || model.to_lowercase().contains(&query))
+            .collect();
+        let match_count = visible.len();
+        let can_toggle = query.is_empty() && match_count > COLLAPSED_LIMIT;
+        if can_toggle && !editor.models_expanded {
+            let selected_outside = visible[COLLAPSED_LIMIT..]
+                .iter()
+                .copied()
+                .find(|model| model.as_str() == selected_default);
+            visible.truncate(COLLAPSED_LIMIT);
+            if let Some(selected) = selected_outside
+                && !visible.contains(&selected)
+            {
+                visible[COLLAPSED_LIMIT - 1] = selected;
+            }
+        }
+
+        let mut model_chips = div().flex().flex_wrap().gap_1p5();
+        for model in visible {
+            let active = model == selected_default;
+            let model_id = model.clone();
+            let chip_id = format!("custom-api-model-{model_id}");
+            let default_field = editor.default_model.clone();
+            model_chips = model_chips.child(
+                div()
+                    .id(SharedString::from(chip_id.clone()))
+                    .debug_selector(move || chip_id.clone())
+                    .px_2p5()
+                    .py(px(3.))
+                    .rounded_full()
+                    .bg(if active {
+                        theme.ACCENT.opacity(0.22)
+                    } else {
+                        theme.PANEL_BG
+                    })
+                    .text_size(px(11.))
+                    .text_color(if active { theme.ACCENT } else { theme.TEXT_DIM })
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                    .child(model.clone())
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        default_field
+                            .update(cx, |input, cx| input.set_content(model_id.clone(), cx));
+                        cx.notify();
+                    })),
+            );
+        }
+        if can_toggle {
+            let label = if editor.models_expanded {
+                tr("Show fewer", "收起").to_owned()
+            } else if is_zh() {
+                format!("展开全部（{match_count}）")
+            } else {
+                format!("Show all ({match_count})")
+            };
+            let id = "custom-api-models-toggle";
+            model_chips = model_chips.child(
+                action_pill(id.into(), id.into(), label, false)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(editor) = this.login.as_mut().and_then(|s| s.custom_api.as_mut()) {
+                            editor.models_expanded = !editor.models_expanded;
+                            cx.notify();
+                        }
+                    })),
+            );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(editor.fetched_models.len() > COLLAPSED_LIMIT || !filter.is_empty(), |el| {
+                el.child(
+                    div()
+                        .id("custom-api-default-filter")
+                        .debug_selector(|| "custom-api-default-filter".into())
+                        .child(editor.default_model_filter.clone()),
+                )
+            })
+            .child(if match_count == 0 {
+                div()
+                    .debug_selector(|| "custom-api-models-empty".into())
+                    .text_size(px(11.))
+                    .text_color(theme.TEXT_DIM)
+                    .child(tr("No fetched models match the filter.", "没有匹配的已拉取模型。"))
+                    .into_any_element()
+            } else if !query.is_empty() || (can_toggle && editor.models_expanded) {
+                div()
+                    .id("custom-api-default-models-scroll")
+                    .max_h(px(140.))
+                    .overflow_y_scroll()
+                    .child(model_chips)
+                    .into_any_element()
+            } else {
+                model_chips.into_any_element()
+            })
+    }
+}
+
+fn custom_api_keyword_matches(query: &str) -> bool {
+    "custom api openai compatible third party gateway".contains(query)
+        || "自定义 api 端点 网关 兼容 第三方".contains(query)
+}
+
+#[cfg(test)]
+#[test]
+fn custom_api_search_matches_chinese_and_english_keywords() {
+    for keyword in ["自定义", "端点", "网关", "兼容", "custom api", "gateway"] {
+        assert!(custom_api_keyword_matches(keyword), "missing keyword {keyword}");
+    }
+    assert!(!custom_api_keyword_matches("unrelated"));
+    assert!(!custom_api_keyword_matches("无关"));
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn custom_api_default_models_expand_collapse_and_filter_beyond_twenty_four(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(crate::input::bind_keys);
+    let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(px(1100.), px(820.)));
+    panel.update(vcx, |panel, cx| {
+        panel.open_custom_api_editor(None, cx);
+        let editor = panel.login.as_mut().unwrap().custom_api.as_mut().unwrap();
+        editor.fetched_models = (1..=30).map(|n| format!("model-{n:02}")).collect();
+        editor.default_model.update(cx, |input, cx| input.set_content("model-30".into(), cx));
+    });
+    vcx.run_until_parked();
+
+    let click = |vcx: &mut gpui::VisualTestContext, selector| {
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+    let assert_selected = |vcx: &mut gpui::VisualTestContext, model| {
+        panel.read_with(vcx, |panel, cx| {
+            let editor = panel.login.as_ref().unwrap().custom_api.as_ref().unwrap();
+            assert_eq!(editor.default_model.read(cx).content.as_ref(), model);
+        });
+    };
+
+    assert!(vcx.debug_bounds("custom-api-model-model-07").is_some());
+    assert!(vcx.debug_bounds("custom-api-model-model-08").is_none());
+    assert!(vcx.debug_bounds("custom-api-model-model-25").is_none());
+    assert!(vcx.debug_bounds("custom-api-model-model-30").is_some());
+    click(vcx, "custom-api-models-toggle");
+    click(vcx, "custom-api-model-model-25");
+    assert_selected(vcx, "model-25");
+    assert!(vcx.debug_bounds("custom-api-model-model-30").is_some());
+    click(vcx, "custom-api-models-toggle");
+    assert!(vcx.debug_bounds("custom-api-model-model-25").is_some());
+    assert!(vcx.debug_bounds("custom-api-model-model-30").is_none());
+
+    click(vcx, "custom-api-default-filter");
+    vcx.simulate_input("MoDeL-29");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("custom-api-models-toggle").is_none());
+    assert!(vcx.debug_bounds("custom-api-model-model-25").is_none());
+    click(vcx, "custom-api-model-model-29");
+    assert_selected(vcx, "model-29");
+
+    click(vcx, "custom-api-default-filter");
+    vcx.simulate_keystrokes("ctrl-a");
+    vcx.simulate_input("missing");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("custom-api-models-empty").is_some());
+    assert!(vcx.debug_bounds("custom-api-model-model-29").is_none());
+    assert_selected(vcx, "model-29");
 }
 
 fn field_block(
@@ -974,7 +1147,7 @@ fn pill_badge(label: impl Into<SharedString>, color: gpui::Rgba) -> gpui::Div {
 fn action_pill(
     id: String,
     selector: String,
-    label: &'static str,
+    label: impl Into<SharedString>,
     danger: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
@@ -1000,7 +1173,7 @@ fn action_pill(
             })
             .text_color(if danger { theme.ERROR } else { theme.TEXT })
         })
-        .child(label)
+        .child(label.into())
 }
 
 fn toggle_pill(

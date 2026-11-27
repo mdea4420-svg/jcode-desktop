@@ -18,6 +18,23 @@ pub(crate) struct WorkspaceSlashCommand {
     pub content: String,
 }
 
+/// Toggle the project folder choices from a fresh conversation.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct ToggleProjectFolderMenu {
+    pub source: Option<gpui::EntityId>,
+    pub position: gpui::Point<gpui::Pixels>,
+}
+
+pub(crate) fn project_folder_plus_icon() -> gpui::Svg {
+    const ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2 5V4a1 1 0 0 1 1-1h3l2 2h5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5ZM8 7v4M6 9h4" fill="none" stroke="black" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+    use gpui::Styled;
+    gpui::svg()
+        .data(ICON)
+        .size(gpui::px(14.0))
+        .text_color(crate::theme::Theme::global().ACCENT)
+}
+
 /// Open the Accounts panel, optionally starting a login command.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

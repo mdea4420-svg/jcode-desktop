@@ -1,7 +1,7 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
 
-const COUNT: usize = 12;
+const COUNT: usize = 11;
 const STEP: f32 = 48.0;
 const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("sidebar-sessions-tab", "chat", Some(SidebarView::Sessions)),
@@ -22,7 +22,6 @@ const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("sidebar-unfinished-work", "todos", None),
     ("open-todoist", "todoist", None),
     ("open-gmail", "email", None),
-    ("sidebar-open-folder", "folder", None),
     ("sidebar-new-session", "+", None),
 ];
 
@@ -123,8 +122,7 @@ impl Workspace {
                 7 => self.new_unfinished_work(&NewUnfinishedWork, window, cx),
                 8 => self.open_todoist(&OpenTodoist, window, cx),
                 9 => self.open_gmail(&OpenGmail, window, cx),
-                10 => self.open_folder(&OpenFolder, window, cx),
-                11 => {
+                10 => {
                     self.missed("new_panel", cx);
                     self.open_new_session(cx);
                 }
@@ -587,7 +585,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn roller_folder_and_new_session_clicks_preserve_their_action_contracts(
+    fn roller_new_session_click_creates_a_session(
         cx: &mut gpui::TestAppContext,
     ) {
         let (bridge, commands) = harness::spawn_recording();
@@ -604,21 +602,7 @@ mod tests {
             commands.try_recv().is_err(),
             "browsing must not create a session"
         );
-        let folder = vcx.debug_bounds("sidebar-open-folder-expanded").unwrap();
-        vcx.simulate_click(folder.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
-        assert!(
-            !vcx.did_prompt_for_paths(),
-            "folder action stays in the app"
-        );
-        let cancel = vcx.debug_bounds("folder-picker-cancel").unwrap();
-        vcx.simulate_click(cancel.center(), gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
-        assert!(commands.try_recv().is_err());
-        vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
-        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-open-folder-expanded").is_none());
         let new = vcx.debug_bounds("sidebar-new-session-expanded").unwrap();
         vcx.simulate_click(new.center(), gpui::Modifiers::default());
         vcx.run_until_parked();

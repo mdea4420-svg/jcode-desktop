@@ -280,3 +280,43 @@ fn popup_star_click_toggles_favorite_without_submitting(cx: &mut gpui::TestAppCo
     assert!(submitted.borrow().is_empty());
     model_favorites::reset();
 }
+#[gpui::test]
+fn hidden_model_rows_drop_from_the_popup_and_search(cx: &mut gpui::TestAppContext) {
+    model_favorites::reset();
+    let input = cx.new(|cx| PromptInput::new(cx, "test", |_, _, _, _| {}));
+    input.update(cx, |input, cx| {
+        input.set_model_routes(Vec::new(), &routes(4), None, cx);
+        input.set_content("/model ".into(), cx);
+        // Three model rows plus the group's "Show more" disclosure.
+        assert_eq!(input.command_suggestions().len(), 4);
+        let spec = input.command_suggestions()[2]
+            .value
+            .trim_start_matches("/model ")
+            .to_string();
+        assert!(model_favorites::toggle_hidden_model(&spec));
+        let rows = input.command_suggestions();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(!rows.iter().any(|row| row.value == format!("/model {spec}")));
+
+        // Hiding the active model never switches it: the field keeps the
+        // spec, the menu just stops advertising it.
+        input.set_current_model(Some(spec.clone()), cx);
+        let rows = input.command_suggestions();
+        assert!(rows.iter().all(|row| row.help != "Current"));
+        assert_eq!(input.current_model.as_deref(), Some(spec.as_str()));
+
+        // Search drops the hidden spec but still matches its siblings.
+        input.set_content("/model atlas-000".into(), cx);
+        let hits = input.command_suggestions();
+        assert_eq!(hits.len(), 3, "{hits:?}");
+        assert!(!hits.iter().any(|row| row.value.contains("atlas-0002")));
+
+        // Unhiding restores the row and the Current marker.
+        assert!(!model_favorites::toggle_hidden_model(&spec));
+        input.set_content("/model ".into(), cx);
+        let rows = input.command_suggestions();
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert!(rows.iter().any(|row| row.help == "Current"));
+    });
+    model_favorites::reset();
+}

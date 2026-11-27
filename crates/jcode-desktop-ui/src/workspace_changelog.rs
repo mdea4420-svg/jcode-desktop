@@ -12,7 +12,7 @@ impl Workspace {
             let panel = cx.new(|cx| {
                 Panel::new(
                     Panel::CHANGELOG_SESSION_ID.into(),
-                    Some("Desktop changelog".into()),
+                    Some(tr("Desktop changelog", "更新日志").into()),
                     None,
                     self.bridge.clone(),
                     cx,
@@ -40,7 +40,7 @@ impl Workspace {
             let panel = cx.new(|cx| {
                 Panel::new(
                     Panel::CHANGELOG_SESSION_ID.into(),
-                    Some("Desktop changelog".into()),
+                    Some(tr("Desktop changelog", "更新日志").into()),
                     None,
                     self.bridge.clone(),
                     cx,
@@ -122,7 +122,7 @@ impl Workspace {
         let panel = cx.new(|cx| {
             Panel::new(
                 Panel::CHANGELOG_SESSION_ID.into(),
-                Some("Desktop changelog".into()),
+                Some(tr("Desktop changelog", "更新日志").into()),
                 None,
                 self.bridge.clone(),
                 cx,
@@ -161,6 +161,29 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn changelog_focus_does_not_block_startup_draft(cx: &mut gpui::TestAppContext) {
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w.open_startup_draft(cx);
+            w
+        });
+        workspace.update_in(vcx, |w, window, cx| {
+            w.open_changelog(&OpenChangelog, window, cx);
+            assert!(w.slots[w.active].panel.read(cx).is_changelog());
+            w.apply(harness::Update::Connected, cx);
+            w.apply(harness::Update::Connected, cx);
+            assert!(w.slots[w.active].panel.read(cx).is_changelog());
+        });
+        assert!(matches!(
+            commands.try_recv(),
+            Ok(Command::CreateSession { request_id: Some(id), .. }) if id == Panel::STARTUP_SESSION_ID
+        ));
+        assert!(commands.try_recv().is_err());
+    }
 
     #[gpui::test]
     fn changelog_can_open_without_a_chat(cx: &mut gpui::TestAppContext) {

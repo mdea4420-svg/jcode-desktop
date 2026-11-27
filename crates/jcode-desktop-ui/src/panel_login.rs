@@ -1,5 +1,6 @@
 //! Native login UI. Secrets and OAuth state never enter the conversation or snapshots.
 use super::*;
+use crate::locale::{is_zh, tr};
 use crate::login_input::LoginInput;
 use jcode_sdk::{
     AuthClient, AuthFlow, AuthInputKind, AuthOptions, AuthPrompt, LoginMethod, LoginProvider,
@@ -12,8 +13,6 @@ mod accounts;
 #[path = "panel_custom_api.rs"]
 mod custom_api;
 use jcode_desktop_accounts_ui::catalog;
-#[path = "panel_provider_picker.rs"]
-mod provider_picker;
 #[cfg(test)]
 #[path = "panel_provider_picker_tests.rs"]
 mod provider_picker_tests;
@@ -22,8 +21,6 @@ mod steps;
 use steps::manual_input_visible;
 
 pub(super) struct LoginState {
-    /// Composer account selection never starts a sign-in flow.
-    selection_only: bool,
     client: AuthClient,
     providers: Vec<LoginProvider>,
     provider: Option<LoginProvider>,
@@ -34,6 +31,7 @@ pub(super) struct LoginState {
     browser_opened: bool,
     scroll: ScrollHandle,
     error: Option<String>,
+    custom_api_reload: Option<crate::custom_providers::RuntimeReloadStatus>,
     complete: bool,
     focus_pending: bool,
     task: Option<Task<()>>,
@@ -103,6 +101,8 @@ impl Panel {
     }
 
     pub(super) fn open_login_picker(&mut self, cx: &mut Context<Self>) {
+        self.effort_picker = None;
+        self.swarm.focus = None;
         self.recovery_picker_open = false;
         self.model_browser = None;
         if self.login.is_some() {
@@ -133,7 +133,7 @@ impl Panel {
         let change = cx.weak_entity();
         let cancel = change.clone();
         let search = cx.new(|cx| {
-            let mut search = PromptInput::new(cx, "Search accounts…", |_, _, _, _| {})
+            let mut search = PromptInput::new(cx, tr("Search accounts…", "搜索账户…"), |_, _, _, _| {})
                 .without_command_completion()
                 .with_on_overlay_cancel(move |app| {
                     let restored = cancel.update(app, |panel, cx| {
@@ -165,17 +165,17 @@ impl Panel {
         });
         self.extensions = None;
         self.login = Some(LoginState {
-            selection_only: false,
             client,
             providers,
             provider: None,
             flow: None,
             prompt: None,
-            input: cx.new(|cx| LoginInput::new(cx, "Paste the code or callback URL")),
+            input: cx.new(|cx| LoginInput::new(cx, tr("Paste the code or callback URL", "粘贴授权码或回调 URL"))),
             busy: false,
             browser_opened: false,
             scroll: ScrollHandle::new(),
             error: None,
+            custom_api_reload: None,
             complete: false,
             focus_pending: true,
             task: None,
@@ -199,7 +199,7 @@ impl Panel {
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
             self.login.as_mut().unwrap().error = Some(
-                "This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.".into());
+                tr("This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.", "此会话在另一台机器上运行。桌面登录目前只能连接本机账户。远程凭据未更改。").into());
         } else {
             self.refresh_login_status(cx);
         }
@@ -371,7 +371,7 @@ impl Panel {
                     }
                     None if !offline => {
                         state.error = Some(
-                            "The live test did not finish. Check your network and try again."
+                            tr("The live test did not finish. Check your network and try again.", "实时测试未完成。请检查网络后重试。")
                                 .into(),
                         );
                     }
@@ -385,7 +385,7 @@ impl Panel {
 
     pub(super) fn set_preview_login_error(&mut self, cx: &mut Context<Self>) {
         if let Some(state) = self.login.as_mut() {
-            state.error = Some("Sign-in failed: the authorization code has expired. Offline preview: no browser was opened and no credentials were changed.".into());
+            state.error = Some(tr("Sign-in failed: the authorization code has expired. Offline preview: no browser was opened and no credentials were changed.", "登录失败，授权码已过期。当前为离线预览，未打开浏览器，也未更改凭据。").into());
             state.busy = false;
         }
         cx.notify();
@@ -413,7 +413,7 @@ impl Panel {
             }
             if words.next().is_some() {
                 self.login.as_mut().unwrap().error =
-                    Some("Choose a provider below to sign in.".into());
+                    Some(tr("Choose a provider below to sign in.", "请在下方选择要登录的服务商。").into());
             } else if let Some(provider) = {
                 let state = self.login.as_ref().unwrap();
                 if self.preview_state.is_some() {
@@ -429,7 +429,7 @@ impl Panel {
                 self.select_login_provider(provider, cx);
             } else {
                 self.login.as_mut().unwrap().error =
-                    Some("That provider is not available here. Choose one below.".into());
+                    Some(tr("That provider is not available here. Choose one below.", "此处无法使用该服务商。请在下方选择。").into());
             }
         }
         true
@@ -468,10 +468,10 @@ impl Panel {
         state.browser_opened = false;
         state.focus_pending = true;
         state.scroll.set_offset(point(px(0.), px(0.)));
-        state.input = cx.new(|cx| LoginInput::new(cx, "Paste the code or callback URL"));
+        state.input = cx.new(|cx| LoginInput::new(cx, tr("Paste the code or callback URL", "粘贴授权码或回调 URL")));
         if self.preview_state.is_some() {
             if provider.method == LoginMethod::ApiKey {
-                state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
+                state.input = cx.new(|cx| LoginInput::new(cx, tr("Paste your API key", "粘贴 API 密钥")));
             }
             self.set_preview_login_error(cx);
             return;
@@ -482,7 +482,7 @@ impl Panel {
                     let _ = flow.cancel();
                 });
             }
-            state.input = cx.new(|cx| LoginInput::new(cx, "Paste your API key"));
+            state.input = cx.new(|cx| LoginInput::new(cx, tr("Paste your API key", "粘贴 API 密钥")));
         } else {
             match state.client.begin(provider.id, account.as_deref()) {
                 Ok(flow) => {
@@ -523,7 +523,7 @@ impl Panel {
         let task = cx.background_executor().spawn(async move {
             if crate::harness::screenshot_mode() {
                 return Err(
-                    "Sign-in is disabled in the offline preview. No credentials were changed."
+                    tr("Sign-in is disabled in the offline preview. No credentials were changed.", "离线预览无法登录。凭据未更改。")
                         .into(),
                 );
             }
@@ -582,7 +582,7 @@ impl Panel {
         state.flow = None;
         state.prompt = None;
         state.input.update(cx, |input, cx| input.clear(cx));
-        state.error = validation_warning.then(|| "Credentials were saved, but the provider could not be verified. If this session does not switch, choose another model. You do not need to reuse the sign-in code.".into());
+        state.error = validation_warning.then(|| tr("Credentials were saved, but the provider could not be verified. If this session does not switch, choose another model. You do not need to reuse the sign-in code.", "凭据已保存，但未能验证服务商。如果此会话没有切换，请选择其他模型。无需再次使用登录授权码。").into());
         let provider = state.provider.map(|provider| provider.id.to_string());
         // The CLI and API-key paths notify the daemon on a throwaway
         // connection. That refreshes credentials everywhere, but the automatic
@@ -711,7 +711,7 @@ impl Panel {
         let secret = state.input.update(cx, |input, cx| input.take(cx));
         if provider.method == LoginMethod::ApiKey {
             if secret.trim().is_empty() {
-                state.error = Some("Paste an API key first.".into());
+                state.error = Some(tr("Paste an API key first.", "请先粘贴 API 密钥。").into());
                 cx.notify();
                 return;
             }
@@ -723,13 +723,13 @@ impl Panel {
                         ..Default::default()
                     })
                     .map_err(|_| {
-                        "Could not connect to Jcode. Try again when the connection is restored."
+                        tr("Could not connect to Jcode. Try again when the connection is restored.", "无法连接 Jcode。请在连接恢复后重试。")
                             .to_string()
                     })?;
                     client
                         .set_api_key(provider.id, secret.trim())
                         .map_err(|_| {
-                            "Could not save this API key. Check the key and try again.".to_string()
+                            tr("Could not save this API key. Check the key and try again.", "无法保存此 API 密钥。请检查密钥后重试。").to_string()
                         })?;
                     Ok(LoginUpdate::Complete {
                         validation_warning: false,
@@ -744,7 +744,7 @@ impl Panel {
         };
         let kind = prompt.input_kind.clone();
         if kind != AuthInputKind::DeviceCode && secret.trim().is_empty() {
-            state.error = Some("Paste the code or callback URL from your browser first.".into());
+            state.error = Some(tr("Paste the code or callback URL from your browser first.", "请先粘贴浏览器中的授权码或回调 URL。").into());
             cx.notify();
             return;
         }
@@ -776,13 +776,6 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if self
-            .login
-            .as_ref()
-            .is_some_and(|state| state.selection_only)
-        {
-            return None;
-        }
         if let Some(state) = self.login.as_mut()
             && state.focus_pending
         {
@@ -831,6 +824,15 @@ impl Panel {
                     .child(error.clone()),
             );
         }
+        if state.provider.is_none()
+            && state.custom_api.is_none()
+            && matches!(state.custom_api_reload, Some(crate::custom_providers::RuntimeReloadStatus::Deferred))
+        {
+            body = body.child(div().text_color(theme.WARN).child(crate::locale::tr(
+                "Configuration saved. The background service reload did not complete.",
+                "配置已保存。后台服务暂未完成重载。"
+            )));
+        }
         if state.complete {
             if let Some(provider) = state.provider {
                 body = body.child(self.render_login_steps(state, provider, cx));
@@ -844,10 +846,12 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child(if self.login_target_session().is_some() {
-                            "Account connected. This session now uses it."
+                        .child(if state.custom_api_reload.is_some() && state.provider.is_none() {
+                            crate::locale::tr("Configuration saved.", "配置已保存。")
+                        } else if self.login_target_session().is_some() {
+                            tr("Account connected. This session now uses it.", "账户已连接，当前会话已切换到此账户。")
                         } else {
-                            "Account connected."
+                            tr("Account connected.", "账户已连接。")
                         }),
                 )
                 .child(
@@ -855,18 +859,20 @@ impl Panel {
                         .flex()
                         .flex_wrap()
                         .gap_2()
-                        .child(login_button("login-done", "Done").on_click(cx.listener(
-                            |this, _, window, cx| {
-                                this.close_login_picker(cx);
-                                if this.is_accounts_panel() {
-                                    cx.emit(AccountsPanelClosed);
-                                } else {
-                                    this.focus_input(window, cx);
-                                }
-                            },
-                        )))
                         .child(
-                            login_button("login-choose-model", "Pick a different model").on_click(
+                            login_button("login-done", tr("Done", "完成")).on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.close_login_picker(cx);
+                                    if this.is_accounts_panel() {
+                                        cx.emit(AccountsPanelClosed);
+                                    } else {
+                                        this.focus_input(window, cx);
+                                    }
+                                },
+                            )),
+                        )
+                        .child(
+                            login_button("login-choose-model", tr("Pick a different model", "选择其他模型")).on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.close_login_picker(cx);
                                     if this.is_accounts_panel() {
@@ -890,7 +896,7 @@ impl Panel {
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Sign in to {}", provider.display_name)),
+                            .child(login_provider_title(provider.display_name)),
                     ),
             );
             let status =
@@ -900,25 +906,19 @@ impl Panel {
                     div()
                         .text_size(px(12.))
                         .text_color(theme.TEXT_DIM)
-                        .child(status.detail()),
+                        .child(connection_status_detail(status)),
                 );
             }
             body = body.child(self.render_login_steps(state, provider, cx));
         } else if !remote {
             let search_query = state.search.read(cx).content.to_string();
-            let providers = catalog::filtered_providers(
-                &state.providers,
-                &search_query,
-                state.statuses.as_ref(),
-                state.status_loading,
-                state.usage.as_ref(),
-            );
+            let providers = filtered_login_providers(state, &search_query);
             if providers.is_empty() && !self.custom_api_matches_query(&search_query) {
                 body = body.child(
                     div()
                         .debug_selector(|| "login-search-empty".into())
                         .text_color(theme.TEXT_DIM)
-                        .child("No accounts match your search."),
+                        .child(tr("No accounts match your search.", "没有匹配的账户。")),
                 );
             }
             let rows = self.render_account_catalog(&providers, cx);
@@ -981,7 +981,7 @@ impl Panel {
                             div()
                                 .flex_1()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Accounts"),
+                                .child(tr("Accounts", "账户")),
                         )
                         .when(
                             state.provider.is_none()
@@ -993,13 +993,17 @@ impl Panel {
                                 el.child(
                                     login_button(
                                         "login-test-all",
-                                        if running { "Testing all…" } else { "Test all" },
+                                        if running {
+                                            tr("Testing all…", "正在全部测试…")
+                                        } else {
+                                            tr("Test all", "全部测试")
+                                        },
                                     )
                                     .when(running, |el| el.opacity(0.6))
                                     .tooltip(|_, cx| {
                                         cx.new(|_| {
                                             super::usage::MeterTooltip(
-                                                "Send one small live request through every connected account to confirm each one works. Uses a little quota or credit.".into(),
+                                                tr("Send one small live request through every connected account to confirm each one works. Uses a little quota or credit.", "通过每个已连接账户发送一次轻量实时请求，确认账户可用。会消耗少量额度或余额。").into(),
                                             )
                                         })
                                         .into()
@@ -1013,7 +1017,11 @@ impl Panel {
                         .child(
                             login_button(
                                 "login-close",
-                                if state.busy { "Cancel" } else { "Close" },
+                                if state.busy {
+                                    tr("Cancel", "取消")
+                                } else {
+                                    tr("Close", "关闭")
+                                },
                             )
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
@@ -1061,11 +1069,84 @@ impl Panel {
     }
 }
 
+fn connection_status_label(status: ConnectionStatus) -> &'static str {
+    let chinese = match status {
+        ConnectionStatus::Checking => "检查中…",
+        ConnectionStatus::Testing => "测试中…",
+        ConnectionStatus::Connected => "已连接",
+        ConnectionStatus::Unverified => "未测试",
+        ConnectionStatus::Expired => "已过期",
+        ConnectionStatus::Failed => "需关注",
+        ConnectionStatus::NotConnected => "未连接",
+        ConnectionStatus::Unknown => "状态未知",
+    };
+    tr(status.label(), chinese)
+}
+
+fn connection_status_detail(status: ConnectionStatus) -> &'static str {
+    let chinese = match status {
+        ConnectionStatus::Checking => "正在读取本机的账户状态。",
+        ConnectionStatus::Testing => "正在通过此账户发送一次轻量实时请求。",
+        ConnectionStatus::Connected => "此账户在过去 7 天内成功完成过一次实时请求。",
+        ConnectionStatus::Unverified => "凭据已保存，但过去 7 天内未发送实时请求。点击「测试」发送一次轻量实时请求。",
+        ConnectionStatus::Expired => "登录已过期，请重新连接后继续。",
+        ConnectionStatus::Failed => "最近一次实时请求失败。请重新测试或重新连接。",
+        ConnectionStatus::NotConnected => "连接此账户后即可使用其模型。",
+        ConnectionStatus::Unknown => "无法读取账户状态。请重新打开「账户」重试。",
+    };
+    tr(status.detail(), chinese)
+}
+
+fn login_method_label(method: LoginMethod) -> &'static str {
+    let chinese = match method {
+        LoginMethod::ApiKey => "API 密钥",
+        LoginMethod::OAuth => "OAuth",
+        LoginMethod::DeviceCode => "设备码登录",
+    };
+    tr(catalog::method_label(method), chinese)
+}
+
+fn login_provider_title(name: &str) -> String {
+    format!("{} {name}", tr("Sign in to", "登录"))
+}
+
+fn filtered_login_providers(state: &LoginState, query: &str) -> Vec<LoginProvider> {
+    let filtered = |query| {
+        catalog::filtered_providers(
+            &state.providers,
+            query,
+            state.statuses.as_ref(),
+            state.status_loading,
+            state.usage.as_ref(),
+        )
+    };
+    let english = filtered(query);
+    if !is_zh() || query.is_ascii() {
+        return english;
+    }
+
+    let query = query.trim().to_lowercase();
+    // Filter the ordered catalog so Chinese and English matches share its ranking.
+    filtered("")
+        .into_iter()
+        .filter(|provider| {
+            let status = connection::status_for(
+                state.statuses.as_ref(),
+                provider.id,
+                state.status_loading,
+            );
+            english.iter().any(|matched| matched.id == provider.id)
+                || connection_status_label(status).contains(query.as_str())
+                || login_method_label(provider.method).to_lowercase().contains(query.as_str())
+        })
+        .collect()
+}
+
 fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
-    let (icon, label) = match method {
-        LoginMethod::ApiKey => ("key", catalog::method_label(method)),
-        LoginMethod::OAuth => ("browser", catalog::method_label(method)),
-        LoginMethod::DeviceCode => ("computer", catalog::method_label(method)),
+    let icon = match method {
+        LoginMethod::ApiKey => "key",
+        LoginMethod::OAuth => "browser",
+        LoginMethod::DeviceCode => "computer",
     };
     div()
         .debug_selector(move || format!("login-method-{icon}"))
@@ -1084,7 +1165,7 @@ fn login_method_icon(method: LoginMethod) -> gpui::AnyElement {
         } else {
             crate::tool_icon::render(icon).into_any_element()
         })
-        .child(label)
+        .child(login_method_label(method))
         .into_any_element()
 }
 
@@ -1127,6 +1208,86 @@ fn login_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn chinese_accounts_search_uses_localized_status_and_method_labels(cx: &mut gpui::TestAppContext) {
+        crate::locale::with_zh(|| {
+            let (panel, vcx) = cx.add_window_view(|_, cx| {
+                Panel::new_accounts("chinese-accounts", None, crate::harness::spawn_inert(), cx)
+            });
+            vcx.run_until_parked();
+            assert_eq!(login_provider_title("OpenAI"), "登录 OpenAI");
+            for (status, label) in [
+                (ConnectionStatus::Checking, "检查中…"),
+                (ConnectionStatus::Testing, "测试中…"),
+                (ConnectionStatus::Connected, "已连接"),
+                (ConnectionStatus::Unverified, "未测试"),
+                (ConnectionStatus::Expired, "已过期"),
+                (ConnectionStatus::Failed, "需关注"),
+                (ConnectionStatus::NotConnected, "未连接"),
+                (ConnectionStatus::Unknown, "状态未知"),
+            ] {
+                assert_eq!(connection_status_label(status), label);
+                assert_ne!(connection_status_detail(status), status.detail());
+            }
+            assert_eq!(login_method_label(LoginMethod::ApiKey), "API 密钥");
+            assert_eq!(login_method_label(LoginMethod::OAuth), "OAuth");
+            assert_eq!(login_method_label(LoginMethod::DeviceCode), "设备码登录");
+            for (query, visible, hidden) in [
+                ("已连接", "login-provider-openai", "login-provider-openai-api"),
+                ("已过期", "login-provider-claude", "login-provider-openai"),
+                ("未连接", "login-provider-openai-api", "login-provider-openai"),
+                ("密钥", "login-provider-openai-api", "login-provider-openai"),
+                ("OPENAI API KEY", "login-provider-openai-api", "login-provider-claude"),
+            ] {
+                panel.update(vcx, |panel, cx| {
+                    panel.login.as_ref().unwrap().search.update(cx, |input, cx| {
+                        input.set_content(query.into(), cx);
+                    });
+                    cx.notify();
+                });
+                vcx.run_until_parked();
+                assert!(vcx.debug_bounds(visible).is_some(), "{query}: missing {visible}");
+                assert!(vcx.debug_bounds(hidden).is_none(), "{query}: unexpected {hidden}");
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn effort_picker_inside_click_preserves_escape_and_login_dismisses_swarm(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("overlay-focus-test".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        panel.update_in(vcx, |panel, window, cx| {
+            panel.provider = Some("openai".into());
+            panel.model = Some("gpt-5.6-sol".into());
+            panel.identity_effort(Some("high".into()));
+            panel.toggle_effort_picker(window, cx);
+        });
+        vcx.run_until_parked();
+        let picker = vcx.debug_bounds("effort-picker").expect("open effort picker");
+        let padding = picker.origin + point(px(4.), px(4.));
+        vcx.simulate_click(padding, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            assert!(!panel.read(cx).input_focus_handle(cx).is_focused(window));
+        });
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("effort-picker").is_none());
+        vcx.update(|window, cx| assert!(panel.read(cx).input_focus_handle(cx).is_focused(window)));
+
+        panel.update(vcx, |panel, cx| {
+            panel.swarm.focus = Some(cx.focus_handle());
+            panel.open_login_picker(cx);
+            assert!(panel.swarm.focus.is_none());
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("login-dialog").is_some());
+    }
 
     #[gpui::test]
     fn login_status_badges_and_search_are_visible(cx: &mut gpui::TestAppContext) {

@@ -14,6 +14,8 @@ struct Store {
     revision: u64,
     specs: Rc<[String]>,
     hidden: Rc<[String]>,
+    /// Hidden individual model route specs, exact-match against catalog specs.
+    models: Rc<[String]>,
     loaded: bool,
 }
 
@@ -22,6 +24,7 @@ thread_local! {
         revision: 0,
         specs: Rc::from(Vec::new()),
         hidden: Rc::from(Vec::new()),
+        models: Rc::from(Vec::new()),
         loaded: false,
     });
 }
@@ -53,12 +56,15 @@ impl Store {
                 Rc::from(env_list("JCODE_DESKTOP_SCREENSHOT_MODEL_FAVORITES"));
             self.hidden =
                 Rc::from(env_list("JCODE_DESKTOP_SCREENSHOT_MODEL_HIDDEN"));
+            self.models =
+                Rc::from(env_list("JCODE_DESKTOP_SCREENSHOT_MODEL_HIDDEN_SPECS"));
         } else if persisted()
             && let Some(path) = store::path()
         {
             let lists = store::load(&path);
             self.specs = Rc::from(lists.favorites);
             self.hidden = Rc::from(lists.hidden_groups);
+            self.models = Rc::from(lists.hidden_models);
         }
     }
 
@@ -69,7 +75,7 @@ impl Store {
             let lists = store::Lists {
                 favorites: self.specs.to_vec(),
                 hidden_groups: self.hidden.to_vec(),
-                hidden_models: store::load(&path).hidden_models,
+                hidden_models: self.models.to_vec(),
             };
             if let Err(error) = store::save(&path, &lists) {
                 eprintln!("[model-favorites] could not save: {error}");
@@ -132,6 +138,50 @@ pub(crate) fn toggle_hidden(group_key: &str) -> bool {
     })
 }
 
+/// Hidden individual model specs plus the shared revision.
+pub(crate) fn hidden_models() -> (u64, Rc<[String]>) {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.ensure_loaded();
+        (store.revision, store.models.clone())
+    })
+}
+
+pub(crate) fn is_model_hidden(models: &[String], spec: &str) -> bool {
+    models.iter().any(|entry| entry == spec)
+}
+
+/// Toggle exact route `spec`; returns the new hidden state. Hiding is
+/// display-only: the active session model keeps running until the user
+/// explicitly picks another one.
+pub(crate) fn toggle_hidden_model(spec: &str) -> bool {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.ensure_loaded();
+        let mut models = store.models.to_vec();
+        let now_hidden = store::toggle(&mut models, spec);
+        store.models = Rc::from(models);
+        store.revision += 1;
+        store.persist();
+        now_hidden
+    })
+}
+
+/// Unhide every individual model, leaving hidden groups alone. No-op when
+/// nothing is hidden.
+pub(crate) fn show_all_models() {
+    STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        store.ensure_loaded();
+        if store.models.is_empty() {
+            return;
+        }
+        store.models = Rc::from(Vec::new());
+        store.revision += 1;
+        store.persist();
+    })
+}
+
 /// Unhide every group. No-op when nothing is hidden.
 pub(crate) fn show_all() {
     STORE.with(|store| {
@@ -154,6 +204,7 @@ pub(crate) fn reset() {
             revision: 0,
             specs: Rc::from(Vec::new()),
             hidden: Rc::from(Vec::new()),
+            models: Rc::from(Vec::new()),
             loaded: false,
         };
     });

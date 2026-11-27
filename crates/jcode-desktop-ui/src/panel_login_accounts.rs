@@ -205,6 +205,35 @@ fn usage_summary(report: &UsageReport) -> (Option<String>, Option<String>) {
     (usage, plan)
 }
 
+fn usage_summary_label(usage: &str) -> String {
+    if !is_zh() {
+        return usage.to_owned();
+    }
+    // The reports keep their original text for the account model.
+    if let Some(estimate) = usage.strip_suffix(" (est.)") {
+        let periods: Vec<_> = estimate
+            .split(" · ")
+            .map(|period| {
+                let (label, amount) = if let Some(amount) = period.strip_prefix("today ") {
+                    ("今日", amount)
+                } else if let Some(amount) = period.strip_prefix("lifetime ") {
+                    ("累计", amount)
+                } else {
+                    return period.to_owned();
+                };
+                let amount = if amount == "n/a" { "暂无数据" } else { amount };
+                format!("{label} {amount}")
+            })
+            .collect();
+        format!("{}（估算）", periods.join(" · "))
+    } else {
+        usage
+            .replace(" today", "（今日）")
+            .replace(" this month", "（本月）")
+            .replace(" all-time", "（累计）")
+    }
+}
+
 pub(super) fn build_rows(
     providers: &[LoginProvider],
     statuses: Option<&ConnectionStatuses>,
@@ -565,15 +594,25 @@ fn icon_reset(color: gpui::Rgba) -> gpui::Div {
 /// Caption for a login's banked resets, e.g. "2 resets banked".
 pub(super) fn banked_reset_label(reset: &BankedReset) -> String {
     match (reset.provider, reset.available_count) {
-        (ResetProvider::OpenAi, 1) => "1 reset banked".into(),
-        (ResetProvider::OpenAi, n) if n > 1 => format!("{n} resets banked"),
-        (ResetProvider::Claude, n) if n > 0 => "Session reset ready".into(),
+        (ResetProvider::OpenAi, 1) => tr("1 reset banked", "已存 1 次额度重置").into(),
+        (ResetProvider::OpenAi, n) if n > 1 => {
+            if is_zh() {
+                format!("已存 {n} 次额度重置")
+            } else {
+                format!("{n} resets banked")
+            }
+        }
+        (ResetProvider::Claude, n) if n > 0 => tr("Session reset ready", "可重置会话额度").into(),
         _ => match reset.next_available_at.as_deref() {
-            Some(at) => format!(
-                "0 banked resets · next in {}",
-                jcode_base::usage::format_reset_time(at)
-            ),
-            None => "0 banked resets".into(),
+            Some(at) => {
+                let time = jcode_base::usage::format_reset_time(at);
+                if is_zh() {
+                    format!("已存 0 次额度重置 · 下次可用时间还有 {time}")
+                } else {
+                    format!("0 banked resets · next in {time}")
+                }
+            }
+            None => tr("0 banked resets", "已存 0 次额度重置").into(),
         },
     }
 }
@@ -770,16 +809,27 @@ impl Panel {
                     .child(title.clone()),
             )
             .child(div().flex_none().child(login_method_icon(provider.method)));
-        let selecting = self
-            .login
-            .as_ref()
-            .is_some_and(|state| state.selection_only);
-        if row.active && !selecting {
-            name_line = name_line.child(chip("In use", theme.ACCENT));
-        }
-        if !selecting && self.is_default_account(&row.key, position) {
+        if row.active {
             name_line = name_line.child(
-                chip("Default", theme.ACCENT).debug_selector(|| "login-default-account".into()),
+                chip(tr("In use", "使用中"), theme.ACCENT)
+                    .id("login-in-use")
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(
+                            tr("The active login for this provider.", "此服务商当前使用的登录账户。").into(),
+                        )).into()
+                    }),
+            );
+        }
+        if self.is_default_account(&row.key, position) {
+            name_line = name_line.child(
+                chip(tr("Default", "默认"), theme.ACCENT)
+                    .id("login-default-account")
+                    .debug_selector(|| "login-default-account".into())
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(
+                            tr("The default account for new sessions.", "新会话默认使用的账户。").into(),
+                        )).into()
+                    }),
             );
         }
         if let Some(plan) = &row.plan {
@@ -789,15 +839,22 @@ impl Panel {
             name_line = name_line.child(self.render_banked_reset(&row.key, reset, cx));
         } else if let Some(status) = &row.reset_status {
             let selector = format!("login-reset-status-{}", row.key);
+            let label = match status.as_str() {
+                "Resets not eligible" => tr("Resets not eligible", "不符合额度重置条件"),
+                "Reset availability unavailable" => {
+                    tr("Reset availability unavailable", "额度重置状态未知")
+                }
+                _ => status,
+            };
             name_line = name_line.child(
-                chip(status.clone(), theme.TEXT_DIM)
+                chip(label.to_owned(), theme.TEXT_DIM)
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector.clone())
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, _, cx| cx.stop_propagation()),
             );
         }
-        let detail: Vec<String> = [row.subtitle(), row.usage.clone()]
+        let detail: Vec<String> = [row.subtitle(), row.usage.as_deref().map(usage_summary_label)]
             .into_iter()
             .flatten()
             .collect();
@@ -898,7 +955,7 @@ impl Panel {
                     .tooltip(|_, cx| {
                         cx.new(|_| {
                             super::usage::MeterTooltip(
-                                "Drag to reorder or move between Auto-switch and Manual".into(),
+                                tr("Drag to reorder or move between Auto-switch and Manual", "拖动以调整顺序，或在「自动切换」和「手动选择」之间移动账户").into(),
                             )
                         })
                         .into()
@@ -943,9 +1000,11 @@ impl Panel {
                         .child(label)
                         .tooltip(move |_, cx| {
                             cx.new(|_| {
-                                super::usage::MeterTooltip(format!(
-                                    "Move {direction} in auto-switch order"
-                                ))
+                                super::usage::MeterTooltip(if direction == "up" {
+                                    tr("Move up in auto-switch order", "在自动切换顺序中上移")
+                                } else {
+                                    tr("Move down in auto-switch order", "在自动切换顺序中下移")
+                                }.into())
                             })
                             .into()
                         })
@@ -997,9 +1056,9 @@ impl Panel {
             )
             .child(text);
         if connected || status != ConnectionStatus::NotConnected {
-            let tip = status.detail();
+            let tip = connection_status_detail(status);
             element = element.child(
-                status_chip(status.label(), color)
+                status_chip(connection_status_label(status), color)
                     .id(SharedString::from(format!("login-status-chip-{key}")))
                     .debug_selector(move || status_selector.clone())
                     .tooltip(move |_, cx| {
@@ -1009,8 +1068,13 @@ impl Panel {
         } else {
             element = element.child(
                 chip_base(theme.ACCENT)
+                    .id("login-connect")
                     .debug_selector(move || status_selector.clone())
-                    .child("Connect"),
+                    .child(tr("Connect", "连接"))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::usage::MeterTooltip(connection_status_detail(status).into()))
+                            .into()
+                    }),
             );
         }
         if connected {
@@ -1036,11 +1100,11 @@ impl Panel {
                             .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
                     })
                     .when(busy, |el| el.opacity(0.5))
-                    .child("Test")
+                    .child(tr("Test", "测试"))
                     .tooltip(|_, cx| {
                         cx.new(|_| {
                             super::usage::MeterTooltip(
-                                "Send one small live request through this account to confirm it works. Uses a little quota or credit.".into(),
+                                tr("Send one small live request through this account to confirm it works. Uses a little quota or credit.", "通过此账户发送一次轻量实时请求，确认账户可用。会消耗少量额度或余额。").into(),
                             )
                         })
                         .into()
@@ -1053,15 +1117,8 @@ impl Panel {
             );
         }
         let label = row.label.clone();
-        if selecting {
-            element = element.child(chip("Select provider", theme.ACCENT));
-        }
-        element = element.on_click(cx.listener(move |this, _, window, cx| {
-            if selecting {
-                this.select_existing_provider(provider, label.clone(), window, cx);
-            } else {
-                this.select_login_provider_for(provider, label.clone(), cx);
-            }
+        element = element.on_click(cx.listener(move |this, _, _, cx| {
+            this.select_login_provider_for(provider, label.clone(), cx);
         }));
         if let Some(pooled) = pooled {
             let before = key.clone();
@@ -1150,7 +1207,7 @@ impl Panel {
                     .bg(theme.HEADER_BG.opacity(0.5))
                     .text_size(px(12.))
                     .text_color(theme.TEXT_DIM)
-                    .child("Drag an account here"),
+                    .child(tr("Drag an account here", "将账户拖到这里")),
             );
         }
         for (index, row) in rows.iter().enumerate() {
@@ -1191,8 +1248,8 @@ impl Panel {
         if !groups.pooled.is_empty() || !groups.manual.is_empty() {
             out.push(self.render_account_group(
                 "login-group-auto",
-                "Auto-switch",
-                "The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag the ≡ handle or use ↑ ↓ to reorder.",
+                tr("Auto-switch", "自动切换"),
+                tr("The first account is the default for new sessions. The rest take over in order when one runs out or fails. Drag the ≡ handle or use ↑ ↓ to reorder.", "首个账户是新会话的默认账户。额度用尽或请求失败时，后续账户按顺序接管。拖动 ≡ 手柄或点击 ↑、↓ 调整顺序。"),
                 &groups.pooled,
                 true,
                 &visible,
@@ -1200,8 +1257,8 @@ impl Panel {
             ));
             out.push(self.render_account_group(
                 "login-group-manual",
-                "Manual",
-                "Never switched to automatically. Used only when you pick it.",
+                tr("Manual", "手动选择"),
+                tr("Never switched to automatically. Used only when you pick it.", "这些账户不会自动切换，仅在手动选择时使用。"),
                 &groups.manual,
                 false,
                 &visible,
@@ -1220,7 +1277,7 @@ impl Panel {
                         .px_2()
                         .text_size(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Connect an account"),
+                        .child(tr("Connect an account", "连接新账户")),
                 );
             if !groups.addable.is_empty() {
                 let mut adds = div().flex().flex_wrap().gap_2().px_1();
@@ -1241,7 +1298,11 @@ impl Panel {
                             .text_size(px(12.))
                             .cursor_pointer()
                             .hover(|el| el.bg(theme.ACCENT.opacity(0.26)))
-                            .child(format!("+ Another {} account", provider.display_name))
+                            .child(if is_zh() {
+                                format!("+ 添加另一个 {} 账户", provider.display_name)
+                            } else {
+                                format!("+ Another {} account", provider.display_name)
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_login_provider_for(
                                     provider,

@@ -46,7 +46,9 @@ pub(super) fn header_action(
             el.bg(Theme::global().PANEL_BG)
                 .text_color(Theme::global().TEXT)
         })
-        .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
+        .when(!tooltip.is_empty(), |el| {
+            el.tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tooltip.into())).into())
+        })
         .child(content)
 }
 
@@ -271,11 +273,8 @@ impl Workspace {
 
     /// Always-visible entry points at the top of the thread list.
     pub(super) fn render_sidebar_quick_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let pill = |id: &'static str, label: &'static str, glyph: gpui::AnyElement| {
-            let tip = match id {
-                "sidebar-open-project" => "Open a project folder",
-                _ => "New thread in the default directory",
-            };
+        let pill = |id: &'static str, label: &'static str, tip: &'static str, glyph: gpui::AnyElement| {
+            let hover_bg = Theme::global().TOOL_BG;
             div()
                 .id(id)
                 .debug_selector(move || id.into())
@@ -286,123 +285,82 @@ impl Workspace {
                 .px_2()
                 .flex()
                 .items_center()
-                .justify_center()
+                .justify_start()
                 .gap_1()
                 .rounded_full()
                 .cursor_pointer()
                 .bg(Theme::global().TOOL_BG)
-                .text_size(px(11.0))
+                .text_size(px(12.0))
                 .text_color(Theme::global().TEXT_DIM)
                 .hover(|el| {
-                    el.bg(Theme::global().PANEL_BG)
-                        .text_color(Theme::global().TEXT)
+                    el.bg(hover_bg).text_color(Theme::global().TEXT)
                 })
                 .tooltip(move |_, cx| cx.new(|_| remotes::HeaderTooltip(tip.into())).into())
                 .child(glyph)
                 .child(div().min_w_0().truncate().child(label))
         };
+        let new_session = pill(
+            "sidebar-new-thread",
+            tr("New session", "新建会话"),
+            tr("New session in the default directory", "在默认目录中开启会话"),
+            div().child("+").into_any_element(),
+        )
+        .h(px(30.0))
+        .bg(Theme::global().PANEL_BG)
+        .text_color(Theme::global().TEXT)
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                this.missed("new_panel", cx);
+                this.open_new_session(cx);
+            }),
+        );
+        let hide_sidebar = div()
+            .id("sidebar-hide")
+            .debug_selector(|| "sidebar-hide".into())
+            .flex_none()
+            .size(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .bg(Theme::global().TOOL_BG)
+            .hover(|el| el.bg(Theme::global().PANEL_BG))
+            .tooltip(|_, cx| {
+                cx.new(|_| remotes::HeaderTooltip(tr("Hide sidebar (Ctrl+B)", "隐藏侧栏（Ctrl+B）").into()))
+                    .into()
+            })
+            .child(icon(HIDE_SIDEBAR_ICON, 14.0))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if this.compact_sidebar_open {
+                        this.compact_sidebar_open = false;
+                        this.focus_pending = true;
+                        cx.notify();
+                    } else {
+                        this.toggle_sidebar(&ToggleSidebar, window, cx);
+                    }
+                }),
+            );
+
         div()
             .flex_none()
             .w_full()
             .min_w_0()
             .pl_2()
             .pr(px(crate::scrollbar::GUTTER + 4.0))
-            .pt_2()
+            .py_2()
             .flex()
-            .gap_2()
-            .child(
-                pill(
-                    "sidebar-new-thread",
-                    "Thread",
-                    div().child("+").into_any_element(),
-                )
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.missed("new_panel", cx);
-                        this.open_new_session(cx);
-                    }),
-                ),
-            )
-            .child(
-                pill("sidebar-open-project", "Project", icon(FOLDER_ICON, 12.0)).on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.open_folder(&OpenFolder, window, cx);
-                    }),
-                ),
-            )
-            .child(
-                // Icon-only, like hide: four labelled pills do not fit 224px.
-                div()
-                    .id("sidebar-new-collection")
-                    .debug_selector(|| "sidebar-new-collection".into())
-                    .flex_none()
-                    .size(px(26.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(Theme::global().TOOL_BG)
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| {
-                            remotes::HeaderTooltip(
-                                "New collection: group chats your own way".into(),
-                            )
-                        })
-                        .into()
-                    })
-                    .child(icon(sidebar_collections::COLLECTION_ICON, 13.0))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.begin_new_collection(None, window, cx);
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("sidebar-hide")
-                    .debug_selector(|| "sidebar-hide".into())
-                    .flex_none()
-                    .size(px(26.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(Theme::global().TOOL_BG)
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
-                            .into()
-                    })
-                    .child(icon(HIDE_SIDEBAR_ICON, 14.0))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            if this.compact_sidebar_open {
-                                // Narrow windows show the sidebar as a drawer:
-                                // just dismiss it and keep the menu button.
-                                this.compact_sidebar_open = false;
-                                this.focus_pending = true;
-                                cx.notify();
-                            } else {
-                                this.toggle_sidebar(&ToggleSidebar, window, cx);
-                            }
-                        }),
-                    ),
-            )
+            .flex_col()
+            .gap_1()
+            .child(div().flex().gap_1().child(new_session).child(hide_sidebar))
             .into_any_element()
     }
 }

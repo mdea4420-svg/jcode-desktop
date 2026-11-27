@@ -268,12 +268,166 @@ pub(crate) fn registered_command(name: &str) -> Option<RegisteredCommand> {
         .find(|command| command.name == name)
 }
 
-pub(crate) fn help_markdown() -> String {
-    let mut help = String::from("**Commands**\n\n");
+pub(crate) fn localized_command_help(name: &str, fallback: &'static str) -> &'static str {
+    localized_command_help_for_locale(name, fallback, crate::locale::is_zh())
+}
+
+pub(crate) fn localized_command_help_for_locale(
+    name: &str,
+    fallback: &'static str,
+    zh: bool,
+) -> &'static str {
+    if !zh {
+        return fallback;
+    }
+    match name {
+        "/help" | "/?" => "显示帮助与快捷键",
+        "/commands" => "/help 的别名",
+        "/model" => "查看或切换模型",
+        "/models" => "/model 的别名",
+        "/provider-test-coverage" => "查看当前线路与模型的实测验证覆盖情况",
+        "/refresh-model-list" => "刷新各线路的模型列表",
+        "/agents" => "为各代理角色配置模型",
+        "/swarm-prompt" => "在编辑器中打开当前多代理协作路由提示词",
+        "/subagent" => "手动启动一个子代理",
+        "/observe" => "在侧栏显示最新工具调用上下文",
+        "/todos" => "在聊天中以卡片形式显示当前会话待办列表",
+        "/splitview" => "在侧栏镜像显示当前对话",
+        "/split-view" => "/splitview 的别名",
+        "/btw" => "在侧栏中发起旁路提问",
+        "/ssh" => "使用系统 SSH 连接到远程主机",
+        "/git" => "显示当前会话工作目录的 Git 状态",
+        "/plugins" => "列出、启用、禁用或创建插件（命令、技能、钩子、MCP、小程序）",
+        "/extensions" => "管理 MCP 服务、技能与插件",
+        "/mcp" => "管理 MCP 服务（添加、编辑、启用、测试）",
+        "/colors" => "查看或切换桌面端配色主题",
+        "/hotkeys" => "列出已注册的桌面端快捷键及作用域",
+        "/terminal-setup" => "说明桌面端内置终端的配置方式",
+        "/commit" => "根据当前改动生成逻辑清晰的提交",
+        "/commit-push" => "根据当前改动生成逻辑清晰的提交并推送",
+        "/publish" => "桌面端自研发布：提交、推送、发布并在新面板中跟踪",
+        "/fast-release" => "打开桌面端标准验证发布跟踪器",
+        "/fast-macos-release" => "打开桌面端跨平台发布跟踪器",
+        "/remote" => "从其他设备远程访问当前会话",
+        "/remote-release" => "打开基于 CI 构建的桌面端发布跟踪器",
+        "/triage" => "分拣新的 GitHub Issue 并自动修复安全的问题",
+        "/transcript" => "打开当前会话的完整记录文件",
+        "/subagent-model" => "查看或更改子代理模型策略",
+        "/autoreview" => "查看或开关回合结束自动审查",
+        "/autojudge" => "查看或开关回合结束自动评审",
+        "/review" => "启动一次带界面的单次审查会话",
+        "/judge" => "启动一次带界面的单次评审会话",
+        "/effort" => "设置推理强度（none/minimal/low/medium/high/xhigh/max）",
+        "/fast" => "切换快速模式",
+        "/transport" => "查看或切换连接传输方式",
+        "/alignment" => "查看或更改默认文本对齐方式",
+        "/compact-notifications" => "查看或开关单行多代理/文件活动通知",
+        "/show-agentgrep-output" => "查看或开关在聊天中内联展开 agentgrep 搜索输出",
+        "/tool-call-details" => "查看或开关工具行上的淡色技术细节",
+        "/thinking-display" => "展开或折叠模型思考过程（off/full/current/collapsed/toggle）",
+        "/steps" => "将每轮工具调用、思考与提示折叠为单个胶囊（collapsed/expanded/toggle）",
+        "/cancel" => "取消当前提示词或正在进行的操作",
+        "/clear" => "清空对话历史",
+        "/cls" => "仅清空视图显示，保留上下文",
+        "/rewind" => "将对话回退到上一条消息",
+        "/poke" => "提醒模型继续处理未完成的待办事项",
+        "/plan" => "仅生成方案并以计划卡片形式展示",
+        "/improve" => "自主改进当前仓库",
+        "/refactor" => "运行安全重构循环",
+        "/compact" => "压缩会话上下文",
+        "/fix" => "在模型无法继续时尝试恢复",
+        "/dictate" => "运行已配置的外部语音听写命令",
+        "/dictation" => "/dictate 的别名",
+        "/memory" => "切换记忆功能",
+        "/test" => "使用分层测试验证结论或当前改动",
+        "/initiatives" => "显示当前会话目标并说明已退役的旧版倡议",
+        "/goals" => "/initiatives 的旧版别名",
+        "/swarm" => "切换多代理协作功能",
+        "/overnight" => "运行受监督的通宵协调任务",
+        "/context" => "显示完整的会话上下文快照",
+        "/skills" => "管理技能（无参数）或查看已加载技能（`/skills <参数>`）",
+        "/version" => "显示当前版本",
+        "/changelog" => "显示当前构建的近期更新",
+        "/applets" => "打开小程序组件展示面板",
+        "/info" => "显示会话信息与 token 用量",
+        "/reset" => "查看并确认重置 OpenAI 或 Claude 用量额度",
+        "/usage" => "显示已连接线路的用量限额",
+        "/productivity" => "生成可分享的用量报告与仪表盘图片",
+        "/wrapped" => "/productivity 的别名",
+        "/feedback" => "发送关于 jcode 的反馈",
+        "/telemetry" => "查看或更改 jcode 发送的遥测数据",
+        "/support" => "发送预填诊断信息的支持邮件",
+        "/subscription" => "查看 jcode 订阅状态",
+        "/subscribe" => "了解订阅 jcode 的原因与方式",
+        "/config" => "查看或编辑配置",
+        "/log" => "在 jcode 日志中标记当前位置",
+        "/keys" => "列出桌面端快捷键与作用域（`/keys refresh` 可刷新）",
+        "/diff" => "切换或设置差异展示模式（off/inline/full/pinned/file）",
+        "/onboarding-preview" => "在独立新配置窗口中打开首次运行引导预览（Alt+9）",
+        "/onboarding-sim" => "使用隔离的新配置打开首次运行引导桌面端（Alt+9）",
+        "/reload" => "热重载到最新可用的二进制版本",
+        "/restart" => "使用当前二进制重启",
+        "/restart-all" => "重启服务端及所有桌面端窗口，并恢复全部窗口与会话",
+        "/rebuild" => "后台重新构建并自动重载",
+        "/selfdev" => "打开新的 jcode 自开发会话",
+        "/update" => "后台更新并自动重载",
+        "/resume" => "打开会话选择器",
+        "/sessions" | "/session" => "/resume 的别名",
+        "/active" => "管理活跃会话（运行中与待命）",
+        "/catchup" => "打开进度回顾选择器",
+        "/back" => "返回上一个进度回顾会话",
+        "/save" => "收藏当前会话以便快速访问",
+        "/unsave" => "取消收藏当前会话",
+        "/rename" => "重命名当前会话",
+        "/fork" => "将当前会话分叉到新窗口（可选附带提示词）",
+        "/transfer" => "将上下文压缩并交接到新会话",
+        "/workspace" => "Niri 风格会话工作区",
+        "/quit" => "退出 jcode",
+        "/auth" => "显示认证状态",
+        "/login" => "登录到指定线路",
+        "/logout" => "从指定线路登出",
+        "/account" => "打开综合账户选择器",
+        "/accounts" => "/account 的别名",
+        "/api" => "添加或管理兼容 OpenAI 的第三方自定义 API 端点",
+        "/custom-api" => "/api 的别名",
+        "/cache" => "查看缓存统计或设置缓存 TTL",
+        "/debug-visual" => "开关可视化调试浮层",
+        "/screenshot-mode" => "隐藏可识别身份的界面元数据",
+        "/screenshot" => "导出脱敏的 JSON 截图调试快照",
+        "/record" => "录制有界调试快照时间线（JSONL）",
+        "/client-reload" => "重新构建并热重载桌面端 UI",
+        "/server-reload" => "请求平滑重载服务端二进制",
+        "/continue" => "继续所有可自动恢复的中断实时会话",
+        "/resumeall" => "/continue 的别名",
+        _ => fallback,
+    }
+}
+
+fn help_markdown_with(
+    zh: bool,
+    resolve_help: impl Fn(&str, &'static str) -> &'static str,
+) -> String {
+    let mut help = String::from(if zh {
+        "**命令列表**\n\n"
+    } else {
+        "**Commands**\n\n"
+    });
     for (name, description) in registered_command_entries() {
+        let description = resolve_help(name, description);
         help.push_str(&format!("- `{name}` — {description}\n"));
     }
     help
+}
+
+pub(crate) fn help_markdown() -> String {
+    help_markdown_with(crate::locale::is_zh(), localized_command_help)
+}
+
+#[cfg(test)]
+fn help_markdown_for_locale(zh: bool) -> String {
+    help_markdown_with(zh, |name, fallback| {
+        localized_command_help_for_locale(name, fallback, zh)
+    })
 }
 
 /// Commands that open the session browser instead of reaching the runtime.
@@ -384,5 +538,77 @@ mod tests {
             assert!(registered_command(command).is_some(), "missing {command}");
         }
         assert!(!registered_command_entries().any(|(name, _)| name == "/zzz"));
+    }
+
+    #[test]
+    fn localized_command_help_covers_public_commands_in_zh_and_preserves_english_fallback() {
+        for command in REGISTERED_COMMANDS {
+            assert_eq!(
+                localized_command_help_for_locale(command.name, command.help, false),
+                command.help,
+                "English fallback changed for {}",
+                command.name
+            );
+        }
+        let public_entries: Vec<_> = registered_command_entries().collect();
+        let covered = public_entries
+            .iter()
+            .filter(|(name, fallback)| {
+                localized_command_help_for_locale(name, fallback, true) != *fallback
+            })
+            .count();
+        assert!(
+            covered >= 50,
+            "expected at least 50 localized commands, found {covered}"
+        );
+        assert_eq!(covered, public_entries.len());
+        for (name, expected_zh) in [
+            ("/model", "查看或切换模型"),
+            ("/transport", "查看或切换连接传输方式"),
+            ("/effort", "设置推理强度（none/minimal/low/medium/high/xhigh/max）"),
+            ("/agents", "为各代理角色配置模型"),
+            ("/subagent", "手动启动一个子代理"),
+            ("/resume", "打开会话选择器"),
+            ("/compact", "压缩会话上下文"),
+            ("/mcp", "管理 MCP 服务（添加、编辑、启用、测试）"),
+            ("/plugins", "列出、启用、禁用或创建插件（命令、技能、钩子、MCP、小程序）"),
+            ("/skills", "管理技能（无参数）或查看已加载技能（`/skills <参数>`）"),
+            ("/account", "打开综合账户选择器"),
+            ("/api", "添加或管理兼容 OpenAI 的第三方自定义 API 端点"),
+            ("/reload", "热重载到最新可用的二进制版本"),
+            ("/screenshot", "导出脱敏的 JSON 截图调试快照"),
+        ] {
+            let fallback = registered_command(name).expect("command registered").help;
+            assert_eq!(
+                localized_command_help_for_locale(name, fallback, true),
+                expected_zh
+            );
+        }
+        assert_eq!(
+            localized_command_help_for_locale("/unknown-cmd", "Fallback help", true),
+            "Fallback help"
+        );
+        assert_eq!(
+            localized_command_help_for_locale("/unknown-cmd", "Fallback help", false),
+            "Fallback help"
+        );
+    }
+
+    #[test]
+    fn help_markdown_renders_both_english_and_chinese_titles_and_entries() {
+        let en = help_markdown_for_locale(false);
+        assert!(en.starts_with("**Commands**\n\n"));
+        assert!(en.contains("- `/help` — Show help and keyboard shortcuts\n"));
+        assert!(en.contains("- `/model` — List or switch models\n"));
+        assert!(en.contains("- `/reload` — Reload into newest available binary\n"));
+
+        let zh = help_markdown_for_locale(true);
+        assert!(zh.starts_with("**命令列表**\n\n"));
+        assert!(!zh.contains("**Commands**"));
+        assert!(zh.contains("- `/help` — 显示帮助与快捷键\n"));
+        assert!(zh.contains("- `/model` — 查看或切换模型\n"));
+        assert!(zh.contains("- `/mcp` — 管理 MCP 服务（添加、编辑、启用、测试）\n"));
+        assert!(zh.contains("- `/api` — 添加或管理兼容 OpenAI 的第三方自定义 API 端点\n"));
+        assert!(zh.contains("- `/reload` — 热重载到最新可用的二进制版本\n"));
     }
 }

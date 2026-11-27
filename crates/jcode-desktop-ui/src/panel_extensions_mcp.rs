@@ -8,6 +8,7 @@ use super::extensions::{
     Confirm, McpForm, McpTarget, PairRow, field_input, pill,
 };
 use crate::extensions::mcp;
+use crate::locale::{is_zh, tr};
 
 /// `jcode mcp test` result deadline.
 const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -76,6 +77,34 @@ fn run_mcp_test(name: String, cwd: Option<PathBuf>) -> mcp::McpTestResult {
     mcp::parse_mcp_test_output(&stdout, &stderr, status.success())
 }
 
+fn mcp_source_label(source: mcp::McpSource) -> &'static str {
+    use mcp::McpSource::*;
+    let chinese = match source {
+        JcodeGlobal => "jcode · ~/.jcode/mcp.json",
+        ProjectJcode => "项目 · .jcode/mcp.json",
+        ProjectMcp => "项目 · .mcp.json",
+        ProjectClaude => "项目 · .claude/mcp.json",
+        ClaudeUser => "Claude Code · 用户",
+        ClaudeProject => "Claude Code · 项目",
+    };
+    tr(source.label(), chinese)
+}
+
+fn mcp_test_error(error: &str) -> String {
+    if !is_zh() {
+        return error.into();
+    }
+    if error == "Timed out after 30 s." {
+        "测试在 30 秒后超时。".into()
+    } else if let Some(detail) = error.strip_prefix("Could not run `jcode mcp test`: ") {
+        format!("无法运行 `jcode mcp test`：{detail}")
+    } else if let Some(detail) = error.strip_prefix("Test run failed: ") {
+        format!("运行测试失败：{detail}")
+    } else {
+        format!("测试失败：{error}")
+    }
+}
+
 impl Panel {
     /// The MCP tab body: form when editing/adding, else the grouped list.
     pub(super) fn render_extensions_mcp(
@@ -124,7 +153,7 @@ impl Panel {
                     pill(
                         "mcp-add",
                         "mcp-add".into(),
-                        "Add server",
+                        tr("Add server", "添加服务器"),
                         false,
                     )
                     .on_mouse_down(
@@ -140,7 +169,7 @@ impl Panel {
                     .flex_none()
                     .text_size(px(11.))
                     .text_color(theme.TEXT_FAINT)
-                    .child(format!("{notice} — skipped"))
+                    .child(format!("{notice} {}", tr("— skipped", "— 已跳过")))
                     .into_any_element(),
             );
         }
@@ -161,7 +190,7 @@ impl Panel {
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.TEXT_DIM)
-                    .child(format!("{} · {}", source.label(), rows.len()))
+                    .child(format!("{} · {}", mcp_source_label(source), rows.len()))
                     .into_any_element(),
             );
             for entry in rows {
@@ -178,9 +207,9 @@ impl Panel {
                     .text_size(px(12.))
                     .text_color(theme.TEXT_DIM)
                     .child(if state.mcp.entries.is_empty() {
-                        "No MCP servers configured. Add one above, or paste a config snippet."
+                        tr("No MCP servers configured. Add one above, or paste a config snippet.", "尚未配置 MCP 服务器。可以在上方添加服务器，或粘贴配置片段。")
                     } else {
-                        "Nothing matches the filter."
+                        tr("Nothing matches the filter.", "没有匹配的 MCP 服务器。")
                     })
                     .into_any_element(),
             );
@@ -216,7 +245,8 @@ impl Panel {
             }
             if !entry.env.is_empty() {
                 line.push_str(&format!(
-                    " · env: {}",
+                    "{}{}",
+                    tr(" · env: ", " · 环境变量："),
                     entry
                         .env
                         .iter()
@@ -242,7 +272,9 @@ impl Panel {
                     | mcp::McpSource::ProjectClaude
             );
         let readonly_label = plugin
-            .map(|plugin| format!("Managed by plugin {plugin}"))
+            .map(|plugin| {
+                if is_zh() { format!("由插件 {plugin} 管理") } else { format!("Managed by plugin {plugin}") }
+            })
             .or(readonly.then(|| "Claude Code".to_string()));
         let test = self
             .extensions
@@ -329,7 +361,7 @@ impl Panel {
                             pill(
                                 format!("mcp-toggle-{}", toggle_name.clone()),
                                 format!("mcp-toggle-{toggle_name}"),
-                                if enabled { "On" } else { "Off" },
+                                if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
                                 enabled,
                             )
                             .on_mouse_down(
@@ -343,7 +375,7 @@ impl Panel {
                                     .map(|_| format!("`{toggle_name}`."));
                                     this.extensions_apply(
                                         result,
-                                        if enabled { "Disabled" } else { "Enabled" },
+                                        if enabled { tr("Disabled", "已关闭") } else { tr("Enabled", "已开启") },
                                         cx,
                                     );
                                 }),
@@ -354,7 +386,7 @@ impl Panel {
                         pill(
                             format!("mcp-test-{}", test_name.clone()),
                             format!("mcp-test-{test_name}"),
-                            if testing { "Testing…" } else { "Test" },
+                            if testing { tr("Testing…", "测试中…") } else { tr("Test", "测试") },
                             false,
                         )
                         .on_mouse_down(
@@ -369,7 +401,7 @@ impl Panel {
                             pill(
                                 format!("mcp-edit-{}", edit_name.clone()),
                                 format!("mcp-edit-{edit_name}"),
-                                "Edit",
+                                tr("Edit", "编辑"),
                                 false,
                             )
                             .on_mouse_down(
@@ -383,7 +415,7 @@ impl Panel {
                             pill(
                                 format!("mcp-delete-{}", delete_name.clone()),
                                 format!("mcp-delete-{delete_name}"),
-                                "Delete",
+                                tr("Delete", "删除"),
                                 false,
                             )
                             .on_mouse_down(
@@ -419,13 +451,13 @@ impl Panel {
                                 .min_w_0()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
-                                .child(format!("Delete `{confirm_label}` from its config?")),
+                                .child(if is_zh() { format!("从配置中删除 `{confirm_label}`？") } else { format!("Delete `{confirm_label}` from its config?") }),
                         )
                         .child(
                             pill(
                                 format!("mcp-confirm-delete-{}", confirm_del.clone()),
                                 format!("mcp-confirm-delete-{confirm_del}"),
-                                "Delete",
+                                tr("Delete", "删除"),
                                 true,
                             )
                             .on_mouse_down(
@@ -437,7 +469,7 @@ impl Panel {
                                     let result =
                                         mcp::delete_mcp(&confirm_del_path, &confirm_del2)
                                             .map(|_| format!("`{confirm_del2}`."));
-                                    this.extensions_apply(result, "Deleted", cx);
+                                    this.extensions_apply(result, tr("Deleted", "已删除"), cx);
                                 }),
                             ),
                         )
@@ -445,7 +477,7 @@ impl Panel {
                             pill(
                                 format!("mcp-confirm-cancel-{}", cancel_name.clone()),
                                 format!("mcp-confirm-cancel-{cancel_name}"),
-                                "Cancel",
+                                tr("Cancel", "取消"),
                                 false,
                             )
                             .on_mouse_down(
@@ -482,7 +514,7 @@ impl Panel {
                             .flex_none()
                             .text_size(px(11.))
                             .text_color(theme.TEXT_DIM)
-                            .child(format!("{} tools", result.tools.len())),
+                            .child(format!("{} {}", result.tools.len(), tr("tools", "个工具"))),
                     )
                     .children(result.tools.iter().map(|tool| {
                         div()
@@ -504,8 +536,9 @@ impl Panel {
                         .child(
                             result
                                 .error
-                                .clone()
-                                .unwrap_or_else(|| "Test failed.".into()),
+                                .as_deref()
+                                .map(mcp_test_error)
+                                .unwrap_or_else(|| tr("Test failed.", "测试失败。").into()),
                         )
                 })
             })
@@ -586,37 +619,37 @@ impl Panel {
         let field = Self::mcp_form_field;
         let name = field(
             cx,
-            "name (e.g. filesystem)",
+            tr("name (e.g. filesystem)", "名称（例如 filesystem）"),
             &entry.map(|e| e.name.clone()).unwrap_or_default(),
         );
         let command = field(
             cx,
-            "command (e.g. npx)",
+            tr("command (e.g. npx)", "命令（例如 npx）"),
             &entry.map(|e| e.command.clone()).unwrap_or_default(),
         );
         let args = match entry {
             Some(entry) if !entry.args.is_empty() => entry
                 .args
                 .iter()
-                .map(|arg| field(cx, "arg", arg))
+                .map(|arg| field(cx, tr("arg", "参数"), arg))
                 .collect(),
-            _ => vec![field(cx, "arg", "")],
+            _ => vec![field(cx, tr("arg", "参数"), "")],
         };
         let pair_rows = |cx: &mut Context<Self>, pairs: &[(String, String)]| {
             if pairs.is_empty() {
                 vec![PairRow {
-                    key: field(cx, "KEY", ""),
-                    value: field(cx, "value", ""),
+                    key: field(cx, tr("KEY", "键"), ""),
+                    value: field(cx, tr("value", "值"), ""),
                     hidden: None,
                 }]
             } else {
                 pairs
                     .iter()
                     .map(|(key, value)| PairRow {
-                        key: field(cx, "KEY", key),
+                        key: field(cx, tr("KEY", "键"), key),
                         // Masked: the real value stays in `hidden` until
                         // the row's reveal pill is clicked.
-                        value: field(cx, "value", ""),
+                        value: field(cx, tr("value", "值"), ""),
                         hidden: Some(value.clone()),
                     })
                     .collect()
@@ -730,7 +763,7 @@ impl Panel {
                 .items_center()
                 .gap_2()
                 .child(
-                    pill("mcp-form-back", "mcp-form-back".into(), "Back", false)
+                    pill("mcp-form-back", "mcp-form-back".into(), tr("Back", "返回"), false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
@@ -745,14 +778,14 @@ impl Panel {
                     div()
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .child(if editing { "Edit server" } else { "Add server" }),
+                        .child(if editing { tr("Edit server", "编辑服务器") } else { tr("Add server", "添加服务器") }),
                 )
                 .child(div().flex_1().min_w_0())
                 .child(
                     pill(
                         "mcp-paste-toggle",
                         "mcp-paste-toggle".into(),
-                        "Paste JSON",
+                        tr("Paste JSON", "粘贴 JSON"),
                         paste_open,
                     )
                     .on_mouse_down(
@@ -805,7 +838,7 @@ impl Panel {
                         pill(
                             "mcp-paste-apply",
                             "mcp-paste-apply".into(),
-                            "Apply",
+                            tr("Apply", "应用"),
                             false,
                         )
                         .on_mouse_down(
@@ -817,9 +850,9 @@ impl Panel {
             );
         }
 
-        body.push(row("name", form.name.clone().into_any_element()));
+        body.push(row(tr("name", "名称"), form.name.clone().into_any_element()));
         body.push(row(
-            "type",
+            tr("type", "类型"),
             div()
                 .flex()
                 .items_center()
@@ -834,18 +867,21 @@ impl Panel {
         if !editing && project_available {
             let target = form.target;
             body.push(row(
-                "file",
+                tr("file", "配置文件"),
                 div()
                     .flex()
                     .items_center()
                     .gap_1()
                     .children(
-                        [("Global", McpTarget::Global), ("Project", McpTarget::Project)]
+                        [
+                            ("Global", tr("Global", "全局"), McpTarget::Global),
+                            ("Project", tr("Project", "项目"), McpTarget::Project),
+                        ]
                             .into_iter()
-                            .map(|(label, kind)| {
+                            .map(|(slug, label, kind)| {
                                 pill(
-                                    format!("mcp-target-{}", label),
-                                    format!("mcp-target-{}", label.to_lowercase()),
+                                    format!("mcp-target-{}", slug),
+                                    format!("mcp-target-{}", slug.to_lowercase()),
                                     label,
                                     target == kind,
                                 )
@@ -870,10 +906,10 @@ impl Panel {
         }
 
         if transport == mcp::McpTransport::Stdio {
-            body.push(row("command", form.command.clone().into_any_element()));
+            body.push(row(tr("command", "命令"), form.command.clone().into_any_element()));
             for (index, arg) in form.args.iter().enumerate() {
                 body.push(row(
-                    if index == 0 { "args" } else { "" },
+                    if index == 0 { tr("args", "参数") } else { "" },
                     div()
                         .flex()
                         .items_center()
@@ -909,12 +945,12 @@ impl Panel {
                     .flex_none()
                     .pl(px(88.))
                     .child(
-                        pill("mcp-arg-add", "mcp-arg-add".into(), "+ arg", false)
+                        pill("mcp-arg-add", "mcp-arg-add".into(), tr("+ arg", "+ 参数"), false)
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     let weak = cx.weak_entity();
-                                    let field = field_input(cx, "arg", "", move |app| {
+                                    let field = field_input(cx, tr("arg", "参数"), "", move |app| {
                                         weak.update(app, |_, _| ()).is_ok()
                                     });
                                     if let Some(form) = this
@@ -932,7 +968,7 @@ impl Panel {
             );
             body.extend(self.render_pair_rows("env", &form.env, cx));
         } else {
-            body.push(row("url", form.url.clone().into_any_element()));
+            body.push(row(tr("url", "URL"), form.url.clone().into_any_element()));
             body.extend(self.render_pair_rows("headers", &form.headers, cx));
         }
 
@@ -953,7 +989,7 @@ impl Panel {
                 .items_center()
                 .gap_2()
                 .child(
-                    pill("mcp-save", "mcp-save".into(), "Save", true).on_mouse_down(
+                    pill("mcp-save", "mcp-save".into(), tr("Save", "保存"), true).on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.mcp_form_save(cx)),
                     ),
@@ -987,6 +1023,7 @@ impl Panel {
         let theme = Theme::global();
         let mut out = Vec::new();
         let env = label == "env";
+        let display_label = if env { tr("env", "环境变量") } else { tr("headers", "请求头") };
         for (index, pair) in rows.iter().enumerate() {
             let masked = pair.hidden.is_some();
             let mut row = div()
@@ -1000,7 +1037,7 @@ impl Panel {
                         .w(px(80.))
                         .text_size(px(11.))
                         .text_color(theme.TEXT_DIM)
-                        .child(if index == 0 { label.to_string() } else { String::new() }),
+                        .child(if index == 0 { display_label.to_string() } else { String::new() }),
                 )
                 .child(div().w(px(140.)).flex_none().child(pair.key.clone()))
                 .child(div().flex_1().min_w_0().child(pair.value.clone()));
@@ -1009,7 +1046,7 @@ impl Panel {
                     pill(
                         format!("mcp-reveal-{label}-{index}"),
                         format!("mcp-reveal-{label}-{index}"),
-                        "reveal",
+                        tr("reveal", "显示"),
                         false,
                     )
                     .on_mouse_down(
@@ -1070,15 +1107,15 @@ impl Panel {
                     pill(
                         format!("mcp-pair-add-{}", label),
                         format!("mcp-pair-add-{label}"),
-                        format!("+ {label}"),
+                        format!("+ {display_label}"),
                         false,
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             let row = PairRow {
-                                key: Self::mcp_form_field(cx, "KEY", ""),
-                                value: Self::mcp_form_field(cx, "value", ""),
+                                key: Self::mcp_form_field(cx, tr("KEY", "键"), ""),
+                                value: Self::mcp_form_field(cx, tr("value", "值"), ""),
                                 hidden: None,
                             };
                             if let Some(form) = this
@@ -1142,7 +1179,11 @@ impl Panel {
                 if let Some(state) = self.extensions.as_mut() {
                     if let Some(form) = state.mcp_form.as_mut() {
                         if let Some(error) = last_error {
-                            form.error = Some(format!("Imported {imported}; last error: {error}"));
+                            form.error = Some(if is_zh() {
+                                format!("已导入 {imported} 个服务器。最后一个错误：{error}")
+                            } else {
+                                format!("Imported {imported}; last error: {error}")
+                            });
                             cx.notify();
                             return;
                         }
@@ -1150,13 +1191,15 @@ impl Panel {
                     state.mcp_form = None;
                 }
                 self.extensions_apply(
-                    Ok(format!("{imported} server(s).")),
-                    "Imported",
+                    Ok(format!("{imported} {}", tr("server(s).", "个服务器。"))),
+                    tr("Imported", "已导入"),
                     cx,
                 );
                 return;
             }
-            Err(error) => form.error = Some(error),
+            Err(error) => {
+                form.error = Some(if is_zh() { format!("无法解析或导入 MCP 配置：{error}") } else { error });
+            }
         }
         cx.notify();
     }
@@ -1173,39 +1216,39 @@ impl Panel {
         // Replace arg/pair rows with the draft's values.
         let mut args: Vec<Entity<PromptInput>> = Vec::new();
         for arg in &draft.args {
-            args.push(Self::mcp_form_field(cx, "arg", arg));
+            args.push(Self::mcp_form_field(cx, tr("arg", "参数"), arg));
         }
         if args.is_empty() {
-            args.push(Self::mcp_form_field(cx, "arg", ""));
+            args.push(Self::mcp_form_field(cx, tr("arg", "参数"), ""));
         }
         form.args = args;
         form.env = Vec::new();
         for (key, value) in &draft.env {
             form.env.push(PairRow {
-                key: Self::mcp_form_field(cx, "KEY", key),
-                value: Self::mcp_form_field(cx, "value", value),
+                key: Self::mcp_form_field(cx, tr("KEY", "键"), key),
+                value: Self::mcp_form_field(cx, tr("value", "值"), value),
                 hidden: None,
             });
         }
         if form.env.is_empty() {
             form.env.push(PairRow {
-                key: Self::mcp_form_field(cx, "KEY", ""),
-                value: Self::mcp_form_field(cx, "value", ""),
+                key: Self::mcp_form_field(cx, tr("KEY", "键"), ""),
+                value: Self::mcp_form_field(cx, tr("value", "值"), ""),
                 hidden: None,
             });
         }
         form.headers = Vec::new();
         for (key, value) in &draft.headers {
             form.headers.push(PairRow {
-                key: Self::mcp_form_field(cx, "Key", key),
-                value: Self::mcp_form_field(cx, "value", value),
+                key: Self::mcp_form_field(cx, tr("Key", "键"), key),
+                value: Self::mcp_form_field(cx, tr("value", "值"), value),
                 hidden: None,
             });
         }
         if form.headers.is_empty() {
             form.headers.push(PairRow {
-                key: Self::mcp_form_field(cx, "Key", ""),
-                value: Self::mcp_form_field(cx, "value", ""),
+                key: Self::mcp_form_field(cx, tr("Key", "键"), ""),
+                value: Self::mcp_form_field(cx, tr("value", "值"), ""),
                 hidden: None,
             });
         }
@@ -1241,7 +1284,7 @@ impl Panel {
         let name = form.name.read(cx).content.trim().to_string();
         let editing_name = form.editing.as_ref().map(|(_, name)| name.clone());
         let error = if name.is_empty() {
-            Some("Server name is required.".to_string())
+            Some(tr("Server name is required.", "请输入服务器名称。").to_string())
         } else if editing_name.as_deref() != Some(name.as_str())
             && state.mcp.entries.iter().any(|entry| {
                 entry.name == name
@@ -1249,15 +1292,19 @@ impl Panel {
                         == Self::mcp_target_path_of(&state.paths, form.target, form.editing.as_ref())
             })
         {
-            Some(format!("A server named `{name}` already exists there."))
+            Some(if is_zh() {
+                format!("该配置中已存在名为 `{name}` 的服务器。")
+            } else {
+                format!("A server named `{name}` already exists there.")
+            })
         } else if form.transport == mcp::McpTransport::Stdio
             && form.command.read(cx).content.trim().is_empty()
         {
-            Some("stdio servers need a command.".to_string())
+            Some(tr("stdio servers need a command.", "stdio 服务器需要启动命令。").to_string())
         } else if form.transport != mcp::McpTransport::Stdio
             && form.url.read(cx).content.trim().is_empty()
         {
-            Some("http/sse servers need a url.".to_string())
+            Some(tr("http/sse servers need a url.", "HTTP 或 SSE 服务器需要 URL。").to_string())
         } else {
             None
         };
@@ -1295,6 +1342,6 @@ impl Panel {
         {
             state.mcp_form = None;
         }
-        self.extensions_apply(result, "Saved", cx);
+        self.extensions_apply(result, tr("Saved", "已保存"), cx);
     }
 }

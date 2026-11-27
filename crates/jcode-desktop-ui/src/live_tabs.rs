@@ -421,7 +421,7 @@ impl Workspace {
                             .bg(Theme::global().PANEL_BG)
                             .text_color(Theme::global().TEXT)
                     })
-                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Rename session (F2)".into())).into())
+                    .tooltip(|_, cx| cx.new(|_| TabTooltip(crate::locale::tr("Rename session (F2)", "重命名会话（F2）").into())).into())
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.rename_session(&RenameSession, window, cx);
@@ -999,9 +999,9 @@ impl Workspace {
                     .tooltip(|_, cx| {
                         cx.new(|_| {
                             TabTooltip(if cfg!(target_os = "macos") {
-                                "New session (⌘N)".into()
+                                crate::locale::tr("New session (⌘N)", "新建会话（⌘N）").into()
                             } else {
-                                "New session (Super+N)".into()
+                                crate::locale::tr("New session (Super+N)", "新建会话（Super+N）").into()
                             })
                         })
                         .into()
@@ -1038,7 +1038,7 @@ impl Workspace {
                             el.bg(Theme::global().ERROR_BG)
                                 .text_color(Theme::global().ERROR)
                         })
-                        .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
+                        .tooltip(|_, cx| cx.new(|_| TabTooltip(crate::locale::tr("Close window", "关闭窗口").into())).into())
                         .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                             cx.stop_propagation();
                             window.prevent_default();

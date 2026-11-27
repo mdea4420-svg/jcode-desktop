@@ -120,7 +120,7 @@ impl Workspace {
             .pt(px(inset))
             .bg(Theme::global().PANEL_BG)
             .font_family(Theme::global().FONT_UI)
-            .text_size(px(14.0 * crate::config::get().appearance.text_scale))
+            .text_size(super::scaled_text(14.0))
             .text_color(Theme::global().TEXT)
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(Self::toggle_onboarding_simulator))
@@ -130,6 +130,7 @@ impl Workspace {
             .capture_action(cx.listener(Self::end_voice_hold))
             .capture_key_down(cx.listener(Self::copilot_key_down))
             .capture_key_up(cx.listener(Self::copilot_key_up))
+            .capture_key_down(cx.listener(Self::dismiss_project_folder_menu_on_escape))
             .capture_action(cx.listener(Self::rename_session))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if this.rename_editor.is_some() && event.keystroke.key == "escape" {
@@ -150,6 +151,8 @@ impl Workspace {
             .on_action(cx.listener(Self::open_resume))
             .on_action(cx.listener(Self::open_change_review))
             .on_action(cx.listener(Self::close_change_review))
+            .on_action(cx.listener(Self::open_folder))
+            .on_action(cx.listener(Self::toggle_project_folder_menu))
             .when(back, |root| {
                 root.child(
                     div()
@@ -177,6 +180,11 @@ impl Workspace {
                     .min_h_0()
                     .overflow_hidden()
                     .children(content),
+            )
+            .children(self.render_project_folder_menu(window, cx))
+            .when(
+                self.folder_picker_dir.is_some() && !self.folder_picker_sets_default,
+                |root| root.child(self.render_folder_picker(cx)),
             )
             .when(self.rename_editor.is_some(), |root| {
                 root.child(self.render_rename_editor(cx))
@@ -236,6 +244,43 @@ mod tests {
             assert!(!workspace.slots[0].panel.read(cx).voice_active());
             assert_eq!(workspace.slots.len(), 1);
         });
+    }
+
+    #[gpui::test]
+    fn single_panel_project_folder_menu_dismisses_and_opens_the_picker(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (_, vcx) = cx.add_window_view(|_, cx| standalone(cx));
+        vcx.run_until_parked();
+        let button = vcx.debug_bounds("composer-project-folder").unwrap();
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("project-folder-menu").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("project-folder-menu").is_none());
+
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("project-folder-menu").is_some());
+        vcx.simulate_click(gpui::point(px(4.0), px(4.0)), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("project-folder-menu").is_none());
+
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let open = vcx.debug_bounds("project-folder-open").unwrap();
+        assert!(vcx.debug_bounds("project-folder-create").is_some());
+        vcx.simulate_click(open.center(), gpui::Modifiers::default());
+        vcx.simulate_path_prompt_response(|options| {
+            assert!(options.directories && !options.files && !options.multiple);
+            None
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("project-folder-menu").is_none());
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
+        vcx.simulate_keystrokes("ctrl-o");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("folder-picker-overlay").is_some());
     }
 
     #[gpui::test]

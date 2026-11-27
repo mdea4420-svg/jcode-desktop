@@ -21,6 +21,7 @@ mod html_preview;
 mod inline_image;
 mod input;
 mod live_profile;
+mod locale;
 mod markdown;
 mod markdown_inline_code;
 pub mod memory;

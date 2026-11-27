@@ -22,6 +22,9 @@ pub(super) fn id_from_key(key: &str) -> Option<&str> {
 }
 
 pub(super) const COLLECTION_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2.5"/><path d="M6 5h12M8.5 2.5h7"/></g></svg>"#;
+const ADD_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="black" stroke-width="1.75" stroke-linecap="round"/></svg>"#;
+const REMOVE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M5 12h14" fill="none" stroke="black" stroke-width="1.75" stroke-linecap="round"/></svg>"#;
+const TRASH_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" fill="none" stroke="black" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 
 /// One persisted change, applied locally and then replayed on disk.
 #[derive(Clone, Debug, PartialEq)]
@@ -96,8 +99,9 @@ pub(super) struct State {
     path: Option<PathBuf>,
     pub(super) form: Option<Form>,
     pub(super) error: Option<String>,
-    /// Session whose "Move to collection" menu is open.
+    /// Session whose actions menu is open.
     pub(super) menu: Option<String>,
+    menu_anchor: gpui::Point<gpui::Pixels>,
     /// Background writes, in order, so a later change never lands first.
     writes: Vec<gpui::Task<()>>,
     loaded: bool,
@@ -204,6 +208,7 @@ impl Workspace {
         // Visual review of the row menu without synthetic input.
         if std::env::var("JCODE_DESKTOP_SCREENSHOT_COLLECTIONS").as_deref() == Ok("menu") {
             self.collections.menu = Some("collections-fixture-lint".into());
+            self.collections.menu_anchor = gpui::point(px(220.0), px(210.0));
         }
     }
 
@@ -767,10 +772,37 @@ impl Workspace {
         )
     }
 
-    /// "Move to collection" choices for one session row.
-    pub(super) fn render_collection_menu(
+    pub(super) fn open_session_menu(
+        &mut self,
+        session_id: &str,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_gesture = None;
+        self.project_menu.close();
+        self.collections.menu = Some(session_id.to_owned());
+        self.collections.menu_anchor = position;
+        cx.notify();
+    }
+
+    pub(super) fn render_session_menu_popup(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let session_id = self.collections.menu.as_deref()?;
+        let position = self.collections.menu_anchor + gpui::point(px(10.0), px(4.0));
+        Some(gpui::deferred(
+            gpui::anchored().position(position).child(
+                self.render_collection_menu(session_id, window.viewport_size().height, cx),
+            ),
+        ).with_priority(10).into_any_element())
+    }
+
+    fn render_collection_menu(
         &self,
         session_id: &str,
+        viewport_height: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
@@ -778,48 +810,18 @@ impl Workspace {
             .collections
             .collection_of(session_id)
             .map(|c| c.id.clone());
-        let row = |id: gpui::ElementId, selector: String| {
-            div()
-                .id(id)
-                .debug_selector(move || selector.clone())
-                .h(px(24.0))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_1()
-                .rounded_full()
-                .cursor_pointer()
-                .text_size(px(11.0))
-                .text_color(theme.TEXT)
-                .hover(|el| el.bg(theme.TOOL_BG))
-        };
-        let mut menu = div()
-            .id("sidebar-collection-menu")
-            .debug_selector(|| "sidebar-collection-menu".into())
-            .occlude()
-            .mt_1()
-            .p_1()
-            .rounded_xl()
-            .border_1()
-            .border_color(theme.PANEL_BORDER)
-            .bg(theme.PANEL_BG)
-            .flex()
-            .flex_col()
-            .gap(px(1.0))
+        use super::sidebar_project_menu::{popup_row as row, popup_separator, popup_surface};
+
+        let mut menu = popup_surface("sidebar-collection-menu", viewport_height)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.collections.menu = None;
                 cx.notify();
             }))
-            .child(
-                div()
-                    .px_2()
-                    .pt_1()
-                    .pb(px(2.0))
-                    .text_size(px(9.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.TEXT_FAINT)
-                    .child("Move to collection"),
-            );
+            .when(!self.collections.store.collections.is_empty(), |menu| {
+                menu.child(div().flex_none().px(px(9.0)).pt_1().pb(px(3.0))
+                    .text_size(px(10.0)).font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.TEXT_DIM).child(tr("Move to collection", "移到集合")))
+            });
         for (index, collection) in self.collections.store.collections.iter().enumerate() {
             let chosen = current.as_deref() == Some(collection.id.as_str());
             let target = collection.id.clone();
@@ -828,9 +830,10 @@ impl Workspace {
                 row(
                     ("sidebar-collection-choice", index).into(),
                     format!("sidebar-collection-choice-{index}"),
+                    false,
                 )
                 .when(chosen, |el| el.bg(theme.ACCENT_DIM))
-                .child(sidebar_worktrees::icon(COLLECTION_ICON, 11.0))
+                .child(sidebar_worktrees::icon(COLLECTION_ICON, 14.0))
                 .child(
                     div()
                         .flex_1()
@@ -856,10 +859,10 @@ impl Workspace {
             row(
                 "sidebar-collection-create".into(),
                 "sidebar-collection-create".into(),
+                false,
             )
-            .text_color(theme.TEXT_DIM)
-            .child(div().w(px(11.0)).flex_none().child("+"))
-            .child("New collection…")
+            .child(sidebar_worktrees::icon(ADD_ICON, 14.0))
+            .child(tr("New collection…", "新建集合…"))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -875,10 +878,10 @@ impl Workspace {
                 row(
                     "sidebar-collection-remove".into(),
                     "sidebar-collection-remove".into(),
+                    false,
                 )
-                .text_color(theme.TEXT_DIM)
-                .child(div().w(px(11.0)).flex_none().child("×"))
-                .child("Remove from collection")
+                .child(sidebar_worktrees::icon(REMOVE_ICON, 14.0))
+                .child(tr("Remove from collection", "从集合移除"))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -889,7 +892,26 @@ impl Workspace {
                 ),
             );
         }
-        menu.into_any_element()
+        let blocker = self.sidebar_archive_blocker(session_id, cx);
+        let id = session_id.to_owned();
+        let delete = row("sidebar-delete-session".into(), "sidebar-delete-session".into(), blocker.is_none())
+            .child(gpui::svg().data(TRASH_ICON).size(px(14.0)).flex_none()
+                .text_color(if blocker.is_some() { theme.TEXT_DIM } else { theme.ERROR }))
+            .child(tr("Delete conversation…", "删除会话…"))
+            .when_some(blocker, |el, reason| {
+                el.cursor_default().text_color(theme.TEXT_DIM).tooltip(move |_, cx| {
+                    cx.new(|_| remotes::HeaderTooltip(reason.into())).into()
+                })
+            })
+            .when(blocker.is_none(), |el| el.on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.confirm_sidebar_archive(id.clone(), window, cx);
+                }),
+            ));
+        menu.child(popup_separator()).child(delete).into_any_element()
     }
 
     /// Inline editor shown above the thread list.
@@ -926,7 +948,7 @@ impl Workspace {
             .child(
                 pill(
                     "collection-form-save",
-                    if editing.is_some() { "Save" } else { "Create" },
+                    if editing.is_some() { tr("Save", "保存") } else { tr("Create", "创建") },
                 )
                 .bg(theme.ACCENT)
                 .text_color(theme.BG)
@@ -940,7 +962,7 @@ impl Workspace {
                 ),
             )
             .child(
-                pill("collection-form-cancel", "Cancel")
+                pill("collection-form-cancel", tr("Cancel", "取消"))
                     .bg(theme.TOOL_BG)
                     .text_color(theme.TEXT_DIM)
                     .hover(|el| el.text_color(theme.TEXT))
@@ -959,7 +981,7 @@ impl Workspace {
                 el.child(
                     pill(
                         "collection-form-delete",
-                        if confirm { "Really delete?" } else { "Delete" },
+                        if confirm { tr("Really delete?", "确认删除？") } else { tr("Delete", "删除") },
                     )
                     .bg(if confirm {
                         theme.ERROR_BG
@@ -992,9 +1014,9 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(label("Order"))
+                .child(label(tr("Order", "排序")))
                 .child(
-                    pill("collection-form-up", "Up")
+                    pill("collection-form-up", tr("Up", "上移"))
                         .h(px(20.0))
                         .px_2()
                         .bg(theme.TOOL_BG)
@@ -1009,7 +1031,7 @@ impl Workspace {
                         ),
                 )
                 .child(
-                    pill("collection-form-down", "Down")
+                    pill("collection-form-down", tr("Down", "下移"))
                         .h(px(20.0))
                         .px_2()
                         .bg(theme.TOOL_BG)
@@ -1050,22 +1072,22 @@ impl Workspace {
                         .text_color(theme.TEXT_DIM)
                         .child(sidebar_worktrees::icon(COLLECTION_ICON, 12.0))
                         .child(if editing.is_some() {
-                            "Edit collection"
+                            tr("Edit collection", "编辑集合")
                         } else {
-                            "New collection"
+                            tr("New collection", "新建集合")
                         }),
                 )
-                .child(label("Name"))
+                .child(label(tr("Name", "名称")))
                 .child(form.name.clone())
-                .child(label("Default folder for new chats"))
+                .child(label(tr("Default folder for new chats", "新会话的默认文件夹")))
                 .child(form.directory.clone())
-                .child(label("Instructions"))
+                .child(label(tr("Instructions", "指令")))
                 .child(form.instructions.clone())
                 .child(
                     div()
                         .text_size(px(10.0))
                         .text_color(theme.TEXT_FAINT)
-                        .child("Instructions are sent privately with every message in this collection. Deleting a collection keeps its chats."),
+                        .child(tr("Instructions are sent privately with every message in this collection. Deleting a collection keeps its chats.", "本集合的指令会随每条消息一同发送。删除集合会保留其中的会话。")),
                 )
                 .children(reorder)
                 .child(actions)

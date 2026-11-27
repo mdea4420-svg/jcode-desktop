@@ -393,3 +393,121 @@ fn long_lists_scroll_inside_the_dialog(cx: &mut gpui::TestAppContext) {
         "the last skill row never reaches the viewport: {last:?}"
     );
 }
+
+#[gpui::test]
+fn plugins_tab_creates_filters_and_toggles_plugins_in_isolated_paths(cx: &mut gpui::TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let paths = fixture_paths(root.path());
+    let layout = crate::plugins::layout_for_paths(&paths);
+    assert_eq!(layout.plugins_dir, paths.jcode_home.join("plugins"));
+    assert_eq!(layout.claude_plugins, Some(paths.user_home.join(".claude/plugins")));
+    let default_plugins = crate::plugins::layout().plugins_dir;
+    assert_ne!(layout.plugins_dir, default_plugins);
+    let (panel, vcx, _commands) = setup(cx);
+    panel.update(vcx, |panel, cx| {
+        panel.open_extensions_with_paths(paths, None, ExtensionTab::Plugins, cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("extensions-plugins-empty").is_some());
+
+    let click = |vcx: &mut gpui::VisualTestContext, selector| {
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+    let create = |vcx: &mut gpui::VisualTestContext, name, kind| {
+        let previously_installed = default_plugins.join(name).exists();
+        click(vcx, "plugins-new");
+        assert!(vcx.debug_bounds("plugins-form-name").is_some());
+        click(vcx, kind);
+        vcx.simulate_input(name);
+        click(vcx, "plugins-create");
+        assert!(vcx.debug_bounds("extensions-plugins-list").is_some());
+        assert_eq!(default_plugins.join(name).exists(), previously_installed);
+    };
+    create(vcx, "test-round3-notes", "plugins-kind-declarative");
+    create(vcx, "test-round3-code", "plugins-kind-code");
+    let notes = layout.plugins_dir.join("test-round3-notes");
+    let code = layout.plugins_dir.join("test-round3-code");
+    assert!(notes.join(".claude-plugin/plugin.json").is_file());
+    assert!(notes.join("commands/hello.md").is_file());
+    assert!(code.join(".claude-plugin/plugin.json").is_file());
+    assert!(code.join("index.mjs").is_file());
+    assert!(code.join("jcode.d.ts").is_file());
+    assert!(vcx.debug_bounds("plugin-open-test-round3-notes").is_some());
+
+    for query in ["NOTES", "what this plugin adds", "/TEST-ROUND3-NOTES:HELLO", "声明式"] {
+        vcx.simulate_keystrokes("ctrl-a");
+        vcx.simulate_input(query);
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("plugin-row-test-round3-notes").is_some(), "{query}");
+        assert!(vcx.debug_bounds("plugin-row-test-round3-code").is_none(), "{query}");
+    }
+    vcx.simulate_keystrokes("ctrl-a");
+    vcx.simulate_input("does-not-exist");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("extensions-plugins-empty").is_some());
+    assert!(vcx.debug_bounds("plugin-row-test-round3-notes").is_none());
+
+    vcx.simulate_keystrokes("ctrl-a backspace");
+    vcx.run_until_parked();
+    click(vcx, "plugin-toggle-test-round3-notes");
+    let enabled = || jcode_plugins::State::load(&layout).enabled["test-round3-notes"];
+    assert!(layout.state_file().is_file());
+    assert!(!enabled());
+    click(vcx, "plugin-toggle-test-round3-notes");
+    assert!(enabled());
+
+    click(vcx, "plugins-new");
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("plugins-form-name").is_none());
+    assert!(vcx.debug_bounds("extensions-plugins-list").is_some());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("extensions").is_none());
+}
+
+#[gpui::test]
+fn chinese_extensions_keep_stable_tab_selectors_and_localize_plugin_reports(
+    cx: &mut gpui::TestAppContext,
+) {
+    let report = jcode_plugins::SyncReport {
+        plugins: 3,
+        enabled: 2,
+        skills: 1,
+        mcp_servers: 4,
+        hook_events: vec!["pre_tool".into()],
+        warnings: vec!["fixture diagnostic".into()],
+        changed: true,
+    };
+    assert_eq!(
+        crate::plugins::report_markdown(&report),
+        "Synced 2 enabled of 3 plugins: 1 skills, 4 MCP servers, hooks on pre_tool.\n- warning: fixture diagnostic\n\nNew skills, MCP servers and hooks apply to new sessions (or after the runtime reloads its config)."
+    );
+    crate::locale::with_zh(|| {
+        let root = tempfile::tempdir().unwrap();
+        let paths = fixture_paths(root.path());
+        let (panel, vcx, _commands) = setup(cx);
+        panel.update(vcx, |panel, cx| {
+            panel.open_extensions_with_paths(paths, None, ExtensionTab::Mcp, cx);
+        });
+        vcx.run_until_parked();
+        for (selector, tab, list) in [
+            ("extensions-tab-skills", ExtensionTab::Skills, "extensions-skills-list"),
+            ("extensions-tab-plugins", ExtensionTab::Plugins, "extensions-plugins-list"),
+            ("extensions-tab-mcp", ExtensionTab::Mcp, "extensions-mcp-list"),
+        ] {
+            let bounds = vcx.debug_bounds(selector).expect(selector);
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+            panel.read_with(vcx, |panel, _| assert_eq!(panel.extensions.as_ref().unwrap().tab, tab));
+            assert!(vcx.debug_bounds(list).is_some());
+        }
+        let markdown = crate::plugins::report_markdown(&report);
+        assert!(markdown.contains("已同步 3 个插件中的 2 个已启用插件"));
+        assert!(markdown.contains("1 项技能和 4 个 MCP 服务器"));
+        assert!(markdown.contains("警告：fixture diagnostic"));
+        assert!(markdown.contains("会在新会话中生效"));
+    });
+}

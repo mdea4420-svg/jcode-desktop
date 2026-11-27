@@ -200,6 +200,41 @@ fn recovery_empty_model_picker_offers_native_connect_and_refresh(cx: &mut gpui::
     assert!(commands.try_recv().is_err());
 }
 
+#[gpui::test]
+fn recovery_opens_model_browser_when_choices_arrive(cx: &mut gpui::TestAppContext) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("loading-models".into(), None, None, bridge, cx));
+    panel.update(vcx, |panel, cx| panel.open_recovery_models(cx));
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-model-picker").is_some());
+
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &ApiEvent::RuntimeInfo {
+                session_id: "loading-models".into(),
+                provider: None,
+                model: None,
+                reasoning_effort: None,
+                auth_method: None,
+                routes: vec![jcode_sdk::ModelRouteInfo {
+                    usage: None,
+                    model: "openai:test".into(),
+                    provider: "openai".into(),
+                    api_method: "openai-api-key".into(),
+                    available: true,
+                    detail: String::new(),
+                }],
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("model-browser-row-0").is_some());
+    assert!(vcx.debug_bounds("recovery-model-picker").is_none());
+    assert!(commands.try_recv().is_err());
+}
+
 const REFRESH_TOKEN_ERROR: &str = "openai refresh token was previously rejected by the provider and cannot be refreshed. Run `jcode login --provider openai` to mint a fresh token.";
 
 #[test]

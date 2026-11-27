@@ -6,7 +6,28 @@
 //! identity broadcast that follows a success carries the level the provider
 //! actually applied.
 use super::*;
+use crate::custom_providers::MagpieEffort;
 use crate::effort;
+use crate::locale::tr;
+use std::{cell::Cell, rc::Rc};
+
+pub(super) type PillBounds = Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>;
+
+pub(super) fn pill_bounds_marker(bounds: PillBounds) -> gpui::AnyElement {
+    gpui::canvas(
+        move |rect, window, _| {
+            let visible = rect.intersect(&window.content_mask().bounds);
+            bounds.set((visible.size.width > px(0.) && visible.size.height > px(0.)).then_some(visible));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
+}
+
 
 /// An effort request the runtime has not answered yet.
 #[derive(Clone, Debug)]
@@ -17,10 +38,256 @@ pub(super) struct PendingEffort {
     requested: VecDeque<String>,
 }
 
+pub(super) struct EffortPicker {
+    focus: gpui::FocusHandle,
+    selected: Option<&'static str>,
+    pill_bounds: PillBounds,
+}
+
 impl Panel {
+    pub(super) fn toggle_effort_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_side_document() || self.is_pending_session() {
+            return;
+        }
+        if self.effort_picker.is_some() {
+            self.close_effort_picker(window, cx);
+            return;
+        }
+        if self.model_picker_open {
+            self.close_model_picker(cx);
+        }
+        self.model_browser = None;
+        self.swarm.focus = None;
+        self.recovery_picker_open = false;
+        self.close_login_picker(cx);
+        if matches!(self.magpie_effort, Some(MagpieEffort::Unknown)) {
+            self.magpie_effort_model = None;
+            self.refresh_magpie_effort(cx);
+        }
+        let levels = self.effort_ladder();
+        let selected = levels
+            .iter()
+            .copied()
+            .find(|level| self.reasoning_effort.as_deref() == Some(*level))
+            .or_else(|| levels.first().copied());
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        self.effort_picker = Some(EffortPicker {
+            focus,
+            selected,
+            pill_bounds: Default::default(),
+        });
+        cx.notify();
+    }
+
+    fn close_effort_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.effort_picker = None;
+        self.focus_input(window, cx);
+        cx.notify();
+    }
+
+    fn choose_effort_level(&mut self, level: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reasoning_effort.as_deref() != Some(level) {
+            self.request_effort(level, cx);
+        }
+        self.close_effort_picker(window, cx);
+    }
+
+    pub(super) fn effort_pill_bounds_marker(&self) -> Option<gpui::AnyElement> {
+        self.effort_picker
+            .as_ref()
+            .map(|picker| pill_bounds_marker(picker.pill_bounds.clone()))
+    }
+
+    pub(super) fn render_effort_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let picker = self.effort_picker.as_ref()?;
+        let pill_bounds = picker.pill_bounds.clone();
+        let levels = self.effort_ladder();
+        let theme = Theme::global();
+        let rows = levels.iter().copied().map(|level| {
+            let current = self.reasoning_effort.as_deref() == Some(level);
+            div()
+                .id(gpui::SharedString::from(format!("effort-level-{level}")))
+                .debug_selector(move || format!("effort-level-{level}").into())
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(theme.TOOL_BG)
+                .when(picker.selected == Some(level), |row| row.bg(theme.ACCENT_DIM))
+                .hover(|row| row.bg(theme.ACCENT_DIM))
+                .child(effort_level_label(level))
+                .when(current, |row| row.child(tr("Current", "当前")))
+                .when(self.magpie_default_effort() == Some(level), |row| {
+                    row.child(tr("Gateway default", "网关默认"))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.choose_effort_level(level, window, cx);
+                    cx.stop_propagation();
+                }))
+        });
+        Some(
+            div()
+                .id("effort-picker")
+                .debug_selector(|| "effort-picker".into())
+                .track_focus(&picker.focus)
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .flex()
+                .flex_col()
+                .gap_1()
+                .mb_2()
+                .p_2()
+                .rounded_xl()
+                .bg(theme.HEADER_BG)
+                .text_color(theme.TEXT)
+                .text_size(px(12.))
+                .child(tr("Reasoning effort", "推理强度"))
+                .children(rows)
+                .when(levels.is_empty(), |menu| menu.child(self.effort_unavailable_message()))
+                .on_mouse_down_out(cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    // Let the pill's MouseUp toggle close an already-open picker.
+                    if this.effort_pill_label().is_some()
+                        && pill_bounds.get().is_some_and(|bounds| bounds.contains(&event.position))
+                    {
+                        return;
+                    }
+                    this.effort_picker = None;
+                    cx.notify();
+                }))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    let selected = this.effort_picker.as_ref().and_then(|picker| picker.selected);
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.close_effort_picker(window, cx),
+                        "enter" => {
+                            if let Some(level) = selected {
+                                this.choose_effort_level(level, window, cx);
+                            }
+                        }
+                        key @ ("up" | "down") => {
+                            let levels = this.effort_ladder();
+                            let next = effort::step(&levels, selected, if key == "up" { -1 } else { 1 });
+                            if let (Some(picker), Some(level)) = (&mut this.effort_picker, next) {
+                                picker.selected = Some(level);
+                                cx.notify();
+                            }
+                        }
+                        _ => return,
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// Levels the serving model accepts.
     pub(super) fn effort_ladder(&self) -> Vec<&'static str> {
+        if self.is_magpie_effort_route() {
+            return match &self.magpie_effort {
+                Some(MagpieEffort::Known { levels, fixed: false, .. }) => levels.clone(),
+                _ => Vec::new(),
+            };
+        }
         effort::ladder(self.provider.as_deref(), self.model.as_deref())
+    }
+
+    fn is_magpie_effort_route(&self) -> bool {
+        self.provider.as_deref() == Some("magpie")
+    }
+
+    pub(super) fn refresh_magpie_effort(&mut self, cx: &mut Context<Self>) {
+        if !self.is_magpie_effort_route() {
+            self.magpie_effort_model = None;
+            self.magpie_effort = None;
+            return;
+        }
+        if self.magpie_effort_model == self.model {
+            return;
+        }
+        let Some(model) = self.model.clone() else { return; };
+        self.magpie_effort_model = Some(model.clone());
+        self.magpie_effort_generation += 1;
+        let generation = self.magpie_effort_generation;
+        self.magpie_effort = None;
+        if self.preview_state.is_some() || crate::harness::screenshot_mode()
+            || crate::harness::remote_host(&self.session_id).is_some()
+        {
+            self.magpie_effort = Some(MagpieEffort::Unknown);
+            return;
+        }
+        let work = cx.background_executor().spawn(async move {
+            crate::custom_providers::magpie_effort(&model)
+        });
+        cx.spawn(async move |this, cx| {
+            let capability = work.await;
+            let _ = this.update(cx, |panel, cx| {
+                if panel.is_magpie_effort_route()
+                    && panel.magpie_effort_generation == generation
+                {
+                    panel.magpie_effort = Some(capability);
+                    let levels = panel.effort_ladder();
+                    let selected = levels.iter().copied()
+                        .find(|level| panel.reasoning_effort.as_deref() == Some(*level))
+                        .or_else(|| levels.first().copied());
+                    if let Some(picker) = &mut panel.effort_picker {
+                        picker.selected = selected;
+                    }
+                    panel.sync_effort_menu(cx);
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+
+    fn magpie_default_effort(&self) -> Option<&str> {
+        match self.magpie_effort.as_ref() {
+            Some(MagpieEffort::Known { default, .. }) => default.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn effort_pill_label(&self) -> Option<String> {
+        self.model.as_ref()?;
+        if let Some(level) = self.reasoning_effort.as_deref().filter(|level| super::swarm::is_swarm_effort(level)) {
+            return Some(super::swarm::effort_label(level).into());
+        }
+        if self.is_magpie_effort_route() {
+            return Some(match self.magpie_effort.as_ref() {
+                Some(MagpieEffort::Unsupported) => tr("No reasoning", "无推理").into(),
+                Some(MagpieEffort::Known { fixed: true, default, .. }) => {
+                    match default.as_deref() {
+                        Some(level) => format!("{} · {}", tr("Fixed", "固定"), effort_level_label(level)),
+                        None => tr("Fixed", "固定").into(),
+                    }
+                }
+                _ => self.reasoning_effort.as_deref()
+                    .map(|level| effort_level_label(level).to_string())
+                    .unwrap_or_else(|| tr("Effort", "推理强度").into()),
+            });
+        }
+        self.reasoning_effort.clone().or_else(|| {
+            (!self.effort_ladder().is_empty()).then(|| tr("Effort", "推理强度").into())
+        })
+    }
+
+    pub(super) fn effort_unavailable_message(&self) -> String {
+        if !self.is_magpie_effort_route() {
+            return tr("This model offers no adjustable reasoning effort.", "此模型没有可调节的推理强度。").into();
+        }
+        match self.magpie_effort.as_ref() {
+            None => tr("Reading Magpie's model catalog…", "正在读取 Magpie 模型目录…").into(),
+            Some(MagpieEffort::Unknown) => tr("No effort levels were available from the Magpie catalog.", "未从 Magpie 目录取得推理档位。").into(),
+            Some(MagpieEffort::Unsupported) => tr("Reasoning is disabled for this route.", "此路由未启用推理。").into(),
+            Some(MagpieEffort::RuntimeLimited) => tr("This Jcode runtime cannot apply the advertised levels.", "当前 Jcode 运行时无法应用网关声明的档位。").into(),
+            Some(MagpieEffort::Known { default, .. }) => match default.as_deref() {
+                Some(level) => format!("{} · {}", tr("Fixed gateway level", "网关固定档位"), effort_level_label(level)),
+                None => tr("Fixed gateway level", "网关固定档位").into(),
+            },
+        }
     }
 
     /// Keep the composer's `/effort` menu on the serving model's ladder.
@@ -42,10 +309,8 @@ impl Panel {
         }
         let ladder = self.effort_ladder();
         if ladder.is_empty() {
-            self.items.push(Item::Error(format!(
-                "Reasoning effort is not available for {}.",
-                self.model.as_deref().unwrap_or("this model")
-            )));
+            let notice = self.effort_unavailable_message();
+            self.items.push(Item::Error(notice));
             return false;
         }
         let Some(level) = ladder.iter().copied().find(|candidate| *candidate == level) else {
@@ -55,6 +320,14 @@ impl Panel {
             )));
             return false;
         };
+        self.send_effort(level, cx);
+        true
+    }
+
+    pub(super) fn send_effort(&mut self, level: &str, cx: &mut Context<Self>) {
+        if let Some(previous) = self.reasoning_effort.as_ref().filter(|level| !super::swarm::is_swarm_effort(level)) {
+            self.last_standard_effort = Some(previous.clone());
+        }
         let pending = self.pending_effort.get_or_insert_with(|| PendingEffort {
             previous: self.reasoning_effort.clone(),
             requested: VecDeque::new(),
@@ -67,14 +340,13 @@ impl Panel {
         });
         self.sync_effort_menu(cx);
         cx.notify();
-        true
     }
 
     /// One rung up (`direction > 0`) or down, from the fast effort keys.
     pub(super) fn step_effort(&mut self, direction: i8, cx: &mut Context<Self>) {
         let ladder = self.effort_ladder();
         if ladder.is_empty() {
-            self.effort_notice("Reasoning effort not available for this model".into(), cx);
+            self.effort_notice(self.effort_unavailable_message(), cx);
             return;
         }
         match effort::step(&ladder, self.reasoning_effort.as_deref(), direction) {
@@ -121,9 +393,10 @@ impl Panel {
             cx.notify();
             return;
         };
-        if let Some(index) = pending.requested.iter().position(|level| level == effort) {
-            pending.requested.remove(index);
-        }
+        let Some(index) = pending.requested.iter().position(|level| level == effort) else {
+            return;
+        };
+        pending.requested.remove(index);
         let settled = pending.requested.is_empty();
         if let Some(error) = error {
             self.items.push(Item::Error(format!(
@@ -146,6 +419,9 @@ impl Panel {
     /// Identity reported an effort. While requests are in flight, an older
     /// broadcast must not snap the pill back between rapid keypresses.
     pub(super) fn identity_effort(&mut self, reported: Option<String>) {
+        if let Some(level) = reported.as_ref().filter(|level| !super::swarm::is_swarm_effort(level)) {
+            self.last_standard_effort = Some(level.clone());
+        }
         match &mut self.pending_effort {
             Some(pending) => {
                 // Remember the runtime's truth for a later refusal, but keep
@@ -154,6 +430,25 @@ impl Panel {
             }
             None => self.reasoning_effort = reported,
         }
+    }
+}
+
+fn effort_level_label(level: &str) -> &str {
+    if crate::locale::is_zh() {
+        match level {
+            "none" => "关闭",
+            "minimal" => "极低",
+            "low" => "低",
+            "medium" => "中",
+            "high" => "高",
+            "xhigh" => "极高",
+            "max" => "最高",
+            "swarm" => "多代理",
+            "swarm-deep" => "深度多代理",
+            _ => level,
+        }
+    } else {
+        effort::label(level)
     }
 }
 
@@ -355,21 +650,42 @@ mod tests {
         assert_eq!(effort_of(&panel, vcx).as_deref(), Some("low"));
     }
 
-    /// The pill menu opens on the current level, so Enter keeps it.
     #[gpui::test]
-    fn effort_menu_opens_on_the_current_level(cx: &mut gpui::TestAppContext) {
+    fn effort_menu_selects_a_level_without_editing_the_draft(cx: &mut gpui::TestAppContext) {
         let (panel, vcx, commands) = setup(cx, "openai", "gpt-5.6-sol", Some("xhigh"));
-        vcx.update(|window, cx| {
-            panel.update(cx, |panel, cx| panel.toggle_effort_picker(window, cx))
-        });
+        vcx.simulate_input("keep this draft");
+        let click_pill = |vcx: &mut gpui::VisualTestContext| {
+            let pill = vcx.debug_bounds("panel-model-effort").expect("effort pill");
+            vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        let assert_draft = |vcx: &mut gpui::VisualTestContext| {
+            panel.read_with(vcx, |panel, cx| {
+                assert_eq!(panel.input.read(cx).content.as_ref(), "keep this draft");
+            });
+        };
+
+        click_pill(vcx);
+        assert_draft(vcx);
+        let high = vcx.debug_bounds("effort-level-high").expect("independent effort row");
+        vcx.simulate_click(high.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
+        assert_eq!(sent_efforts(&commands), ["high"]);
+        assert!(vcx.debug_bounds("effort-picker").is_none());
+        assert_draft(vcx);
+
+        click_pill(vcx);
         vcx.simulate_keystrokes("down enter");
         vcx.run_until_parked();
-        assert_eq!(sent_efforts(&commands), ["max"]);
-        assert_eq!(
-            panel.read_with(vcx, |panel, cx| panel.input.read(cx).content.to_string()),
-            "",
-            "the menu closes after choosing"
-        );
+        assert_eq!(sent_efforts(&commands), ["xhigh"]);
+        assert!(vcx.debug_bounds("effort-picker").is_none());
+        assert_draft(vcx);
+
+        click_pill(vcx);
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        assert!(sent_efforts(&commands).is_empty());
+        assert!(vcx.debug_bounds("effort-picker").is_none());
+        assert_draft(vcx);
     }
 }

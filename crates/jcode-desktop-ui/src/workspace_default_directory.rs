@@ -16,6 +16,7 @@ impl Workspace {
             return;
         }
         self.folder_picker_sets_default = true;
+        self.folder_picker_creates_project = false;
         self.folder_picker_error = None;
         self.folder_search = Some(self.create_folder_search(cx));
         self.folder_picker_dir = Some(

@@ -192,15 +192,28 @@ fn project_and_branch_plus_open_local_threads_in_that_checkout(cx: &mut gpui::Te
 }
 
 #[gpui::test]
-fn quick_actions_open_a_thread_and_the_project_picker(cx: &mut gpui::TestAppContext) {
-    let (workspace, vcx, commands) = setup(cx, Vec::new());
-    click(vcx, "sidebar-open-project");
-    workspace.read_with(vcx, |w, _| assert!(w.folder_search.is_some()));
+fn sidebar_project_folder_and_new_thread_have_separate_entries(cx: &mut gpui::TestAppContext) {
+    let (_, vcx, commands) = setup(cx, Vec::new());
+    let projects = vcx.debug_bounds("sidebar-projects-section").unwrap();
+    let collections = vcx.debug_bounds("sidebar-collections-section").unwrap();
+    let folder = vcx.debug_bounds("sidebar-project-folder").unwrap();
+    let create_collection = vcx.debug_bounds("sidebar-new-collection").unwrap();
+    assert!(projects.bottom() <= collections.top());
+    assert!(folder.right() <= projects.right() && folder.top() >= projects.top());
+    assert!(create_collection.right() <= collections.right() && create_collection.top() >= collections.top());
+    click(vcx, "sidebar-project-folder");
+    assert!(vcx.debug_bounds("project-folder-create").is_some());
+    click(vcx, "project-folder-open");
+    vcx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        None
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("folder-picker-overlay").is_none());
     assert!(
         commands.try_recv().is_err(),
         "choosing a folder comes before any session"
     );
-    workspace.update(vcx, |w, cx| w.close_folder_picker(cx));
     click(vcx, "sidebar-new-thread");
     assert!(matches!(
         commands.try_recv(),

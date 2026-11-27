@@ -6,6 +6,23 @@ use std::path::PathBuf;
 use super::*;
 use super::extensions::{Confirm, SkillForm, field_input, pill};
 use crate::extensions::skills;
+use crate::locale::{is_zh, tr};
+
+fn skill_source_label(source: &skills::SkillSource, english: String) -> String {
+    use skills::SkillSource::*;
+    if !is_zh() {
+        return english;
+    }
+    match source {
+        Jcode => english,
+        Agents => "~/.agents/skills（共享）".into(),
+        ProjectJcode => "项目 · .jcode/skills".into(),
+        ProjectAgents => "项目 · .agents/skills".into(),
+        ProjectClaude => "项目 · .claude/skills".into(),
+        Plugin(name) => format!("插件 · {name}"),
+        ClaudePlugin => "Claude Code 插件".into(),
+    }
+}
 
 impl Panel {
     /// The Skills tab body: forms when open, else the grouped list.
@@ -36,14 +53,14 @@ impl Panel {
                 .items_center()
                 .gap_2()
                 .child(
-                    pill("skill-new", "skill-new".into(), "New skill", false)
+                    pill("skill-new", "skill-new".into(), tr("New skill", "新建技能"), false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, _, cx| this.skill_form_open(cx)),
                         ),
                 )
                 .child(
-                    pill("skill-import", "skill-import".into(), "Import…", false)
+                    pill("skill-import", "skill-import".into(), tr("Import…", "导入…"), false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, window, cx| this.skill_import_open(window, cx)),
@@ -54,7 +71,7 @@ impl Panel {
                         pill(
                             "skill-import-apply",
                             "skill-import-apply".into(),
-                            "Import",
+                            tr("Import", "导入"),
                             false,
                         )
                         .on_mouse_down(
@@ -90,7 +107,7 @@ impl Panel {
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.TEXT_DIM)
-                    .child(format!("{label} · {}", rows.len()))
+                    .child(format!("{} · {}", skill_source_label(&rows[0].source, label), rows.len()))
                     .into_any_element(),
             );
             for skill in rows {
@@ -107,9 +124,9 @@ impl Panel {
                     .text_size(px(12.))
                     .text_color(theme.TEXT_DIM)
                     .child(if state.skills.is_empty() {
-                        "No skills found. Create one above, or import a skill folder."
+                        tr("No skills found. Create one above, or import a skill folder.", "未找到技能。可在上方新建技能，或导入技能目录。")
                     } else {
-                        "Nothing matches the filter."
+                        tr("Nothing matches the filter.", "没有匹配的技能。")
                     })
                     .into_any_element(),
             );
@@ -144,7 +161,11 @@ impl Panel {
         let shared = skill.shared;
         let _readonly = !editable;
         let readonly_label = match &skill.source {
-            skills::SkillSource::Plugin(plugin) => Some(format!("Managed by plugin {plugin}")),
+            skills::SkillSource::Plugin(plugin) => Some(if is_zh() {
+                format!("由插件 {plugin} 管理")
+            } else {
+                format!("Managed by plugin {plugin}")
+            }),
             skills::SkillSource::ClaudePlugin | skills::SkillSource::ProjectClaude => {
                 Some("Claude Code".to_string())
             }
@@ -208,7 +229,7 @@ impl Panel {
                                 .flex_none()
                                 .text_size(px(10.))
                                 .text_color(theme.TEXT_FAINT)
-                                .child("Shared with other tools"),
+                                .child(tr("Shared with other tools", "与其他工具共享")),
                         )
                     })
                     .when_some(readonly_label, |el, label| {
@@ -228,7 +249,7 @@ impl Panel {
                                     "skill-toggle-{}",
                                     toggle_dir.file_name().unwrap().to_string_lossy()
                                 ),
-                                if enabled { "On" } else { "Off" },
+                                if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
                                 enabled,
                             )
                             .on_mouse_down(
@@ -246,7 +267,7 @@ impl Panel {
                                 "skill-open-{}",
                                 open_dir.file_name().unwrap().to_string_lossy()
                             ),
-                            "Open folder",
+                            tr("Open folder", "打开目录"),
                             false,
                         )
                         .on_mouse_down(
@@ -267,7 +288,7 @@ impl Panel {
                                     "skill-delete-{}",
                                     delete_dir.file_name().unwrap().to_string_lossy()
                                 ),
-                                "Delete",
+                                tr("Delete", "删除"),
                                 false,
                             )
                             .on_mouse_down(
@@ -299,18 +320,20 @@ impl Panel {
                                 .min_w_0()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
-                                .child(format!(
-                                    "Move `{}` to `~/.jcode/trash/skills`?",
-                                    dir.file_name()
-                                        .map(|name| name.to_string_lossy().to_string())
-                                        .unwrap_or_default()
-                                )),
+                                .child({
+                                    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+                                    if is_zh() {
+                                        format!("将 `{name}` 移入 `~/.jcode/trash/skills` 回收站？")
+                                    } else {
+                                        format!("Move `{name}` to `~/.jcode/trash/skills`?")
+                                    }
+                                }),
                         )
                         .child(
                             pill(
                                 format!("skill-confirm-{}", confirm_dir.to_string_lossy().to_string()),
                                 "skill-confirm".to_string(),
-                                "Delete",
+                                tr("Delete", "删除"),
                                 true,
                             )
                             .on_mouse_down(
@@ -324,7 +347,7 @@ impl Panel {
                             pill(
                                 format!("skill-cancel-{}", cancel_dir.to_string_lossy().to_string()),
                                 "skill-confirm-cancel".to_string(),
-                                "Cancel",
+                                tr("Cancel", "取消"),
                                 false,
                             )
                             .on_mouse_down(
@@ -355,14 +378,14 @@ impl Panel {
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
                                 .child(
-                                    "This skill is shared with other tools — changes affect them too.",
+                                    tr("This skill is shared with other tools — changes affect them too.", "此技能与其他工具共享。更改也会影响这些工具。"),
                                 ),
                         )
                         .child(
                             pill(
                                 format!("skill-shared-ok-{}", confirm_dir.to_string_lossy().to_string()),
                                 "skill-shared-ok".to_string(),
-                                "Continue",
+                                tr("Continue", "继续"),
                                 true,
                             )
                             .on_mouse_down(
@@ -376,7 +399,7 @@ impl Panel {
                             pill(
                                 format!("skill-shared-cancel-{}", dir.to_string_lossy().to_string()),
                                 "skill-shared-cancel".to_string(),
-                                "Cancel",
+                                tr("Cancel", "取消"),
                                 false,
                             )
                             .on_mouse_down(
@@ -430,11 +453,11 @@ impl Panel {
         let result = match entry {
             Some(entry) => skills::set_skill_enabled(&entry, enabled)
                 .map(|_| format!("`{}`.", entry.name)),
-            None => Err("Skill not found.".to_string()),
+            None => Err(tr("Skill not found.", "未找到技能。").to_string()),
         };
         self.extensions_apply(
             result,
-            if enabled { "Enabled" } else { "Disabled" },
+            if enabled { tr("Enabled", "已开启") } else { tr("Disabled", "已关闭") },
             cx,
         );
     }
@@ -457,16 +480,16 @@ impl Panel {
         let result = match entry {
             Some(entry) => skills::delete_skill(&entry, &jcode_home)
                 .map(|target| format!("`{}` → `{}`.", entry.name, target.display())),
-            None => Err("Skill not found.".to_string()),
+            None => Err(tr("Skill not found.", "未找到技能。").to_string()),
         };
-        self.extensions_apply(result, "Moved to trash:", cx);
+        self.extensions_apply(result, tr("Moved to trash:", "已移入回收站："), cx);
     }
 
     // ------------------------------------------------------------- forms ---
 
     fn skill_form_open(&mut self, cx: &mut Context<Self>) {
-        let name = Self::skill_field(cx, "name (kebab-case)", "");
-        let description = Self::skill_field(cx, "description", "");
+        let name = Self::skill_field(cx, tr("name (kebab-case)", "名称（用连字符分隔）"), "");
+        let description = Self::skill_field(cx, tr("description", "描述"), "");
         if let Some(state) = self.extensions.as_mut() {
             state.skill_form = Some(SkillForm {
                 name,
@@ -531,7 +554,7 @@ impl Panel {
                 .items_center()
                 .gap_2()
                 .child(
-                    pill("skill-form-back", "skill-form-back".into(), "Back", false)
+                    pill("skill-form-back", "skill-form-back".into(), tr("Back", "返回"), false)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
@@ -546,15 +569,15 @@ impl Panel {
                     div()
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .child("New skill"),
+                        .child(tr("New skill", "新建技能")),
                 )
                 .into_any_element(),
-            row("name", form.name.clone().into_any_element()),
-            row("description", form.description.clone().into_any_element()),
+            row(tr("name", "名称"), form.name.clone().into_any_element()),
+            row(tr("description", "描述"), form.description.clone().into_any_element()),
         ];
         if project_available {
             body.push(row(
-                "location",
+                tr("location", "位置"),
                 div()
                     .flex()
                     .items_center()
@@ -602,7 +625,7 @@ impl Panel {
             div()
                 .flex_none()
                 .child(
-                    pill("skill-create", "skill-create".into(), "Create", true).on_mouse_down(
+                    pill("skill-create", "skill-create".into(), tr("Create", "创建"), true).on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.skill_form_save(cx)),
                     ),
@@ -648,7 +671,7 @@ impl Panel {
                 if let Some(state) = self.extensions.as_mut() {
                     state.skill_form = None;
                 }
-                self.extensions_apply(Ok(dir.display().to_string()), "Created", cx);
+                self.extensions_apply(Ok(dir.display().to_string()), tr("Created", "已创建"), cx);
             }
             Err(error) => {
                 if let Some(form) = self
@@ -656,7 +679,7 @@ impl Panel {
                     .as_mut()
                     .and_then(|state| state.skill_form.as_mut())
                 {
-                    form.error = Some(error);
+                    form.error = Some(if is_zh() { format!("无法创建技能：{error}") } else { error });
                 }
                 cx.notify();
             }
@@ -670,7 +693,7 @@ impl Panel {
             if state.skill_import.is_none() {
                 state.skill_import = Some(Self::skill_field(
                     cx,
-                    "or paste the skill folder path",
+                    tr("or paste the skill folder path", "或粘贴技能目录路径"),
                     "",
                 ));
             }
@@ -679,7 +702,7 @@ impl Panel {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Choose a skill folder (with SKILL.md)".into()),
+            prompt: Some(tr("Choose a skill folder (with SKILL.md)", "选择包含 SKILL.md 的技能目录").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await
@@ -718,11 +741,11 @@ impl Panel {
                 if let Some(state) = self.extensions.as_mut() {
                     state.skill_import = None;
                 }
-                self.extensions_apply(Ok(dest.display().to_string()), "Imported", cx);
+                self.extensions_apply(Ok(dest.display().to_string()), tr("Imported", "已导入"), cx);
             }
             Err(error) => {
                 if let Some(state) = self.extensions.as_mut() {
-                    state.error = Some(error);
+                    state.error = Some(if is_zh() { format!("无法导入技能：{error}") } else { error });
                 }
                 cx.notify();
             }
@@ -732,7 +755,7 @@ impl Panel {
 
 /// `file://` URL encoding (same rules as `percent_encode` in
 /// `panel_special_commands.rs`, kept private there).
-fn percent_encode_path(path: &std::path::Path) -> String {
+pub(super) fn percent_encode_path(path: &std::path::Path) -> String {
     let mut result = String::new();
     for byte in path.to_string_lossy().bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/') {

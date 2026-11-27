@@ -346,21 +346,31 @@ impl Panel {
 
     /// Context window ring plus percentage. Sits in the composer's bottom row
     /// right after the credential method pill.
-    pub(super) fn render_context_meter(&self) -> Option<gpui::AnyElement> {
+    pub(super) fn render_context_meter(&self, cx: &App) -> Option<gpui::AnyElement> {
         if self.model.is_none() && self.provider.is_none() {
             return None;
         }
         let theme = Theme::global();
-        let window = self.model.as_deref().and_then(context_window_for_model);
+        let window = self.effective_context_window(cx);
         let used = self.context_tokens;
         let percent = used
             .zip(window)
             .map(|(used, window)| (used as f64 / window as f64 * 100.) as f32);
         // Unknown usage shows only the empty ring, never a placeholder dash.
         let label = percent.map(|percent| format!("{:.0}%", percent.min(100.)));
-        let detail = context_usage_label(self.model.as_deref(), self.context_tokens)
-            .map(|label| format!("Context window: {label}. Model capacity is an estimate. Usage reflects the latest reported request."))
-            .unwrap_or_else(|| "Context usage is not reported yet.".into());
+        let detail = context_usage_label(window, used)
+            .map(|label| {
+                let title = crate::locale::tr("Context window", "上下文窗口");
+                let note = crate::locale::tr(
+                    "Usage reflects the latest reported request.",
+                    "用量来自最近一次上报的请求。",
+                );
+                format!("{title} · {label}\n{note}")
+            })
+            .unwrap_or_else(|| crate::locale::tr(
+                "Context usage is not reported yet.",
+                "尚未上报上下文用量。",
+            ).into());
         Some(
             div()
                 .id("panel-context-meter")

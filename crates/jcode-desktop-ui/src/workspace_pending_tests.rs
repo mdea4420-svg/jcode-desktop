@@ -23,6 +23,36 @@ fn created(id: &str) -> jcode_sdk::SessionInfo {
     }
 }
 
+#[gpui::test]
+fn project_switch_unwatches_empty_history_and_preserves_a_started_chat(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |workspace, cx| {
+        let mut empty = created("local-empty");
+        empty.transcript_bytes = Some(0);
+        workspace.sessions = vec![empty.clone()];
+        let slot = workspace.open_session(empty, cx);
+        workspace.set_active(slot, cx);
+    });
+    assert!(matches!(commands.try_recv().unwrap(), Command::Watch { session_id } if session_id == "local-empty"));
+    workspace.update(vcx, |workspace, cx| {
+        workspace.activate_or_open_project_directory("/chosen".into(), cx);
+        assert_eq!(workspace.slots.len(), 2);
+        assert!(workspace.sessions.is_empty());
+    });
+    assert!(matches!(commands.try_recv().unwrap(), Command::Unwatch { session_id } if session_id == "local-empty"));
+    let (first, dir) = request(&commands);
+    assert_eq!(dir.as_deref(), Some("/chosen"));
+    workspace.update(vcx, |workspace, cx| {
+        workspace.slots[workspace.active].panel.update(cx, |panel, cx| {
+            panel.submit_or_queue("queued prompt".into(), Vec::new(), false, cx);
+        });
+        workspace.activate_or_open_project_directory("/another".into(), cx);
+        assert_eq!(workspace.slots.len(), 3);
+        assert!(workspace.slots.iter().any(|slot| slot.panel.read(cx).session_id == first));
+    });
+    assert_eq!(request(&commands).1.as_deref(), Some("/another"));
+}
+
 fn request(commands: &std::sync::mpsc::Receiver<Command>) -> (String, Option<String>) {
     match commands
         .try_recv()

@@ -9,6 +9,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use jcode_plugins::{Catalog, Layout, Plugin, State, SyncOptions, SyncReport};
 
+use crate::extensions::ExtensionPaths;
+use crate::locale::{is_zh, tr};
+
 static CATALOG: RwLock<Option<Arc<Catalog>>> = RwLock::new(None);
 
 /// Desktop's own slash commands that a plugin must not take over.
@@ -21,13 +24,34 @@ fn reserved(name: &str) -> bool {
 }
 
 pub(crate) fn layout() -> Layout {
-    Layout::detect()
+    ExtensionPaths::detect(None)
+        .map(|paths| layout_for_paths(&paths))
+        .unwrap_or_else(Layout::detect)
+}
+
+/// Use the same home paths as the rest of the Extensions overlay.
+pub(crate) fn layout_for_paths(paths: &ExtensionPaths) -> Layout {
+    let is_default = ExtensionPaths::detect(None).is_some_and(|default| {
+        paths.jcode_home == default.jcode_home && paths.user_home == default.user_home
+    });
+    let override_dir = is_default
+        .then(|| std::env::var_os("JCODE_PLUGINS_DIR"))
+        .flatten()
+        .filter(|dir| !dir.is_empty());
+    Layout {
+        jcode_home: paths.jcode_home.clone(),
+        plugins_dir: override_dir.map_or_else(|| paths.jcode_home.join("plugins"), PathBuf::from),
+        claude_plugins: Some(paths.user_home.join(".claude/plugins")),
+    }
 }
 
 /// Every discovered plugin with its enabled flag.
 pub(crate) fn plugins() -> (Vec<Plugin>, Vec<String>) {
-    let layout = layout();
-    jcode_plugins::discover(&layout, &State::load(&layout))
+    plugins_in(&layout())
+}
+
+pub(crate) fn plugins_in(layout: &Layout) -> (Vec<Plugin>, Vec<String>) {
+    jcode_plugins::discover(layout, &State::load(layout))
 }
 
 /// Rebuild the command catalog from disk.
@@ -70,13 +94,19 @@ pub(crate) fn dispatcher() -> Option<PathBuf> {
 }
 
 pub(crate) fn sync_now() -> SyncReport {
+    sync_in(&layout())
+}
+
+pub(crate) fn sync_in(target: &Layout) -> SyncReport {
     let report = jcode_plugins::sync(
-        &layout(),
+        target,
         &SyncOptions {
             dispatcher: dispatcher(),
         },
     );
-    reload();
+    if target == &layout() {
+        reload();
+    }
     report
 }
 
@@ -146,7 +176,7 @@ pub(crate) fn run_code_command(
     cwd: Option<&std::path::Path>,
 ) -> Result<jcode_plugins::code::CommandReply, String> {
     let layout = layout();
-    let (plugins, _) = jcode_plugins::discover(&layout, &State::load(&layout));
+    let (plugins, _) = plugins_in(&layout);
     let plugin = plugins
         .iter()
         .find(|candidate| candidate.name == plugin)
@@ -160,12 +190,15 @@ pub(crate) fn summary_markdown() -> String {
     let layout = layout();
     let (plugins, errors) = plugins();
     let catalog = catalog();
-    let mut text = String::from("**Plugins**\n\n");
+    let mut text = String::from(tr("**Plugins**\n\n", "**插件**\n\n"));
     if plugins.is_empty() {
-        text.push_str(&format!(
-            "No plugins yet. Put them in `{}`, or run `/plugins new <name>` for a starter.\n",
-            layout.plugins_dir.display()
-        ));
+        let dir = layout.plugins_dir.display();
+        let empty = if is_zh() {
+            format!("尚无插件。可将插件放入 `{dir}`，或运行 `/plugins new <name>` 创建示例插件。\n")
+        } else {
+            format!("No plugins yet. Put them in `{dir}`, or run `/plugins new <name>` for a starter.\n")
+        };
+        text.push_str(&empty);
     }
     for plugin in &plugins {
         let commands: Vec<String> = catalog
@@ -178,8 +211,11 @@ pub(crate) fn summary_markdown() -> String {
             "- **{}** {} · {} · {}{}\n",
             plugin.name,
             plugin.version.as_deref().unwrap_or(""),
-            if plugin.enabled { "on" } else { "off" },
-            plugin.source.label(),
+            if plugin.enabled { tr("on", "已开启") } else { tr("off", "已关闭") },
+            match plugin.source {
+                jcode_plugins::Source::Jcode => plugin.source.label(),
+                jcode_plugins::Source::Claude => tr(plugin.source.label(), "Claude Code"),
+            },
             plugin
                 .description
                 .as_deref()
@@ -187,68 +223,112 @@ pub(crate) fn summary_markdown() -> String {
                 .unwrap_or_default()
         ));
         if !commands.is_empty() {
-            text.push_str(&format!("  - commands: {}\n", commands.join(", ")));
+            text.push_str(&format!("  - {}{}\n", tr("commands: ", "命令："), commands.join(tr(", ", "、"))));
         }
         let skills: Vec<String> = plugin.skills().into_iter().map(|(name, _)| name).collect();
         if !skills.is_empty() {
-            text.push_str(&format!("  - skills: {}\n", skills.join(", ")));
+            text.push_str(&format!("  - {}{}\n", tr("skills: ", "技能："), skills.join(tr(", ", "、"))));
         }
     }
     for error in errors {
-        text.push_str(&format!("- error: {error}\n"));
+        text.push_str(&format!("- {}{error}\n", tr("error: ", "错误：")));
     }
     text.push_str(
         "\n`/plugins enable <name>` · `/plugins disable <name>` · `/plugins new <name>` · `/plugins reload`",
     );
     if dispatcher().is_none() {
-        text.push_str("\n\nHooks need `jcode-plugins` next to Jcode Desktop; commands, skills, MCP servers and applets work without it.");
+        text.push_str(tr(
+            "\n\nHooks need `jcode-plugins` next to Jcode Desktop; commands, skills, MCP servers and applets work without it.",
+            "\n\nHook 需要 `jcode-plugins` 与 Jcode Desktop 位于同一目录。命令、技能、MCP 服务器和面板可独立使用。",
+        ));
     }
     text
 }
 
 /// Enable or disable a plugin and apply it.
 pub(crate) fn set_enabled(name: &str, enabled: bool) -> Result<SyncReport, String> {
-    let layout = layout();
-    let mut state = State::load(&layout);
-    let (plugins, _) = jcode_plugins::discover(&layout, &state);
+    set_enabled_in(&layout(), name, enabled)
+}
+
+pub(crate) fn set_enabled_in(target: &Layout, name: &str, enabled: bool) -> Result<SyncReport, String> {
+    let mut state = State::load(target);
+    let (plugins, _) = jcode_plugins::discover(target, &state);
     if !plugins.iter().any(|plugin| plugin.name == name) {
-        return Err(format!("No plugin named `{name}`. Run `/plugins` to list them."));
+        return Err(if is_zh() {
+            format!("未找到名为 `{name}` 的插件。请运行 `/plugins` 查看列表。")
+        } else {
+            format!("No plugin named `{name}`. Run `/plugins` to list them.")
+        });
     }
     state.set_enabled(name, enabled);
-    state.save(&layout).map_err(|error| error.to_string())?;
-    Ok(sync_now())
+    state.save(target).map_err(|error| {
+        if is_zh() { format!("无法保存插件状态：{error}") } else { error.to_string() }
+    })?;
+    Ok(sync_in(target))
 }
 
 pub(crate) fn create(name: &str, code: bool) -> Result<PathBuf, String> {
-    let plugins_dir = layout().plugins_dir;
-    let root = if code {
-        jcode_plugins::scaffold::create_code(&plugins_dir, name)
-    } else {
-        jcode_plugins::scaffold::create(&plugins_dir, name)
+    create_in(&layout(), name, code)
+}
+
+pub(crate) fn create_in(target: &Layout, name: &str, code: bool) -> Result<PathBuf, String> {
+    let name = jcode_plugins::manifest::sanitize_name(name);
+    if name.is_empty() {
+        return Err(tr(
+            "plugin names use letters, digits, '-', '_' and '.'",
+            "插件名称须使用字母、数字、连字符、下划线或点。",
+        ).into());
     }
-    .map_err(|error| format!("{error:#}"))?;
-    sync_now();
+    if matches!(name.as_str(), "." | "..") && !target.plugins_dir.join(&name).exists() {
+        return Err(tr(
+            "plugin names use letters, digits, '-', '_' and '.'",
+            "插件名称须使用字母、数字、连字符、下划线或点。",
+        ).into());
+    }
+    let root = if code {
+        jcode_plugins::scaffold::create_code(&target.plugins_dir, &name)
+    } else {
+        jcode_plugins::scaffold::create(&target.plugins_dir, &name)
+    }
+    .map_err(|error| {
+        let path = target.plugins_dir.join(&name);
+        if !is_zh() {
+            format!("{error:#}")
+        } else if path.exists() {
+            format!("无法创建插件 `{name}`（目录 `{}` 已存在或已部分创建）：{error:#}", path.display())
+        } else {
+            format!("无法创建插件 `{name}`：{error:#}")
+        }
+    })?;
+    sync_in(target);
     Ok(root)
 }
 
 pub(crate) fn report_markdown(report: &SyncReport) -> String {
-    let mut text = format!(
-        "Synced {} enabled of {} plugins: {} skills, {} MCP servers, hooks on {}.",
-        report.enabled,
-        report.plugins,
-        report.skills,
-        report.mcp_servers,
-        if report.hook_events.is_empty() {
-            "no events".to_string()
-        } else {
-            report.hook_events.join(", ")
-        }
-    );
+    let events = if report.hook_events.is_empty() {
+        tr("no events", "无事件").to_string()
+    } else {
+        report.hook_events.join(tr(", ", "、"))
+    };
+    let mut text = if is_zh() {
+        format!(
+            "已同步 {} 个插件中的 {} 个已启用插件，包含 {} 项技能和 {} 个 MCP 服务器。Hook 事件：{events}。",
+            report.plugins, report.enabled, report.skills, report.mcp_servers,
+        )
+    } else {
+        format!(
+            "Synced {} enabled of {} plugins: {} skills, {} MCP servers, hooks on {events}.",
+            report.enabled, report.plugins, report.skills, report.mcp_servers,
+        )
+    };
     for warning in &report.warnings {
-        text.push_str(&format!("\n- warning: {warning}"));
+        text.push_str(&format!("\n- {}{warning}", tr("warning: ", "警告：")));
     }
     if report.changed {
-        text.push_str("\n\nNew skills, MCP servers and hooks apply to new sessions (or after the runtime reloads its config).");
+        text.push_str(tr(
+            "\n\nNew skills, MCP servers and hooks apply to new sessions (or after the runtime reloads its config).",
+            "\n\n新增的技能、MCP 服务器和 Hook 会在新会话中生效，运行时重新加载配置后也会生效。",
+        ));
     }
     text
 }

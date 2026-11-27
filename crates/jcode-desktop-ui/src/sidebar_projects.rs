@@ -84,7 +84,7 @@ impl State {
         value
     }
 
-    fn root(&mut self, directory: &str) -> Option<PathBuf> {
+    pub(super) fn root(&mut self, directory: &str) -> Option<PathBuf> {
         self.roots
             .entry(directory.to_owned())
             .or_insert_with(|| git_root(Path::new(directory)))
@@ -119,7 +119,7 @@ impl State {
             return (
                 Project {
                     key: OTHER.into(),
-                    label: "No directory".into(),
+                    label: tr("No directory", "未关联目录").into(),
                     location: None,
                 },
                 None,
@@ -146,7 +146,24 @@ impl State {
     }
 }
 
-fn path_label(path: &str) -> String {
+pub(super) fn is_noise_project_key(
+    key: &str,
+    home: Option<&str>,
+    prefs: Option<&super::sidebar_project_menu::Preferences>,
+) -> bool {
+    key.is_empty() || (!prefs.is_some_and(|p| p.registered)
+        && (home.is_some_and(|home| {
+            if cfg!(windows) {
+                let key = key.replace('\\', "/");
+                let home = home.replace('\\', "/");
+                key.trim_end_matches('/').to_lowercase() == home.trim_end_matches('/').to_lowercase()
+            } else {
+                Path::new(key) == Path::new(home)
+            }
+        }) || matches!(compact_working_dir(key).as_str(), "~" | "~ (home)")))
+}
+
+pub(super) fn path_label(path: &str) -> String {
     let compact = compact_working_dir(path);
     if compact.starts_with("~ ") {
         return "~".into();
@@ -231,14 +248,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let tooltip = format!(
-            "{} {} · {} session{}",
-            if collapsed { "Expand" } else { "Collapse" },
-            project.location.as_deref().unwrap_or(&project.label),
-            count,
-            if count == 1 { "" } else { "s" },
-        );
+        let location = project.location.as_deref().unwrap_or(&project.label);
         let key = project.key.clone();
+        let menu_key = key.clone();
+        let prefs = self.project_menu.get(&key).cloned().unwrap_or_default();
         // Only local directories can host a new thread or worktree from here.
         let local = Path::new(&project.key)
             .is_absolute()
@@ -246,6 +259,19 @@ impl Workspace {
         let git = local
             .as_deref()
             .is_some_and(|dir| Path::new(dir).join(".git").exists());
+        let open_empty = local.clone().filter(|_| count == 0 && !prefs.removed);
+        let can_click = count > 0 || open_empty.is_some();
+        let tooltip = if open_empty.is_some() {
+            format!("{} · {location}", tr("Start a project session", "开启项目会话"))
+        } else if is_zh() {
+            let action = if collapsed { "展开" } else { "收起" };
+            if count > 0 { format!("{action} {location} · {count} 个会话") } else { location.to_owned() }
+        } else if count > 0 {
+            let action = if collapsed { "Expand" } else { "Collapse" };
+            format!("{action} {location} · {count} session{}", if count == 1 { "" } else { "s" })
+        } else {
+            location.to_owned()
+        };
         let group: &'static str = "sidebar-project-header";
         div()
             .id(("sidebar-project", index))
@@ -256,12 +282,12 @@ impl Workspace {
             .mb_1()
             .pl_2()
             .pr_1()
-            .h(px(24.0))
+            .h(super::scaled_text(24.0).max(px(24.0)))
             .flex()
             .items_center()
             .gap_1()
             .rounded_full()
-            .cursor_pointer()
+            .when(can_click, |el| el.cursor_pointer())
             .hover(|el| el.bg(theme.TOOL_BG))
             .tooltip(move |_, cx| {
                 cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
@@ -272,102 +298,120 @@ impl Workspace {
                 cx.listener(move |this, _, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.sidebar_projects.toggle(&key, collapsed);
-                    cx.notify();
+                    if let Some(directory) = &open_empty {
+                        this.activate_or_open_project_directory(directory.clone(), cx);
+                    } else if count > 0 {
+                        this.sidebar_projects.toggle(&key, collapsed);
+                        cx.notify();
+                    }
                 }),
             )
-            .child(
+            .when(local.is_some(), |el| el.on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.toggle_project_menu(&menu_key, event.position, cx);
+                }),
+            ))
+            .when(count > 0, |el| el.child(
                 div()
                     .w(px(12.0))
                     .flex_none()
-                    .text_size(px(10.0))
+                    .text_size(super::scaled_text(10.0))
                     .text_color(theme.TEXT_DIM)
                     .child(if collapsed { "›" } else { "⌄" }),
-            )
+            ))
+            .when(local.is_some(), |el| el.child(sidebar_worktrees::icon(sidebar_worktrees::FOLDER_ICON, 11.0)))
             .child(
                 div()
                     .flex_shrink(1.0)
                     .min_w_0()
                     .truncate()
                     .debug_selector(move || format!("sidebar-project-label-{index}"))
-                    .text_size(px(11.0))
+                    .text_size(super::scaled_text(11.0))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.TEXT_DIM)
                     .child(project.label.clone()),
             )
+            .when(prefs.pinned && !prefs.archived && !prefs.removed, |el| {
+                el.child(sidebar_worktrees::icon(include_bytes!("../../../assets/icons/pin.svg"), 9.0))
+            })
+            .when(prefs.archived || prefs.removed, |el| el.child(
+                div().flex_none().text_size(super::scaled_text(9.0)).text_color(theme.TEXT_FAINT).child(if prefs.removed {
+                    tr("Removed", "已移除")
+                } else {
+                    tr("Archived", "已归档")
+                })
+            ))
             .children(branch.map(|branch| {
                 div()
                     .debug_selector(move || format!("sidebar-project-branch-{index}"))
                     .flex_shrink(1.0)
                     .min_w(px(24.0))
-                    .h(px(16.0))
+                    .h(super::scaled_text(16.0).max(px(16.0)))
                     .px(px(6.0))
                     .flex()
                     .items_center()
                     .gap(px(3.0))
                     .rounded_full()
                     .bg(theme.TOOL_BG)
-                    .text_size(px(9.0))
+                    .text_size(super::scaled_text(9.0))
                     .text_color(theme.TEXT_DIM)
                     .child(sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 9.0))
                     .child(div().min_w_0().truncate().child(branch))
             }))
             .child(div().flex_1())
-            .child(
+            .when(count > 0, |el| el.child(
                 div()
                     .flex_none()
-                    .w(px(16.0))
+                    .min_w(px(16.0))
                     .text_right()
-                    .text_size(px(10.0))
+                    .text_size(super::scaled_text(10.0))
                     .text_color(theme.TEXT_DIM)
                     .child(count.to_string()),
-            )
-            // Actions overlay the row end on hover instead of reserving width.
-            .when(git || local.is_some(), |el| {
-                let mut actions = sidebar_worktrees::hover_actions(group, 24.0);
-                if git {
-                    let directory = local.clone().unwrap_or_default();
-                    actions = actions.child(
-                        sidebar_worktrees::header_action(
-                            format!("sidebar-project-worktree-{index}").into(),
-                            "New worktree: start a branch in its own checkout",
-                            sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
-                            true,
-                            group,
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.begin_worktree(directory.clone(), window, cx);
-                            }),
-                        ),
-                    );
-                }
-                if let Some(directory) = local.clone() {
-                    let key = project.key.clone();
-                    actions = actions.child(
-                        sidebar_worktrees::header_action(
-                            format!("sidebar-project-new-{index}").into(),
-                            "New thread in this project",
-                            div().child("+").into_any_element(),
-                            true,
-                            group,
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.sidebar_projects.collapsed.insert(key.clone(), false);
-                                this.focus_pending = true;
-                                this.open_local_draft(Some(directory.clone()), cx);
-                            }),
-                        ),
-                    );
-                }
-                el.child(actions)
+            ))
+            .when_some(local.clone().filter(|_| git && !prefs.removed), |el, directory| {
+                el.child(sidebar_worktrees::hover_actions(group, 52.0).child(
+                    sidebar_worktrees::header_action(
+                        format!("sidebar-project-worktree-{index}").into(),
+                        tr("New worktree: start a branch in its own checkout", "新建工作树，为分支建立独立检出目录"),
+                        sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
+                        true,
+                        group,
+                    ).on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.begin_worktree(directory.clone(), window, cx);
+                    })),
+                ))
+            })
+            .when_some(local.clone().filter(|_| !prefs.removed), |el, directory| {
+                el.child(sidebar_worktrees::header_action(
+                    format!("sidebar-project-new-{index}").into(),
+                    tr("New thread in this project", "在此项目中新建会话"),
+                    div().child("+").into_any_element(),
+                    true,
+                    group,
+                ).on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.activate_or_open_project_directory(directory.clone(), cx);
+                })))
+            })
+            .when(local.is_some(), |el| {
+                let key = project.key.clone();
+                el.child(sidebar_worktrees::header_action(
+                    format!("sidebar-project-menu-button-{index}").into(),
+                    tr("Project actions", "项目操作"),
+                    div().child("⋯").into_any_element(),
+                    true,
+                    group,
+                ).on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.toggle_project_menu(&key, event.position, cx);
+                })))
             })
             .into_any_element()
     }
@@ -387,14 +431,14 @@ impl Workspace {
                 format!(
                     "{} · {}",
                     if checkout.linked {
-                        "Worktree"
+                        tr("Worktree", "工作树")
                     } else {
-                        "Main checkout"
+                        tr("Main checkout", "主检出目录")
                     },
                     compact_working_dir(&checkout.path)
                 ),
             ),
-            None => ("Outside Git".into(), "Threads outside any checkout".into()),
+            None => (tr("Outside Git", "非 Git 目录").into(), tr("Threads outside any checkout", "未关联 Git 检出目录的会话").into()),
         };
         let path = checkout.map(|checkout| checkout.path.clone());
         div()
@@ -407,12 +451,12 @@ impl Workspace {
             .mb(px(2.0))
             .pl_1()
             .pr_1()
-            .h(px(22.0))
+            .h(super::scaled_text(22.0).max(px(22.0)))
             .flex()
             .items_center()
             .gap_1()
             .rounded_full()
-            .text_size(px(11.0))
+            .text_size(super::scaled_text(11.0))
             .text_color(theme.TEXT_DIM)
             .tooltip(move |_, cx| {
                 cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
@@ -441,8 +485,8 @@ impl Workspace {
                         .px(px(6.0))
                         .rounded_full()
                         .bg(theme.TOOL_BG)
-                        .text_size(px(9.0))
-                        .child("worktree"),
+                        .text_size(super::scaled_text(9.0))
+                        .child(tr("worktree", "工作树")),
                 )
             })
             .when_some(path, |el, path| {
@@ -450,7 +494,7 @@ impl Workspace {
                     sidebar_worktrees::hover_actions(group, 4.0).child(
                         sidebar_worktrees::header_action(
                             format!("sidebar-checkout-new-{index}").into(),
-                            "New thread on this branch",
+                            tr("New thread on this branch", "在此分支上新建会话"),
                             div().child("+").into_any_element(),
                             true,
                             group,
@@ -474,6 +518,19 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_noise_excludes_unassigned_and_default_home_but_keeps_registered_home() {
+        let home = if cfg!(windows) { "C:\\Users\\Desk" } else { "/home/desk" };
+        let equivalent = if cfg!(windows) { "c:/users/desk/" } else { "/home/desk/" };
+        let registered = super::super::sidebar_project_menu::Preferences { registered: true, ..Default::default() };
+        assert!(is_noise_project_key("", Some(home), Some(&registered)));
+        assert!(is_noise_project_key(equivalent, Some(home), None));
+        assert!(is_noise_project_key("~", Some(home), None));
+        assert!(is_noise_project_key("~ (home)", Some(home), None));
+        assert!(!is_noise_project_key(home, Some(home), Some(&registered)));
+        assert!(!is_noise_project_key("/tmp/project", Some(home), None));
+    }
 
     #[test]
     fn repositories_group_subdirectories_and_linked_worktrees() {

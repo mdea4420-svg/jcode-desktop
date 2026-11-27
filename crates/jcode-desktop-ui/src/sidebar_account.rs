@@ -79,16 +79,17 @@ impl JcodeAccount {
     fn title(&self, show_email: bool) -> String {
         match (&self.email, self.signed_in) {
             (Some(email), true) if show_email => email.clone(),
-            (_, true) => "Jcode account".into(),
-            _ => "Sign in to Jcode".into(),
+            (_, true) => crate::locale::tr("Jcode account", "Jcode 账户").into(),
+            _ => crate::locale::tr("Sign in to Jcode", "登录 Jcode").into(),
         }
     }
 
     fn detail(&self) -> String {
         match (self.signed_in, self.plan) {
+            (true, Some(plan)) if crate::locale::is_zh() => format!("{plan} 套餐"),
             (true, Some(plan)) => format!("{plan} plan"),
-            (true, None) => "Signed in".into(),
-            (false, _) => "Not signed in".into(),
+            (true, None) => crate::locale::tr("Signed in", "已登录").into(),
+            (false, _) => crate::locale::tr("Not signed in", "未登录").into(),
         }
     }
 
@@ -128,6 +129,7 @@ impl Workspace {
                 el.on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_account_menu(cx)))
                     .child(self.render_account_menu(cx))
             })
+            .child(self.render_sidebar_runtime(cx))
             .child(
                 div()
                     .id("sidebar-account")
@@ -149,6 +151,7 @@ impl Workspace {
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
+                            this.close_sidebar_runtime(cx);
                             if signed_in {
                                 this.toggle_account_menu(cx);
                                 return;
@@ -248,7 +251,7 @@ impl Workspace {
                     cx.notify();
                 }),
             )
-            .child("Show account email in sidebar")
+            .child(crate::locale::tr("Show account email in sidebar", "在侧栏显示账户邮箱"))
             .child(
                 div()
                     .text_color(if enabled {
@@ -256,7 +259,11 @@ impl Workspace {
                     } else {
                         theme.TEXT_DIM
                     })
-                    .child(if enabled { "On" } else { "Off" }),
+                    .child(if enabled {
+                        crate::locale::tr("On", "开启")
+                    } else {
+                        crate::locale::tr("Off", "关闭")
+                    }),
             )
             .into_any_element()
     }

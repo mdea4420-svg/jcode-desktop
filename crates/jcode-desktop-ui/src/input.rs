@@ -41,7 +41,7 @@ mod model_search;
 #[path = "input_paste_preview.rs"]
 mod paste_preview;
 
-use crate::commands::registered_command_entries;
+use crate::commands::{localized_command_help, registered_command_entries};
 use crate::theme::{Theme, to_hsla};
 
 const PENDING_COMMAND_NOTICE: &str =
@@ -162,6 +162,7 @@ pub struct PromptInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
+    last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     voice_preview: Option<String>,
     voice_preview_scroll: gpui::ScrollHandle,
@@ -194,13 +195,14 @@ pub struct PromptInput {
     /// Capability metadata per route spec for the pickers' detail line.
     model_meta: HashMap<String, model_menu::ModelMeta>,
     /// `[providers.<name>].models` config, loaded when a picker opens.
+    configured_profile_names: HashSet<String>,
     configured_model_meta:
         HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>,
     /// Inputs of the last applied `set_model_routes`. RuntimeInfo is
     /// rebroadcast on every usage tick with an unchanged catalog, and
     /// rebuilding plus re-ranking hundreds of routes each time showed up as a
     /// steady share of main-thread time in live profiles.
-    applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>)>,
+    applied_model_routes: Option<(Vec<String>, Vec<jcode_sdk::ModelRouteInfo>, bool)>,
     /// `openai-compatible:<preset>` methods whose routes the pickers drop.
     /// Tests and the screenshot fixture inject the set; production resolves
     /// it from the credential store once per route-set change.
@@ -222,6 +224,7 @@ pub struct PromptInput {
     editor_scroll: gpui::ScrollHandle,
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
+    submit_untrimmed: bool,
     pending_session: bool,
     spacious: bool,
     /// Right padding reserved for a control the host floats inside the box
@@ -315,6 +318,22 @@ fn command_suggestions_with_efforts(
     models: &[String],
     efforts: EffortMenu<'_>,
 ) -> Vec<CommandSuggestion> {
+    command_suggestions_with_efforts_and_help(
+        input,
+        models,
+        efforts,
+        crate::locale::is_zh(),
+        localized_command_help,
+    )
+}
+
+fn command_suggestions_with_efforts_and_help(
+    input: &str,
+    models: &[String],
+    efforts: EffortMenu<'_>,
+    zh: bool,
+    resolve_help: impl Fn(&str, &'static str) -> &'static str,
+) -> Vec<CommandSuggestion> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') || trimmed.contains('\n') {
         return Vec::new();
@@ -331,7 +350,12 @@ fn command_suggestions_with_efforts(
             .filter(|model| query.is_empty() || model.to_ascii_lowercase().contains(&query))
             .map(|model| CommandSuggestion {
                 value: format!("/model {model}"),
-                help: "Switch this session".into(),
+                help: if zh {
+                    "切换当前会话模型"
+                } else {
+                    "Switch this session"
+                }
+                .into(),
                 detail: None,
                 header: None,
                 toggle: None,
@@ -354,10 +378,13 @@ fn command_suggestions_with_efforts(
             .map(|effort| CommandSuggestion {
                 value: format!("/effort {effort}"),
                 help: if efforts.current == Some(effort) {
-                    "Current".into()
+                    if zh { "当前" } else { "Current" }
+                } else if zh {
+                    "设置推理强度"
                 } else {
-                    "Set reasoning effort".into()
-                },
+                    "Set reasoning effort"
+                }
+                .into(),
                 detail: None,
                 header: None,
                 toggle: None,
@@ -367,19 +394,29 @@ fn command_suggestions_with_efforts(
             .collect();
     }
     let query = trimmed.to_ascii_lowercase();
-    let entries: Vec<(String, String)> = registered_command_entries()
-        .map(|(name, help)| (name.to_string(), help.to_string()))
-        .chain(crate::plugins::command_entries())
+    let needle = query.trim_start_matches('/');
+    let entries: Vec<(String, String, String)> = registered_command_entries()
+        .map(|(name, fallback)| {
+            let help = resolve_help(name, fallback);
+            (name.to_string(), help.to_string(), fallback.to_string())
+        })
+        .chain(
+            crate::plugins::command_entries()
+                .into_iter()
+                .map(|(name, help)| (name, help.clone(), help)),
+        )
         .collect();
     let mut commands = entries
         .iter()
-        .map(|(name, help)| (name.as_str(), help.as_str()))
-        .filter_map(|(command, help)| {
+        .map(|(name, help, fallback)| (name.as_str(), help.as_str(), fallback.as_str()))
+        .filter_map(|(command, help, fallback)| {
             let command_lower = command.to_ascii_lowercase();
             let help_lower = help.to_ascii_lowercase();
+            let fallback_lower = fallback.to_ascii_lowercase();
             (command_lower.starts_with(&query)
-                || command_lower.contains(query.trim_start_matches('/'))
-                || help_lower.contains(query.trim_start_matches('/')))
+                || command_lower.contains(needle)
+                || help_lower.contains(needle)
+                || fallback_lower.contains(needle))
             .then_some((command, help, command_lower.starts_with(&query)))
         })
         .collect::<Vec<_>>();
@@ -558,6 +595,7 @@ impl PromptInput {
             selection_reversed: false,
             marked_range: None,
             last_layout: None,
+            last_line_height: px(0.),
             last_bounds: None,
             voice_preview: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
@@ -585,6 +623,7 @@ impl PromptInput {
             command_selection: 0,
             model_details: HashMap::new(),
             model_meta: HashMap::new(),
+            configured_profile_names: HashSet::new(),
             configured_model_meta: HashMap::new(),
             applied_model_routes: None,
             filtered_route_models: None,
@@ -601,6 +640,7 @@ impl PromptInput {
             editor_scroll: gpui::ScrollHandle::new(),
             revealed_caret: None,
             submission_enabled: true,
+            submit_untrimmed: false,
             pending_session: false,
             spacious: false,
             trailing_inset: 0.,
@@ -626,6 +666,9 @@ impl PromptInput {
     ) -> (SharedString, Option<SharedString>, bool) {
         if !self.example_prompts {
             return (self.placeholder.clone(), None, false);
+        }
+        if crate::locale::is_zh() {
+            return ("输入消息，或键入 / 查看命令".into(), None, false);
         }
         let reduced = motion_reduced(cx);
         let mut state = self.motion.borrow_mut();
@@ -737,6 +780,11 @@ impl PromptInput {
         self
     }
 
+    pub(crate) fn with_untrimmed_submission(mut self) -> Self {
+        self.submit_untrimmed = true;
+        self
+    }
+
     /// Explicitly disable submission without disabling editing or focus.
     /// Startup panels instead queue prompts and separately gate slash commands.
     pub fn set_submission_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -769,26 +817,52 @@ impl PromptInput {
 
     pub fn set_model_routes(
         &mut self,
+        models: Vec<String>,
+        routes: &[jcode_sdk::ModelRouteInfo],
+        current_model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_model_routes(models, routes, current_model, false, cx);
+    }
+
+    pub(crate) fn set_remote_model_routes(
+        &mut self,
+        models: Vec<String>,
+        routes: &[jcode_sdk::ModelRouteInfo],
+        current_model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_model_routes(models, routes, current_model, true, cx);
+    }
+
+    fn apply_model_routes(
+        &mut self,
         mut models: Vec<String>,
         routes: &[jcode_sdk::ModelRouteInfo],
         current_model: Option<String>,
+        remote: bool,
         cx: &mut Context<Self>,
     ) {
         if self
             .applied_model_routes
             .as_ref()
-            .is_some_and(|(applied_models, applied_routes)| {
-                *applied_models == models && applied_routes.as_slice() == routes
+            .is_some_and(|(applied_models, applied_routes, applied_remote)| {
+                *applied_models == models
+                    && applied_routes.as_slice() == routes
+                    && *applied_remote == remote
             })
         {
             self.set_current_model(current_model, cx);
             return;
         }
-        let applied = (models.clone(), routes.to_vec());
-        // The daemon marks every built-in preset available while a named
-        // profile is active; drop the ones holding no credential. The set is
-        // resolved only here, when the incoming catalog actually changed.
-        let dropped = self.preset_route_methods();
+        let applied = (models.clone(), routes.to_vec(), remote);
+        // The local daemon may mark unconfigured presets available when a
+        // named profile is active. The remote host owns its credential state.
+        let dropped = if remote {
+            HashSet::new()
+        } else {
+            self.preset_route_methods()
+        };
         let routes: Vec<jcode_sdk::ModelRouteInfo> = if dropped.is_empty() {
             routes.to_vec()
         } else {
@@ -886,15 +960,6 @@ impl PromptInput {
         &self.command_models
     }
 
-    /// An available catalog spec for a signed-in provider, preferring the current model.
-    pub(crate) fn provider_route_spec(
-        &self,
-        provider: &str,
-        current: Option<&str>,
-    ) -> Option<String> {
-        provider_route_spec_in(&self.model_details, provider, current)
-    }
-
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
         if !self.command_completion {
             return Vec::new();
@@ -915,7 +980,10 @@ impl PromptInput {
                     self.current_model.as_deref(),
                     &self.expanded_model_groups,
                     &model_favorites::favorites().1,
-                    &model_favorites::hidden_groups().1,
+                    &model_menu::Hidden {
+                        groups: &model_favorites::hidden_groups().1,
+                        models: &model_favorites::hidden_models().1,
+                    },
                     true,
                     false,
                     query,
@@ -1016,7 +1084,11 @@ impl PromptInput {
             return;
         }
         let raw_content = self.content.to_string();
-        let mut content = raw_content.trim().to_string();
+        let mut content = if self.submit_untrimmed {
+            raw_content.clone()
+        } else {
+            raw_content.trim().to_string()
+        };
         if content.is_empty() && self.attachments.is_empty() {
             return;
         }
@@ -1400,6 +1472,11 @@ impl PromptInput {
             } else {
                 crate::custom_providers::configured_model_metadata()
             };
+            self.configured_profile_names = if crate::harness::screenshot_mode() {
+                configured.keys().map(|(profile, _)| profile.clone()).collect()
+            } else {
+                crate::custom_providers::named_profile_names()
+            };
             if configured != self.configured_model_meta {
                 self.configured_model_meta = configured;
                 self.refresh_model_meta();
@@ -1475,6 +1552,52 @@ impl PromptInput {
         &self.model_details
     }
 
+    pub(crate) fn is_compatible_profile(&self, provider: &str) -> bool {
+        provider.eq_ignore_ascii_case("magpie")
+            || provider.starts_with("openai-compatible:")
+            || self.configured_profile_names.contains(provider)
+            || self.configured_model_meta.keys().any(|(profile, _)| profile == provider)
+    }
+
+    pub(crate) fn route_for_model(
+        &self,
+        model: &str,
+        provider: Option<&str>,
+    ) -> Option<(&str, &model_menu::ModelDetails)> {
+        if let Some((spec, detail)) = self.model_details.get_key_value(model) {
+            return Some((spec.as_str(), detail));
+        }
+        let mut matching = self.model_details.iter().filter(|(_, detail)| {
+            detail.model == model
+                && provider.is_none_or(|provider| detail.provider.eq_ignore_ascii_case(provider))
+        });
+        let (spec, detail) = matching.next()?;
+        matching.next().is_none().then_some((spec.as_str(), detail))
+    }
+
+    pub(crate) fn model_context_window(
+        &self,
+        model: &str,
+        provider: Option<&str>,
+        remote: bool,
+    ) -> Option<u64> {
+        let route_context = self.route_for_model(model, provider).and_then(|(spec, route)| {
+            if remote {
+                model_meta_for(route, &HashMap::new()).context_window
+            } else {
+                self.model_meta.get(spec)?.context_window
+            }
+        });
+        route_context.or_else(|| {
+            if remote {
+                return None;
+            }
+            let profile = provider?;
+            let bare = model.strip_prefix(profile).and_then(|rest| rest.strip_prefix(':')).unwrap_or(model);
+            self.configured_model_meta.get(&(profile.to_owned(), bare.to_owned()))?.context_window
+        }).filter(|window| *window > 0).map(|window| window as u64)
+    }
+
     /// Toggle `spec` in the shared favorites store and rebuild the menu so
     /// the row moves to or from the Favorites section. Keeps the selection
     /// on the same row value afterwards.
@@ -1502,25 +1625,6 @@ impl PromptInput {
     /// Whether `spec` is currently favorited (shared process-wide store).
     pub(crate) fn model_is_favorite(&self, spec: &str) -> bool {
         model_favorites::is_favorite(&model_favorites::favorites().1, spec)
-    }
-
-    /// Show the `/effort` suggestions, stashing the draft like the model menu.
-    pub(crate) fn open_effort_menu(&mut self, cx: &mut Context<Self>) {
-        if self.model_menu_draft.is_none() && !self.effort_menu_open() {
-            self.model_menu_draft =
-                Some((self.content.clone(), std::mem::take(&mut self.attachments)));
-            self.attachment_preview = None;
-        }
-        self.set_content("/effort ".into(), cx);
-        // Open on the current level so Enter keeps it and arrows step from it.
-        if let Some(index) = self
-            .command_suggestions()
-            .iter()
-            .position(|row| row.help == "Current")
-        {
-            self.command_selection = index;
-            self.reveal_command(index);
-        }
     }
 
     /// Short feedback under the composer that clears itself, e.g. after an
@@ -1647,7 +1751,7 @@ impl PromptInput {
         window.focus(&self.focus_handle, cx);
         cx.stop_propagation();
         self.is_selecting = true;
-        let offset = self.index_for_mouse_position(event.position, window.line_height());
+        let offset = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
             self.select_to(offset, cx);
         } else if event.click_count == 2 {
@@ -1666,14 +1770,11 @@ impl PromptInput {
     fn on_mouse_move(
         &mut self,
         event: &MouseMoveEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.is_selecting {
-            self.select_to(
-                self.index_for_mouse_position(event.position, window.line_height()),
-                cx,
-            );
+            self.select_to(self.index_for_mouse_position(event.position), cx);
         }
     }
 
@@ -1690,7 +1791,7 @@ impl PromptInput {
         }
     }
 
-    fn index_for_mouse_position(&self, position: Point<Pixels>, line_height: Pixels) -> usize {
+    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
         }
@@ -1704,7 +1805,7 @@ impl PromptInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_position(position - bounds.origin, line_height)
+        line.closest_index_for_position(position - bounds.origin, self.last_line_height)
             .unwrap_or_else(|index| index)
     }
 
@@ -1969,18 +2070,18 @@ impl EntityInputHandler for PromptInput {
         &mut self,
         range_utf16: Range<usize>,
         bounds: Bounds<Pixels>,
-        window: &mut Window,
+        _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = last_layout.position_for_index(range.start, window.line_height())?;
-        let end = last_layout.position_for_index(range.end, window.line_height())?;
+        let start = last_layout.position_for_index(range.start, self.last_line_height)?;
+        let end = last_layout.position_for_index(range.end, self.last_line_height)?;
         Some(Bounds::from_corners(
             bounds.origin + start,
             point(
                 bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
+                bounds.top() + end.y + self.last_line_height,
             ),
         ))
     }
@@ -1994,7 +2095,7 @@ impl EntityInputHandler for PromptInput {
         let local = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
         let utf8_index = last_layout
-            .closest_index_for_position(local, _window.line_height())
+            .closest_index_for_position(local, self.last_line_height)
             .unwrap_or_else(|index| index);
         Some(self.offset_to_utf16(utf8_index))
     }
@@ -2009,6 +2110,7 @@ struct PrepaintState {
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
     text_bounds: Bounds<Pixels>,
+    line_height: Pixels,
     /// Horizontal gap between the caret and placeholder text, so the caret
     /// never overlaps the first placeholder glyph.
     text_indent: Pixels,
@@ -2284,6 +2386,7 @@ impl Element for TextElement {
             cursor,
             selection,
             text_bounds,
+            line_height,
             text_indent,
             visual_line_count,
         }
@@ -2311,7 +2414,7 @@ impl Element for TextElement {
         let line = prepaint.line.take().unwrap();
         line.paint(
             prepaint.text_bounds.origin + point(prepaint.text_indent, px(0.)),
-            window.line_height(),
+            prepaint.line_height,
             window,
             cx,
         )
@@ -2328,12 +2431,14 @@ impl Element for TextElement {
             // on every paint. Include viewport size so resizing reveals the caret.
             let viewport = input.editor_scroll.bounds();
             let caret_key = (input.cursor_offset(), input.content.clone(), viewport.size);
-            if input.revealed_caret.as_ref() != Some(&caret_key) {
+            if input.revealed_caret.as_ref() != Some(&caret_key)
+                || input.last_line_height != prepaint.line_height
+            {
                 if let Some(caret) =
-                    line.position_for_index(input.cursor_offset(), window.line_height())
+                    line.position_for_index(input.cursor_offset(), prepaint.line_height)
                 {
                     let top = prepaint.text_bounds.top() + caret.y;
-                    let bottom = top + window.line_height();
+                    let bottom = top + prepaint.line_height;
                     let adjustment = if top < viewport.top() {
                         viewport.top() - top
                     } else if bottom > viewport.bottom() {
@@ -2353,6 +2458,7 @@ impl Element for TextElement {
                 input.revealed_caret = Some(caret_key);
             }
             input.last_layout = Some(line);
+            input.last_line_height = prepaint.line_height;
             input.last_bounds = Some(prepaint.text_bounds);
             let needs_ticker = {
                 let state = input.motion.borrow();
@@ -2413,7 +2519,9 @@ impl Render for PromptInput {
         #[cfg(test)]
         crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
-        let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
+        let text_scale = crate::config::text_scale();
+        let editor_height = (f32::from(window.viewport_size().height) * 0.25)
+            .clamp((22.0 * text_scale).max(28.0), 160.0);
         let spacious = self.spacious
             && self.voice_preview.is_none()
             && window.viewport_size().height >= px(400.);
@@ -2580,7 +2688,7 @@ impl Render for PromptInput {
                                                         .py_2()
                                                         .text_size(px(12.0))
                                                         .text_color(Theme::global().TEXT_FAINT)
-                                                        .child("No models match"),
+                                                        .child(crate::locale::tr("No models match", "没有匹配的模型")),
                                                 )
                                             })
                                             .when(!suggestions.is_empty(), |el| {
@@ -2699,13 +2807,14 @@ impl Render for PromptInput {
                     .items_start()
                     .px_4()
                     .py_2()
-                    .text_size(px(14.0))
+                    .font_family(Theme::global().FONT_UI)
+                    .text_size(px(14.0 * text_scale))
                     .when(spacious, |el| {
                         // One line of 16px text plus padding.
                         el.min_h(px(SPACIOUS_MIN_HEIGHT))
                             .px_4()
                             .py_4()
-                            .text_size(px(16.0))
+                            .text_size(px(16.0 * text_scale))
                     })
                     .when(self.trailing_inset > 0., |el| {
                         el.pr(px(self.trailing_inset))
@@ -2735,7 +2844,7 @@ impl Render for PromptInput {
                     .track_scroll(&self.voice_preview_scroll)
                     .px_3()
                     .pb_2()
-                    .text_size(px(14.0))
+                    .text_size(px(14.0 * text_scale))
                     .text_color(Theme::global().TEXT_DIM)
                     .when(!self.content.is_empty(), |el| {
                         el.child(div().text_size(px(10.0)).child("Appending on a new line"))
@@ -2838,6 +2947,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn slash_palette_localizes_help_for_english_and_chinese() {
+        fn suggest_for_locale(
+            input: &str,
+            models: &[String],
+            efforts: EffortMenu<'_>,
+            zh: bool,
+        ) -> Vec<CommandSuggestion> {
+            command_suggestions_with_efforts_and_help(
+                input,
+                models,
+                efforts,
+                zh,
+                |name, fallback| crate::commands::localized_command_help_for_locale(name, fallback, zh),
+            )
+        }
+        let en_all = suggest_for_locale("/", &[], EffortMenu::default(), false);
+        let en_model = en_all.iter().find(|entry| entry.value == "/model").unwrap();
+        assert_eq!(en_model.help, "List or switch models");
+        let en_reload = en_all.iter().find(|entry| entry.value == "/reload").unwrap();
+        assert_eq!(en_reload.help, "Reload into newest available binary");
+
+        let zh_all = suggest_for_locale("/", &[], EffortMenu::default(), true);
+        let zh_model = zh_all.iter().find(|entry| entry.value == "/model").unwrap();
+        assert_eq!(zh_model.help, "查看或切换模型");
+        let zh_mcp = zh_all.iter().find(|entry| entry.value == "/mcp").unwrap();
+        assert_eq!(zh_mcp.help, "管理 MCP 服务（添加、编辑、启用、测试）");
+        let zh_api = zh_all.iter().find(|entry| entry.value == "/api").unwrap();
+        assert_eq!(zh_api.help, "添加或管理兼容 OpenAI 的第三方自定义 API 端点");
+        let zh_reload = zh_all.iter().find(|entry| entry.value == "/reload").unwrap();
+        assert_eq!(zh_reload.help, "热重载到最新可用的二进制版本");
+
+        let zh_by_chinese_desc = suggest_for_locale("/热重载", &[], EffortMenu::default(), true);
+        assert!(
+            zh_by_chinese_desc
+                .iter()
+                .any(|entry| entry.value == "/reload")
+        );
+        let zh_by_english_desc =
+            suggest_for_locale("/logical commits", &[], EffortMenu::default(), true);
+        let zh_commit = zh_by_english_desc
+            .iter()
+            .find(|entry| entry.value == "/commit")
+            .unwrap();
+        assert_eq!(zh_commit.help, "根据当前改动生成逻辑清晰的提交");
+
+        let models = vec!["gpt-5.6-sol".into()];
+        let en_models = suggest_for_locale("/model ", &models, EffortMenu::default(), false);
+        assert_eq!(en_models[0].help, "Switch this session");
+        let zh_models = suggest_for_locale("/model ", &models, EffortMenu::default(), true);
+        assert_eq!(zh_models[0].help, "切换当前会话模型");
+
+        let effort_menu = EffortMenu {
+            ladder: Some(&["low", "high"]),
+            current: Some("high"),
+        };
+        let en_efforts = suggest_for_locale("/effort", &[], effort_menu, false);
+        assert_eq!(en_efforts[0].help, "Set reasoning effort");
+        assert_eq!(en_efforts[1].help, "Current");
+        let zh_efforts = suggest_for_locale("/effort", &[], effort_menu, true);
+        assert_eq!(zh_efforts[0].help, "设置推理强度");
+        assert_eq!(zh_efforts[1].help, "当前");
+    }
+
     fn input_window(cx: &mut TestAppContext) -> gpui::WindowHandle<PromptInput> {
         cx.update(|cx| bind_keys(cx));
         let window = cx.update(|cx| {
@@ -2871,11 +3044,11 @@ mod tests {
                         .last_layout
                         .as_ref()
                         .unwrap()
-                        .position_for_index(2, window.line_height())
+                        .position_for_index(2, input.last_line_height)
                         .unwrap();
                 let event = MouseDownEvent {
                     button: MouseButton::Left,
-                    position: position + point(px(0.), window.line_height() / 2.),
+                    position: position + point(px(0.), input.last_line_height / 2.),
                     modifiers: Default::default(),
                     click_count: 2,
                     first_mouse: false,
@@ -3365,9 +3538,9 @@ mod tests {
                 );
                 let layout = input.last_layout.as_ref().unwrap();
                 let caret = layout
-                    .position_for_index(input.content.len(), window.line_height())
+                    .position_for_index(input.content.len(), input.last_line_height)
                     .expect("appended text must have a visible caret position");
-                assert_eq!(caret.y, window.line_height());
+                assert_eq!(caret.y, input.last_line_height);
             })
             .unwrap();
     }
@@ -3383,7 +3556,7 @@ mod tests {
         cx.run_until_parked();
         window
             .update(cx, |input, window, _| {
-                let height = window.line_height();
+                let height = input.last_line_height;
                 let layout = input.last_layout.as_ref().unwrap();
                 assert_eq!(input.visual_line_count, 4);
                 for (index, row) in [(0, 0), (5, 1), (6, 2), (15, 3)] {
@@ -3876,131 +4049,4 @@ fn model_meta_for(
         );
     }
     meta
-}
-
-/// Pick the route spec to switch to when the user selects `provider`.
-///
-/// Keeps the current model when the target provider serves it. Otherwise
-/// lands on the provider's newest flagship using the daemon's shared ranking
-/// (`preferred_model_for_provider`), not the alphabetically first route, which
-/// previously put Copilot users on `claude-opus-4.6`.
-fn provider_route_spec_in(
-    details: &HashMap<String, model_menu::ModelDetails>,
-    provider: &str,
-    current: Option<&str>,
-) -> Option<String> {
-    let wanted = provider_route_methods(provider);
-    let mut matches: Vec<_> = details
-        .iter()
-        .filter(|(_, detail)| {
-            let method = detail.api_method.to_ascii_lowercase();
-            let owner = detail.provider.to_ascii_lowercase();
-            wanted.iter().any(|wanted| {
-                method == *wanted || method.starts_with(&format!("{wanted}-")) || owner == *wanted
-            })
-        })
-        .collect();
-    if let Some((spec, _)) = matches
-        .iter()
-        .find(|(_, detail)| current.is_some_and(|model| detail.model == model))
-    {
-        return Some((*spec).clone());
-    }
-    let candidates: Vec<&str> = matches
-        .iter()
-        .map(|(_, detail)| detail.model.as_str())
-        .collect();
-    if let Some(best) =
-        jcode_base::auth::lifecycle::preferred_model_for_provider(provider, &candidates)
-        && let Some((spec, _)) = matches.iter().find(|(_, detail)| detail.model == best)
-    {
-        return Some((*spec).clone());
-    }
-    matches.sort_by(|(a, left), (b, right)| {
-        right
-            .recommended
-            .cmp(&left.recommended)
-            .then_with(|| a.cmp(b))
-    });
-    matches.first().map(|(spec, _)| (*spec).clone())
-}
-
-#[cfg(test)]
-mod provider_route_spec_tests {
-    use super::*;
-
-    fn details(routes: &[(&str, &str, &str)]) -> HashMap<String, model_menu::ModelDetails> {
-        routes
-            .iter()
-            .map(|(model, provider, method)| {
-                (
-                    format!("{method}:{model}"),
-                    model_menu::ModelDetails {
-                        model: (*model).into(),
-                        recommended: false,
-                        provider: (*provider).into(),
-                        api_method: (*method).into(),
-                        usage: None,
-                    },
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn switching_provider_lands_on_newest_flagship() {
-        let catalog = details(&[
-            ("claude-haiku-4.5", "Copilot", "copilot"),
-            ("claude-opus-4.6", "Copilot", "copilot"),
-            ("claude-opus-5.5", "Copilot", "copilot"),
-            ("anthropic/claude-sonnet-4", "auto", "openrouter"),
-            ("anthropic/claude-opus-4.8", "auto", "openrouter"),
-            ("grok-code-fast-1", "Grok Build", "grok-build-acp"),
-            ("grok-4.7", "Grok Build", "grok-build-acp"),
-            ("claude-opus-4-6", "Anthropic", "claude-oauth"),
-            ("claude-opus-5-5", "Anthropic", "claude-oauth"),
-            ("gpt-5.5", "OpenAI", "openai-oauth"),
-            ("gpt-6-astra", "OpenAI", "openai-oauth"),
-        ]);
-        let cases = [
-            ("copilot", "copilot:claude-opus-5.5"),
-            ("openrouter", "openrouter:anthropic/claude-opus-4.8"),
-            ("grok-build", "grok-build-acp:grok-4.7"),
-            ("claude", "claude-oauth:claude-opus-5-5"),
-            ("openai", "openai-oauth:gpt-6-astra"),
-        ];
-        for (provider, expected) in cases {
-            assert_eq!(
-                provider_route_spec_in(&catalog, provider, Some("some-other-model")).as_deref(),
-                Some(expected),
-                "{provider}"
-            );
-        }
-    }
-
-    #[test]
-    fn switching_provider_keeps_current_model_when_served() {
-        let catalog = details(&[
-            ("claude-opus-4.6", "Copilot", "copilot"),
-            ("claude-opus-5.5", "Copilot", "copilot"),
-        ]);
-        assert_eq!(
-            provider_route_spec_in(&catalog, "copilot", Some("claude-opus-4.6")).as_deref(),
-            Some("copilot:claude-opus-4.6")
-        );
-    }
-}
-
-fn provider_route_methods(provider: &str) -> Vec<String> {
-    match provider {
-        "openai" => vec!["openai-oauth".into()],
-        "openai-api" => vec!["openai-api-key".into(), "openai-api".into()],
-        "claude" => vec!["claude-oauth".into()],
-        "anthropic-api" => vec![
-            "anthropic-api-key".into(),
-            "anthropic-api".into(),
-            "claude-api".into(),
-        ],
-        other => vec![other.into()],
-    }
 }

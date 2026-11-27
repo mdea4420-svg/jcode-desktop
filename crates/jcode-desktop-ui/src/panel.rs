@@ -88,6 +88,8 @@ mod composer;
 mod diff_review;
 #[path = "panel_effort.rs"]
 mod effort_switch;
+#[path = "panel_swarm.rs"]
+mod swarm;
 #[path = "panel_flicker.rs"]
 mod flicker;
 #[path = "panel_image_pane.rs"]
@@ -476,6 +478,7 @@ pub struct Panel {
     pub session_id: String,
     pub title: SharedString,
     pub working_dir: Option<String>,
+    pub(crate) project_folder_label: Option<String>,
     pub status: String,
     pub connection_phase: String,
     /// Model id serving this session, e.g. `gpt-5.6-sol`.
@@ -488,11 +491,18 @@ pub struct Panel {
     pub reasoning_effort: Option<String>,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
+    effort_picker: Option<effort_switch::EffortPicker>,
+    last_standard_effort: Option<String>,
+    swarm: swarm::State,
+    magpie_effort_model: Option<String>,
+    magpie_effort_generation: u64,
+    magpie_effort: Option<crate::custom_providers::MagpieEffort>,
     /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
     /// the transcript only claims success once the bookmark persisted.
     pending_save_requests: usize,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
+    runtime_context_window: Option<u64>,
     response_stats: response_stats::Tracker,
     pub items: Transcript,
     /// Streaming assistant text accumulates here until the turn ends.
@@ -646,6 +656,7 @@ struct TranscriptMeasurements {
     row_count: usize,
     streaming_lengths: (usize, usize),
     fonts: Option<(&'static str, &'static str, &'static str)>,
+    text_scale: f32,
     #[cfg(test)]
     remeasured_rows: usize,
 }
@@ -658,7 +669,9 @@ impl TranscriptMeasurements {
         streaming_lengths: (usize, usize),
         fonts: (&'static str, &'static str, &'static str),
     ) -> Option<std::ops::Range<usize>> {
+        let scale = crate::config::text_scale();
         let range = if self.dirty
+            || self.text_scale != scale
             || self.item_count != item_count
             || self.row_count != row_count
             || self.fonts != Some(fonts)
@@ -676,6 +689,7 @@ impl TranscriptMeasurements {
         self.row_count = row_count;
         self.streaming_lengths = streaming_lengths;
         self.fonts = Some(fonts);
+        self.text_scale = scale;
         let range = range.filter(|range| !range.is_empty());
         #[cfg(test)]
         if let Some(range) = &range {
@@ -960,6 +974,7 @@ impl Panel {
             session_id,
             title: display_title.into(),
             working_dir,
+            project_folder_label: None,
             status: activity_status.into(),
             connection_phase: String::new(),
             model: usage_fixture.then(|| "gpt-5.6-sol".into()),
@@ -967,8 +982,15 @@ impl Panel {
             auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
             pending_effort: None,
+            effort_picker: None,
+            last_standard_effort: None,
+            swarm: swarm::State::default(),
+            magpie_effort_model: None,
+            magpie_effort_generation: 0,
+            magpie_effort: None,
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
+            runtime_context_window: None,
             response_stats: response_stats::Tracker::default(),
             items: demo_items(fixture.as_deref()).into(),
             streaming_text: if streaming_fixture {
@@ -1243,7 +1265,7 @@ impl Panel {
     ) -> Self {
         let mut panel = Self::new(
             format!("accounts://{source_session}"),
-            Some("accounts".into()),
+            Some(crate::locale::tr("accounts", "账户").into()),
             None,
             bridge,
             cx,
@@ -2221,14 +2243,15 @@ impl Panel {
                     let keys = crate::effort::bound_keys_label(cx)
                         .map(|keys| format!(" or {keys}"))
                         .unwrap_or_default();
-                    self.items.push(Item::Assistant(if ladder.is_empty() {
-                        "Reasoning effort is not available for this model.".into()
+                    let notice = if ladder.is_empty() {
+                        self.effort_unavailable_message()
                     } else {
                         format!(
                             "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
                             ladder.join("|")
                         )
-                    }));
+                    };
+                    self.items.push(Item::Assistant(notice));
                 }
                 "/rename" => self.items.push(Item::Error(
                     "Usage: `/rename <session name>` or `/rename --clear`.".into(),
@@ -2342,6 +2365,7 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        self.swarm.focus = None;
         if self.available_models.is_empty() {
             self.open_recovery_models(cx);
             return;
@@ -2357,28 +2381,6 @@ impl Panel {
                 input.open_model_menu(models, cx);
             });
         });
-    }
-
-    /// Toggle the `/effort` suggestion menu from the effort pill.
-    pub(super) fn toggle_effort_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_side_document() {
-            return;
-        }
-        if self.model_picker_open {
-            self.close_model_picker(cx);
-        }
-        let input = self.input.clone();
-        cx.defer(move |cx| {
-            input.update(cx, |input, cx| {
-                if input.effort_menu_open() {
-                    input.close_effort_menu(cx);
-                } else {
-                    input.open_effort_menu(cx);
-                }
-            });
-        });
-        self.focus_input(window, cx);
-        cx.notify();
     }
 
     fn close_model_picker(&mut self, cx: &mut Context<Self>) {
@@ -2823,13 +2825,24 @@ impl Panel {
                 data,
                 message,
             } => {
+                if *command == jcode_sdk::api::RuntimeCommand::Info
+                    && let Some(window) = ["context_window", "context_limit"]
+                        .into_iter()
+                        .filter_map(|key| data.get(key).and_then(serde_json::Value::as_u64))
+                        .find(|window| *window > 0)
+                {
+                    self.runtime_context_window = Some(window);
+                }
                 let output = jcode_sdk::api::RuntimeCommandOutput {
                     session_id: session_id.clone(),
                     command: *command,
                     data: data.clone(),
                     message: message.clone(),
                 };
-                self.items.push(Item::Assistant(output.message.clone()));
+                self.sync_swarm_result(*command, data);
+                let message = swarm::runtime_summary(*command, data)
+                    .unwrap_or_else(|| output.message.clone());
+                self.items.push(Item::Assistant(message));
                 self.apply_special_command_artifacts(&output, cx);
                 self.stick_to_bottom = true;
             }
@@ -2999,6 +3012,12 @@ impl Panel {
                 auth_method,
                 ..
             } => {
+                let identity_changed = provider.as_ref().is_some_and(|value| Some(value) != self.provider.as_ref())
+                    || model.as_ref().is_some_and(|value| Some(value) != self.model.as_ref());
+                if identity_changed {
+                    self.pending_effort = None;
+                    self.runtime_context_window = None;
+                }
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
@@ -3020,6 +3039,7 @@ impl Panel {
                 if let Some(method) = auth_method.as_deref() {
                     self.auth_method = Some(human_auth_method(method));
                 }
+                self.refresh_magpie_effort(cx);
                 self.sync_effort_menu(cx);
             }
             ApiEvent::RuntimeInfo {
@@ -3030,6 +3050,12 @@ impl Panel {
                 routes,
                 ..
             } => {
+                let identity_changed = provider.as_ref().is_some_and(|value| Some(value) != self.provider.as_ref())
+                    || model.as_ref().is_some_and(|value| Some(value) != self.model.as_ref());
+                if identity_changed {
+                    self.pending_effort = None;
+                    self.runtime_context_window = None;
+                }
                 if provider.is_some() {
                     self.provider = provider.clone();
                 }
@@ -3044,8 +3070,19 @@ impl Panel {
                 let models = available_model_names(routes);
                 self.available_models = models.clone();
                 self.input.update(cx, |input, cx| {
-                    input.set_model_routes(models, routes, self.model.clone(), cx);
+                    if crate::harness::remote_host(&self.session_id).is_some() {
+                        input.set_remote_model_routes(models, routes, self.model.clone(), cx);
+                    } else {
+                        if identity_changed || input.filtered_route_models().is_none() {
+                            input.load_configured_model_meta();
+                        }
+                        input.set_model_routes(models, routes, self.model.clone(), cx);
+                    }
                 });
+                if self.recovery_picker_open && !self.available_models.is_empty() {
+                    self.open_model_browser(cx);
+                }
+                self.refresh_magpie_effort(cx);
                 self.sync_effort_menu(cx);
             }
             ApiEvent::TokenUsage {
@@ -3229,6 +3266,23 @@ impl Panel {
         }
     }
 
+    pub(crate) fn is_untouched_empty_chat(&self) -> bool {
+        self.supports_voice()
+            && (!self.session_id.contains("://") || self.is_pending_session())
+            && !self.session_id.starts_with("startup://draft/remote/")
+            && !self.session_id.starts_with("startup://draft/help/")
+            && !self.session_id.starts_with("startup://draft/publish/")
+            && self.items.is_empty()
+            && !self.transcript_only
+            && !self.awaiting_persisted
+            && !self.activity_active()
+            && !self.status.eq_ignore_ascii_case("processing")
+            && !self.voice_active()
+            && self.pending_users.is_empty()
+            && self.pending_save_requests == 0
+            && !self.has_queued_prompts()
+    }
+
     pub fn is_busy(&self) -> bool {
         self.status != "idle" || self.activity_active()
     }
@@ -3326,7 +3380,7 @@ impl Panel {
         }
     }
 
-    fn activity_active(&self) -> bool {
+    pub(crate) fn activity_active(&self) -> bool {
         let status = self.status.to_ascii_lowercase();
         if status.contains("error") || status.contains("crash") || status.starts_with("lost:") {
             return false;
@@ -3827,7 +3881,7 @@ impl Panel {
                 .font_family(Theme::global().FONT_AI)
                 .flex_none()
                 .px_1()
-                .text_size(px(12.0))
+                .text_size(px(12.0 * crate::config::text_scale()))
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
@@ -4703,7 +4757,7 @@ impl Render for Panel {
                 });
             })
             .size_full()
-            .text_size(px(13.5))
+            .text_size(px(13.5 * crate::config::text_scale()))
             .overflow_hidden()
             // Clear and collect only this frame's painted leaf geometry before
             // the virtual list paints. Logical text is maintained independently.
@@ -4892,7 +4946,7 @@ impl Render for Panel {
                             div()
                                 .text_size(px(22.0))
                                 .text_color(Theme::global().TEXT)
-                                .child("What would you like to work on?"),
+                                .child(crate::locale::tr("What would you like to work on?", "今天想做什么？")),
                         )
                         .child(
                             div()
@@ -4903,7 +4957,8 @@ impl Render for Panel {
                                 .children(self.render_prompt_queue(cx))
                                 .children(self.render_voice_pending())
                                 .child(self.render_composer(window, cx))
-                                .child(startup::input_marker(input_bounds.clone())),
+                                .child(startup::input_marker(input_bounds.clone()))
+                                .child(self.render_project_folder_actions(cx)),
                         ),
                 )
                 .into_any_element()
@@ -5469,7 +5524,7 @@ impl Render for Panel {
 /// Session tabs and sidebar rows share one label, never an internal session ID.
 pub(crate) fn folder_session_title(session_id: &str, title: &str) -> SharedString {
     custom_session_title(session_id, title)
-        .unwrap_or("New session")
+        .unwrap_or(crate::locale::tr("New session", "新会话"))
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -5661,6 +5716,53 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
     }
 }
 
+fn route_method_label(provider: Option<&str>, auth_method: Option<&str>, channel: Option<&str>) -> String {
+    let provider = provider.map(str::trim).filter(|value| !value.is_empty());
+    let auth_method = auth_method.map(str::trim).filter(|value| !value.is_empty());
+    match (provider, auth_method, channel) {
+        (Some(provider), _, Some(channel)) => {
+            let name = crate::input::model_menu::pretty_route_provider(provider);
+            format!("{name} · {channel}")
+        }
+        (None, None, _) => crate::locale::tr("Switch route", "切换线路").into(),
+        _ => account_method_label(provider, auth_method),
+    }
+}
+
+impl Panel {
+    fn current_route_channel<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        use crate::input::model_menu::channel_namespace;
+
+        let model = self.model.as_deref()?;
+        let provider = self.provider.as_deref();
+        let input = self.input.read(cx);
+        if let Some((_, route)) = input.route_for_model(model, provider) {
+            return channel_namespace(&route.model, Some(route));
+        }
+        let provider = provider?;
+        if provider.eq_ignore_ascii_case("openrouter") || !input.is_compatible_profile(provider) {
+            return None;
+        }
+        channel_namespace(model, None)
+    }
+
+    fn effective_context_window(&self, cx: &App) -> Option<u64> {
+        self.runtime_context_window.or_else(|| {
+            let model = self.model.as_deref()?;
+            let provider = self.provider.as_deref();
+            let remote = crate::harness::remote_host(&self.session_id).is_some();
+            self.input.read(cx).model_context_window(model, provider, remote).or_else(|| {
+                let bare = jcode_provider_core::explicit_model_provider_prefix(model)
+                    .map_or(model, |(_, _, bare)| bare);
+                let bare = provider.and_then(|name| bare.strip_prefix(name)?.strip_prefix(':')).unwrap_or(bare);
+                jcode_base::provider::context_limit_for_model_with_provider(bare, provider)
+                    .filter(|window| *window > 0)
+                    .map(|window| window as u64)
+            })
+        })
+    }
+}
+
 pub(crate) use crate::accounts::pretty_provider_name;
 
 fn pretty_auth_method(method: &str) -> String {
@@ -5671,25 +5773,15 @@ fn pretty_auth_method(method: &str) -> String {
     }
 }
 
-fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(used) = context_tokens {
-        match model.and_then(context_window_for_model) {
-            Some(window) => {
-                let percent = (used as f64 / window as f64 * 100.0).min(100.0);
-                parts.push(format!(
-                    "{} / {} ({percent:.0}%)",
-                    format_tokens(used),
-                    format_tokens(window)
-                ));
-            }
-            None => parts.push(format!("{} tokens", format_tokens(used))),
+fn context_usage_label(window: Option<u64>, context_tokens: Option<u64>) -> Option<String> {
+    let used = context_tokens?;
+    Some(match window {
+        Some(window) => {
+            let percent = (used as f64 / window as f64 * 100.0).min(100.0);
+            format!("{} / {} ({percent:.0}%)", format_tokens(used), format_tokens(window))
         }
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("  ·  "))
+        None => format!("{} {}", format_tokens(used), crate::locale::tr("tokens", "个 token")),
+    })
 }
 
 /// Shorten a home-relative path for the footer.
@@ -5701,6 +5793,7 @@ fn compact_dir(path: &str) -> String {
 }
 
 /// Use the same model capacity catalog as the CLI instead of desktop-only guesses.
+#[cfg(test)]
 fn context_window_for_model(model: &str) -> Option<u64> {
     jcode_base::provider::context_limit_for_model_with_provider(model, None).map(|n| n as u64)
 }
@@ -7789,11 +7882,11 @@ mod tests {
         assert_eq!(account_method_label(Some(""), Some("")), "Accounts");
         assert_eq!(context_usage_label(None, None), None);
         assert_eq!(
-            context_usage_label(Some("gpt-5.6-sol"), Some(100_000)).as_deref(),
+            context_usage_label(context_window_for_model("gpt-5.6-sol"), Some(100_000)).as_deref(),
             Some("100.0k / 272.0k (37%)")
         );
         assert_eq!(
-            context_usage_label(Some("mystery-model"), Some(1_500)).as_deref(),
+            context_usage_label(context_window_for_model("mystery-model"), Some(1_500)).as_deref(),
             Some("1.5k tokens")
         );
     }
@@ -7812,6 +7905,46 @@ mod tests {
         );
         assert_eq!(context_window_for_model("gemini-3-pro"), Some(1_000_000));
         assert_eq!(context_window_for_model("mystery"), None);
+    }
+
+    #[gpui::test]
+    fn custom_model_context_meter_uses_config_then_runtime_limit(cx: &mut gpui::TestAppContext) {
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        panel.update(vcx, |panel, cx| {
+            panel.provider = Some("magpie".into());
+            panel.model = Some("magpie:codex/gpt-6.2-sol".into());
+            panel.input.update(cx, |input, _| {
+                input.set_configured_model_meta([(
+                    ("magpie".into(), "codex/gpt-6.2-sol".into()),
+                    crate::custom_providers::ConfiguredModelMeta {
+                        context_window: Some(196_607),
+                        ..Default::default()
+                    },
+                )].into());
+            });
+            let window = panel.effective_context_window(cx);
+            assert_eq!(window, Some(196_607));
+            assert_eq!(context_usage_label(window, Some(100_000)).as_deref(), Some("100.0k / 196.6k (51%)"));
+            assert_eq!(panel.current_route_channel(cx), Some("codex"));
+            assert_eq!(route_method_label(Some("magpie"), Some("api key"), Some("codex")), "Magpie · codex");
+
+            panel.apply(&ApiEvent::RuntimeCommandResult {
+                session_id: panel.session_id.clone(),
+                command: jcode_sdk::api::RuntimeCommand::Info,
+                data: serde_json::json!({ "context_window": 0, "context_limit": 272_000 }),
+                message: "Fixture".into(),
+            }, cx);
+            assert_eq!(panel.effective_context_window(cx), Some(272_000));
+            panel.apply(&ApiEvent::RuntimeInfo {
+                session_id: panel.session_id.clone(),
+                provider: None,
+                model: Some("truesota/gpt-6.2-sol".into()),
+                reasoning_effort: None,
+                auth_method: None,
+                routes: Vec::new(),
+            }, cx);
+            assert_eq!(panel.runtime_context_window, None);
+        });
     }
 
     #[test]

@@ -19,15 +19,8 @@ const DOCK_FADE: f32 = 28.;
 /// Opacity of the veil behind the composer. High enough that history behind
 /// the controls is a quiet hint, never competing with the draft.
 const DOCK_VEIL_ALPHA: f32 = 0.86;
-/// Right padding the input reserves so text never runs under the voice
-/// button. Linux shows a single-glyph keycap; other platforms spell out the
-/// chord, so their button is wider.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Right padding for the in-box voice button and its inset.
 pub(super) const VOICE_TRAILING_SPACE: f32 = 44.;
-#[cfg(target_os = "macos")]
-pub(super) const VOICE_TRAILING_SPACE: f32 = 52.;
-#[cfg(target_os = "windows")]
-pub(super) const VOICE_TRAILING_SPACE: f32 = 128.;
 
 impl Panel {
     /// Prompt input with its pill row below. Every composer location
@@ -41,21 +34,20 @@ impl Panel {
         let _ = window;
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode;
+        let route_channel = self.current_route_channel(cx);
         let account_label = if screenshot_mode {
             "Account hidden".to_string()
         } else {
-            account_method_label(self.provider.as_deref(), self.auth_method.as_deref())
+            route_method_label(self.provider.as_deref(), self.auth_method.as_deref(), route_channel)
         };
-        let model_label = pretty_model_label(self.model.as_deref());
+        let model_label = route_channel
+            .and(self.model.as_deref())
+            .map(crate::input::model_menu::pretty_model_without_channel)
+            .unwrap_or_else(|| pretty_model_label(self.model.as_deref()));
         let limits = (!screenshot_mode)
             .then(|| self.limits_summary(cx))
             .flatten();
-        let effort = self
-            .reasoning_effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|effort| !effort.is_empty() && self.model.is_some())
-            .map(str::to_string);
+        let effort = self.effort_pill_label();
         let remote_machine = (!screenshot_mode)
             .then(|| crate::harness::remote_host(&self.session_id))
             .flatten()
@@ -71,11 +63,12 @@ impl Panel {
             .as_deref()
             .filter(|dir| !screenshot_mode && !dir.is_empty())
             .map(|dir| {
-                if remote_machine.is_some() {
+                let (name, detail) = if remote_machine.is_some() {
                     remote_location_label(dir)
                 } else {
                     location_label(dir)
-                }
+                };
+                (name, detail, dir.to_owned())
             });
         // Build info, usage limits and status share the pill row, so the
         // panel needs no separate footer bar below the composer.
@@ -160,10 +153,12 @@ impl Panel {
                     )
                     .children(effort.map(|effort| {
                         composer_pill("panel-model-effort")
+                            .relative()
                             .flex_shrink(3.)
                             .min_w(px(24.))
                             .text_color(theme.TEXT_FAINT)
                             .child(div().min_w_0().truncate().child(effort))
+                            .children(self.effort_pill_bounds_marker())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_effort_picker(window, cx);
                                 cx.stop_propagation();
@@ -184,11 +179,12 @@ impl Panel {
                                 })
                             })
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_provider_picker(window, cx);
+                                this.toggle_model_routes(window, cx);
                                 cx.stop_propagation();
                             })),
                     )
-                    .children(self.render_context_meter()),
+                    .children(self.render_context_meter(cx))
+                    .children(self.render_swarm_pill(cx)),
             )
             .child(
                 div()
@@ -223,8 +219,11 @@ impl Panel {
                             .whitespace_nowrap()
                             .child(machine)
                     }))
-                    .children(location.map(|(name, detail)| {
+                    .children(location.map(|(name, detail, path)| {
+                        let hint = crate::locale::tr("Click to copy full path", "点击复制完整路径");
+                        let tooltip = format!("{path}\n{hint}");
                         div()
+                            .id("composer-location")
                             .debug_selector(|| "composer-location".into())
                             .flex_shrink_1()
                             .min_w_0()
@@ -235,6 +234,16 @@ impl Panel {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(px(11.5))
+                            .rounded_full()
+                            .cursor_pointer()
+                            .hover(|el| el.bg(theme.USER_BG))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| super::usage::MeterTooltip(tooltip.clone())).into()
+                            })
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
+                                cx.stop_propagation();
+                            })
                             .child(
                                 div()
                                     .flex_none()
@@ -261,7 +270,8 @@ impl Panel {
             .flex()
             .flex_col()
             .children(strips)
-            .children(self.render_provider_picker(window, cx))
+            .children(self.render_effort_picker(cx))
+            .children(self.render_swarm_picker(cx))
             .child(
                 // The voice button floats inside the input's right edge. The
                 // input reserves matching trailing space for it.
@@ -282,6 +292,60 @@ impl Panel {
                     ),
             )
             .child(pills)
+            .into_any_element()
+    }
+
+    pub(super) fn render_project_folder_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use crate::{locale::tr, ui_actions::ToggleProjectFolderMenu};
+
+        let theme = Theme::global();
+        div()
+            .px_1()
+            .flex()
+            .child(
+                div()
+                    .id("composer-project-folder")
+                    .debug_selector(|| "composer-project-folder".into())
+                    .h(px(28.0))
+                    .px_2p5()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.PANEL_BORDER)
+                    .bg(theme.ACCENT_DIM)
+                    .font_family(theme.FONT_UI)
+                    .text_size(px(11.0))
+                    .text_color(theme.TEXT)
+                    .whitespace_nowrap()
+                    .cursor_pointer()
+                    .hover(|el| el.border_color(theme.ACCENT).bg(theme.TOOL_BG))
+                    .active(|el| el.bg(theme.USER_BG))
+                    .max_w_full()
+                    .min_w_0()
+                    .child(div().min_w_0().truncate()
+                        .when(cfg!(test), |label| {
+                            let panel = cx.entity_id();
+                            label.debug_selector(move || format!("composer-project-folder-label-{panel:?}"))
+                        })
+                        .child(match &self.project_folder_label {
+                            Some(name) => format!("{} · {name}", tr("Project", "项目")),
+                            None => tr("Project", "项目").to_owned(),
+                        }))
+                    .child(crate::ui_actions::project_folder_plus_icon())
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.focus_input(window, cx);
+                        let action = ToggleProjectFolderMenu {
+                            source: Some(cx.entity_id()),
+                            position: event.position,
+                        };
+                        // Activating the source slot reads this panel after its click update ends.
+                        window.defer(cx, move |window, cx| window.dispatch_action(Box::new(action), cx));
+                    })),
+            )
             .into_any_element()
     }
 
@@ -441,7 +505,7 @@ pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
 /// the TUI's compact model label.
 pub(super) fn pretty_model_label(model: Option<&str>) -> String {
     let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) else {
-        return "Choose model".into();
+        return crate::locale::tr("Choose model", "选择模型").into();
     };
     let pretty = jcode_provider_core::model_names::pretty_model_display_name(model);
     match pretty.strip_prefix("Claude ") {
@@ -637,6 +701,12 @@ mod tests {
                     input.right() - location.right() < px(12.),
                     "location hugs the right edge at {width}: {location:?} {input:?}"
                 );
+            }
+            if width == 1440. {
+                let location = vcx.debug_bounds("composer-location").unwrap();
+                vcx.simulate_click(location.center(), gpui::Modifiers::default());
+                let copied = vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text());
+                assert_eq!(copied.as_deref(), Some("/srv/projects/jcode"));
             }
         }
     }

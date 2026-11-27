@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jcode_sdk::{ModelRouteInfo, ModelUsage, compare_model_usage};
+use crate::locale::{is_zh, tr};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ModelDetails {
@@ -156,10 +157,10 @@ pub(crate) fn now_unix_secs() -> u64 {
 fn relative_time(timestamp: u64, now: u64) -> String {
     let age = now.saturating_sub(timestamp);
     match age {
-        0..60 => "just now".into(),
-        60..3600 => format!("{}m ago", age / 60),
-        3600..86400 => format!("{}h ago", age / 3600),
-        _ => format!("{}d ago", age / 86400),
+        0..60 => tr("just now", "刚刚").into(),
+        60..3600 => format!("{}{}", age / 60, tr("m ago", " 分钟前")),
+        3600..86400 => format!("{}{}", age / 3600, tr("h ago", " 小时前")),
+        _ => format!("{}{}", age / 86400, tr("d ago", " 天前")),
     }
 }
 
@@ -225,19 +226,28 @@ pub(crate) struct HeaderParts {
 pub(crate) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>) -> HeaderParts {
     let Some(detail) = details.get(model) else {
         return HeaderParts {
-            provider: "Other models".into(),
+            provider: tr("Other models", "其他模型").into(),
             logo: "",
             auth: AuthKind::Other,
         };
     };
-    let provider = if detail.provider.is_empty() {
-        crate::accounts::pretty_provider_name(&detail.api_method)
+    let provider = pretty_route_provider(if detail.provider.is_empty() {
+        &detail.api_method
     } else {
-        crate::accounts::pretty_provider_name(&detail.provider)
-    };
+        &detail.provider
+    });
+    HeaderParts {
+        logo: provider_logo(&detail.provider, &detail.api_method),
+        provider,
+        auth: AuthKind::of(&detail.api_method),
+    }
+}
+
+pub(crate) fn pretty_route_provider(provider: &str) -> String {
+    let provider = crate::accounts::pretty_provider_name(provider);
     // Custom profile ids arrive all-lowercase (`magpie`); show them as names
     // while leaving stylized brands like `xAI` alone.
-    let provider = if provider
+    if provider
         .chars()
         .next()
         .is_some_and(|c| c.is_ascii_lowercase())
@@ -250,11 +260,6 @@ pub(crate) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>)
             .unwrap_or(provider)
     } else {
         provider
-    };
-    HeaderParts {
-        logo: provider_logo(&detail.provider, &detail.api_method),
-        provider,
-        auth: AuthKind::of(&detail.api_method),
     }
 }
 
@@ -375,7 +380,7 @@ const MODEL_MAKERS: &[&str] = &[
 /// A gateway's upstream channel, such as `codex` in `codex/gpt-6.2-sol` behind
 /// an OpenAI-compatible router. The picker title otherwise drops the
 /// namespace, which makes the same model on different channels identical.
-fn channel_namespace<'a>(raw: &'a str, detail: Option<&ModelDetails>) -> Option<&'a str> {
+pub(crate) fn channel_namespace<'a>(raw: &'a str, detail: Option<&ModelDetails>) -> Option<&'a str> {
     if detail.is_some_and(|detail| provider_logo(&detail.provider, &detail.api_method) == "openrouter")
     {
         return None;
@@ -396,6 +401,21 @@ fn channel_namespace<'a>(raw: &'a str, detail: Option<&ModelDetails>) -> Option<
     let channel = namespace.rsplit('/').next().unwrap_or(namespace).trim();
     (!channel.is_empty() && !MODEL_MAKERS.contains(&channel.to_ascii_lowercase().as_str()))
         .then_some(channel)
+}
+
+pub(crate) fn pretty_model_without_channel(raw: &str) -> String {
+    let bare = raw.rsplit_once('/').map_or(raw, |(_, model)| model);
+    jcode_provider_core::model_names::pretty_picker_model_name(bare)
+}
+
+fn group_toggle_label(open: bool, count: usize) -> String {
+    if open {
+        tr("Show fewer models", "收起更多模型").into()
+    } else if is_zh() {
+        format!("展开全部 {count} 个模型")
+    } else {
+        format!("Show {} more models", count - 3)
+    }
 }
 
 /// Whether the row's group header carries the channel, so its title drops
@@ -420,7 +440,7 @@ pub(crate) fn group_key(model: &str, details: &HashMap<String, ModelDetails>) ->
 /// ` · {channel}` for channel groups.
 fn group_base_label(model: &str, details: &HashMap<String, ModelDetails>) -> String {
     if details.get(model).is_none() {
-        return "Other models".into();
+        return tr("Other models", "其他模型").into();
     }
     let parts = header_parts(model, details);
     let detail = details.get(model).expect("checked above");
@@ -558,13 +578,13 @@ impl ModelMeta {
     fn parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(window) = self.context_window {
-            parts.push(format!("{} context", format_context_window(window)));
+            parts.push(format!("{} {}", format_context_window(window), tr("context", "上下文")));
         }
         if self.image_input == Some(true) {
-            parts.push("Images".to_string());
+            parts.push(tr("Images", "图片").into());
         }
         if self.reasoning == Some(true) {
-            parts.push("Reasoning".to_string());
+            parts.push(tr("Reasoning", "推理").into());
         }
         parts
     }
@@ -589,7 +609,7 @@ pub(crate) fn detail_label(
 ) -> Option<String> {
     let mut parts = meta.map_or_else(Vec::new, ModelMeta::parts);
     if let Some(used) = used_unix_secs {
-        parts.push(format!("used {}", relative_time(used, now)));
+        parts.push(format!("{} {}", tr("used", "最近使用"), relative_time(used, now)));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
@@ -664,7 +684,7 @@ mod tests {
             &details,
             None,
             &Default::default(),
-            &[], &[],
+            &[], &Hidden::NONE,
             true,
             false,
             "",
@@ -699,7 +719,7 @@ mod tests {
             &details,
             Some("atlas-1"),
             &Default::default(),
-            &[], &[],
+            &[], &Hidden::NONE,
             true,
             false,
             "",
@@ -729,7 +749,7 @@ mod tests {
             &details,
             Some("atlas-1"),
             &expanded,
-            &[], &[],
+            &[], &Hidden::NONE,
             true,
             false,
             "",
@@ -741,7 +761,7 @@ mod tests {
             &details,
             None,
             &Default::default(),
-            &[], &[],
+            &[], &Hidden::NONE,
             true,
             false,
             "ATLAS-2",
@@ -751,11 +771,11 @@ mod tests {
         assert!(search[0].toggle.is_none());
         assert!(search.iter().all(|row| !row.recent));
         assert_eq!(
-            grouped_rows(&models, &details, None, &Default::default(), &[], &[], true, false, "oauth")
+            grouped_rows(&models, &details, None, &Default::default(), &[], &Hidden::NONE, true, false, "oauth")
                 .len(),
             6
         );
-        assert!(grouped_rows(&models, &details, None, &expanded, &[], &[], true, false, "missing")
+        assert!(grouped_rows(&models, &details, None, &expanded, &[], &Hidden::NONE, true, false, "missing")
             .is_empty());
     }
 
@@ -889,7 +909,7 @@ mod tests {
             magpie_route("truesota/deepseek-flash", 0, None),
         ]);
         let models: Vec<_> = details.keys().cloned().collect();
-        let rows = grouped_rows(&models, &details, None, &Default::default(), &[], &[], true, false, "");
+        let rows = grouped_rows(&models, &details, None, &Default::default(), &[], &Hidden::NONE, true, false, "");
         let headers: Vec<_> = rows.iter().filter_map(|row| row.header.as_deref()).collect();
         assert_eq!(
             headers,
@@ -921,7 +941,8 @@ mod tests {
             &details,
             None,
             &Default::default(),
-            &favorites, &[],
+            &favorites,
+            &Hidden::NONE,
             true,
             false,
             "",
@@ -958,13 +979,13 @@ mod tests {
 
         // The hidden channel's group and search hits disappear.
         let rows = grouped_rows(
-            &models, &details, None, &Default::default(), &[], &hidden, true, false, "",
+            &models, &details, None, &Default::default(), &[], &Hidden { groups: &hidden, models: &[] }, true, false, "",
         );
         let headers: Vec<_> = rows.iter().filter_map(|row| row.header.as_deref()).collect();
         assert_eq!(headers, ["Magpie · cpr-fast", "Magpie · truesota"]);
         assert!(!rows.iter().any(|row| row.value.contains("codex/")));
         assert!(grouped_rows(
-            &models, &details, None, &Default::default(), &[], &hidden, true, false, "codex"
+            &models, &details, None, &Default::default(), &[], &Hidden { groups: &hidden, models: &[] }, true, false, "codex"
         )
         .is_empty());
 
@@ -972,7 +993,7 @@ mod tests {
         // and only there.
         let favorites = vec!["magpie:codex/gpt-6.2-sol".to_string()];
         let rows = grouped_rows(
-            &models, &details, None, &Default::default(), &favorites, &hidden, true, false, "",
+            &models, &details, None, &Default::default(), &favorites, &Hidden { groups: &hidden, models: &[] }, true, false, "",
         );
         assert_eq!(rows[0].header.as_deref(), Some(FAVORITES_HEADER));
         assert_eq!(rows[0].value, "/model magpie:codex/gpt-6.2-sol");
@@ -983,7 +1004,7 @@ mod tests {
 
         // The browser drops the hidden group's pill and its rows but keeps
         // the favorite.
-        let filters = browser_filters(&models, &details, &favorites, None, &hidden);
+        let filters = browser_filters(&models, &details, &favorites, None, &Hidden { groups: &hidden, models: &[] });
         assert!(
             !filters
                 .iter()
@@ -1002,10 +1023,115 @@ mod tests {
             None,
             "",
             0,
-            &hidden,
+            &Hidden { groups: &hidden, models: &[] },
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].spec, "magpie:codex/gpt-6.2-sol");
+    }
+
+    #[test]
+    fn hidden_models_drop_everywhere_including_favorites_and_search() {
+        let details = from_routes(&[
+            magpie_route("codex/gpt-6.2-sol", 0, None),
+            magpie_route("cpr-fast/gpt-6.2-sol", 0, None),
+            magpie_route("truesota/deepseek-flash", 0, None),
+        ]);
+        let models: Vec<_> = details.keys().cloned().collect();
+        let spec = "magpie:cpr-fast/gpt-6.2-sol";
+        let hidden = Hidden {
+            groups: &[],
+            models: &[spec.to_string()],
+        };
+        let favorites = vec![spec.to_string()];
+
+        // The compact menu drops the row from its group and from search, and
+        // the favorite no longer surfaces in the Favorites section.
+        let rows = grouped_rows(
+            &models,
+            &details,
+            None,
+            &Default::default(),
+            &favorites,
+            &hidden,
+            true,
+            false,
+            "",
+        );
+        assert!(
+            !rows.iter().any(|row| row.value.contains("cpr-fast/")),
+            "{rows:?}"
+        );
+        assert!(
+            grouped_rows(
+                &models,
+                &details,
+                None,
+                &Default::default(),
+                &[],
+                &hidden,
+                true,
+                false,
+                "cpr",
+            )
+            .iter()
+            .all(|row| row.value != format!("/model {spec}"))
+        );
+        assert_eq!(rows[0].header.as_deref(), Some("Magpie · codex"));
+
+        // Same-name routes on other channels stay visible: hiding is exact
+        // per spec, independent across same name / different routes.
+        assert!(rows.iter().any(|row| row.value.contains("codex/")));
+
+        // The browser filter counts exclude the hidden model, including the
+        // Favorites pill.
+        let filters = browser_filters(&models, &details, &favorites, None, &hidden);
+        assert_eq!(filters[0].count, 2, "All counts only visible models");
+        assert_eq!(
+            filters[1].count, 0,
+            "Favorites count drops the individually hidden model"
+        );
+        assert!(
+            !filters
+                .iter()
+                .any(|filter| filter.label == "Magpie · cpr-fast"),
+            "a group whose members are all hidden loses its pill"
+        );
+
+        // Every browser view drops it; the current model is unaffected and
+        // the active selection never falls back.
+        for filter in [ModelFilter::All, ModelFilter::Favorites, ModelFilter::Recent] {
+            assert!(
+                browser_rows(
+                    &filter,
+                    &models,
+                    &details,
+                    &Default::default(),
+                    &favorites,
+                    Some(spec),
+                    "",
+                    0,
+                    &hidden,
+                )
+                .iter()
+                .all(|row| !row.spec.contains("cpr-fast/")),
+                "{filter:?} still lists the hidden model"
+            );
+        }
+
+        // Hiding the current model leaves the group empty and the session
+        // selection untouched — the caller decides any switch.
+        let rows = browser_rows(
+            &ModelFilter::Group(group_key(spec, &details)),
+            &models,
+            &details,
+            &Default::default(),
+            &[],
+            Some(spec),
+            "",
+            0,
+            &hidden,
+        );
+        assert!(rows.is_empty());
     }
 
     #[test]
@@ -1021,7 +1147,8 @@ mod tests {
             &details,
             None,
             &Default::default(),
-            &favorites, &[],
+            &favorites,
+            &Hidden::NONE,
             true,
             false,
             "codex",
@@ -1109,9 +1236,37 @@ pub(crate) fn ranked_specs(
     ranked
 }
 
-/// Whether `model` belongs to a provider/channel group the user hid.
-fn is_hidden(model: &str, details: &HashMap<String, ModelDetails>, hidden: &[String]) -> bool {
-    !hidden.is_empty() && hidden.iter().any(|key| key == &group_key(model, details))
+/// The stored visibility lists threaded through the picker builders: hidden
+/// provider/channel group keys and hidden individual route specs. Hiding a
+/// model applies everywhere, including Favorites; hiding a group still
+/// leaves the group's favorites surfaced (an explicit star wins).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Hidden<'a> {
+    pub groups: &'a [String],
+    pub models: &'a [String],
+}
+
+impl<'a> Hidden<'a> {
+    pub(crate) const NONE: Hidden<'a> = Self {
+        groups: &[],
+        models: &[],
+    };
+}
+
+/// Whether `spec` itself was hidden (exact spec match, no catalog lookup).
+fn is_model_hidden(spec: &str, hidden: &Hidden) -> bool {
+    !hidden.models.is_empty() && hidden.models.iter().any(|model| model == spec)
+}
+
+/// Whether `model` belongs to a hidden provider/channel group or is itself
+/// hidden.
+fn is_hidden(model: &str, details: &HashMap<String, ModelDetails>, hidden: &Hidden) -> bool {
+    (!hidden.groups.is_empty()
+        && hidden
+            .groups
+            .iter()
+            .any(|key| key == &group_key(model, details)))
+        || is_model_hidden(model, hidden)
 }
 
 /// Provider/channel groups for the browser's filter pills and grouped list:
@@ -1120,7 +1275,7 @@ pub(crate) fn groups_of(
     models: &[String],
     details: &HashMap<String, ModelDetails>,
     current: Option<&str>,
-    hidden: &[String],
+    hidden: &Hidden,
 ) -> Vec<(String, String, Vec<String>)> {
     let mut ranked = ranked_specs(models, details);
     ranked.retain(|model| !is_hidden(model, details, hidden));
@@ -1179,7 +1334,7 @@ pub(crate) fn browser_filters(
     details: &HashMap<String, ModelDetails>,
     favorites: &[String],
     current: Option<&str>,
-    hidden: &[String],
+    hidden: &Hidden,
 ) -> Vec<BrowserFilter> {
     let ranked = ranked_specs(models, details);
     let visible: Vec<String> = ranked
@@ -1189,10 +1344,13 @@ pub(crate) fn browser_filters(
         .collect();
     let favorite_set: std::collections::HashSet<&str> =
         favorites.iter().map(String::as_str).collect();
-    // Favorites stay counted (and listed) even inside hidden groups.
+    // Favorites stay counted (and listed) even inside hidden groups — but
+    // a model the user hid individually drops everywhere, Favorites too.
     let favorite_count = ranked
         .iter()
-        .filter(|model| favorite_set.contains(model.as_str()))
+        .filter(|model| {
+            favorite_set.contains(model.as_str()) && !is_model_hidden(model, hidden)
+        })
         .count();
     let recent_count = recent_models(&visible, details, &favorite_set, 5).len();
     let mut filters = vec![
@@ -1242,7 +1400,7 @@ pub(crate) fn browser_rows(
     current: Option<&str>,
     query: &str,
     now: u64,
-    hidden: &[String],
+    hidden: &Hidden,
 ) -> Vec<BrowserRow> {
     let favorite_set: std::collections::HashSet<&str> =
         favorites.iter().map(String::as_str).collect();
@@ -1296,7 +1454,9 @@ pub(crate) fn browser_rows(
         ModelFilter::Favorites => {
             let specs: Vec<String> = ranked
                 .iter()
-                .filter(|model| favorite_set.contains(model.as_str()))
+                .filter(|model| {
+                    favorite_set.contains(model.as_str()) && !is_model_hidden(model, hidden)
+                })
                 .cloned()
                 .collect();
             apply_query(&specs, details, &query)
@@ -1375,7 +1535,7 @@ pub(crate) fn grouped_rows(
     current: Option<&str>,
     expanded: &std::collections::HashSet<String>,
     favorites: &[String],
-    hidden: &[String],
+    hidden: &Hidden,
     sections: bool,
     uncapped: bool,
     query: &str,
@@ -1387,8 +1547,10 @@ pub(crate) fn grouped_rows(
     let searching = !query.is_empty();
     let mut rows = Vec::new();
     // Hidden groups drop out of recents, the provider groups, and search.
-    // Favorites are exempt: starring a model is an explicit pin, so hidden
-    // groups' favorites still surface in the Favorites section.
+    // Favorites are exempt from group hiding: starring a model is an
+    // explicit pin, so hidden groups' favorites still surface in the
+    // Favorites section. A model hidden individually drops everywhere,
+    // Favorites included.
     let mut visible: Vec<String> = ranked
         .iter()
         .filter(|model| !is_hidden(model, details, hidden))
@@ -1398,7 +1560,9 @@ pub(crate) fn grouped_rows(
         let mut first = true;
         for model in ranked
             .iter()
-            .filter(|model| favorite_set.contains(model.as_str()))
+            .filter(|model| {
+                favorite_set.contains(model.as_str()) && !is_model_hidden(model, hidden)
+            })
         {
             rows.push(GroupRow {
                 header: first.then(|| FAVORITES_HEADER.to_string()),
@@ -1495,11 +1659,7 @@ pub(crate) fn grouped_rows(
         }
         if count > 3 && !uncapped {
             rows.push(GroupRow {
-                value: if open {
-                    "Show fewer models".into()
-                } else {
-                    format!("Show {} more models", count - 3)
-                },
+                value: group_toggle_label(open, count),
                 header: None,
                 toggle: Some(key),
                 channel_header: false,
@@ -1553,8 +1713,8 @@ mod grouping_performance_tests {
                 for query in [""] {
                     for current in [None, Some("provider:model-0199"), Some("model-0005")] {
                         assert_eq!(
-                            grouped_rows(&models, &details, current, expansion, &[], &[], true, false, query),
-                            legacy_grouped_rows(&models, &details, current, expansion, &[], &[], true, false, query),
+                            grouped_rows(&models, &details, current, expansion, &[], &Hidden::NONE, true, false, query),
+                            legacy_grouped_rows(&models, &details, current, expansion, &[], &Hidden::NONE, true, false, query),
                             "groups={group_count}, query={query}, current={current:?}",
                         );
                     }
@@ -1574,7 +1734,7 @@ mod grouping_performance_tests {
             Option<&str>,
             &HashSet<String>,
             &[String],
-            &[String],
+            &Hidden<'_>,
             bool,
             bool,
             &str,
@@ -1594,8 +1754,8 @@ mod grouping_performance_tests {
                     let current = Some(models[count - 1].as_str());
                     if query.is_empty() {
                         assert_eq!(
-                            grouped_rows(&models, &details, current, expansion, &[], &[], true, false, query),
-                            legacy_grouped_rows(&models, &details, current, expansion, &[], &[], true, false, query)
+                            grouped_rows(&models, &details, current, expansion, &[], &Hidden::NONE, true, false, query),
+                            legacy_grouped_rows(&models, &details, current, expansion, &[], &Hidden::NONE, true, false, query)
                         );
                     }
                     for (implementation, group) in [
@@ -1603,7 +1763,7 @@ mod grouping_performance_tests {
                         ("indexed", grouped_rows as Grouping),
                     ] {
                         for _ in 0..20 {
-                            black_box(group(&models, &details, current, expansion, &[], &[], true, false, query));
+                            black_box(group(&models, &details, current, expansion, &[], &Hidden::NONE, true, false, query));
                         }
                         let mut micros = Vec::with_capacity(200);
                         for _ in 0..200 {
@@ -1614,7 +1774,7 @@ mod grouping_performance_tests {
                                 current,
                                 expansion,
                                 &[],
-                                &[],
+                                &Hidden::NONE,
                                 true,
                                 false,
                                 query,
@@ -1640,7 +1800,7 @@ mod grouping_performance_tests {
         current: Option<&str>,
         expanded: &std::collections::HashSet<String>,
         _favorites: &[String],
-        _hidden: &[String],
+        _hidden: &Hidden,
         _sections: bool,
         uncapped: bool,
         query: &str,
@@ -1701,11 +1861,7 @@ mod grouping_performance_tests {
             }
             if !searching && count > 3 && !uncapped {
                 rows.push(GroupRow {
-                    value: if open {
-                        "Show fewer models".into()
-                    } else {
-                        format!("Show {} more models", count - 3)
-                    },
+                    value: group_toggle_label(open, count),
                     header: None,
                     toggle: Some(key),
                     channel_header: false,
