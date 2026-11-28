@@ -819,9 +819,9 @@ impl Panel {
             .then(|| self.sidebar_spinner.clone().into())
     }
 
-    /// Whether the regular conversation surface has anything that can consume
-    /// a vertical scroll. Workspace gesture routing uses this to let an empty
-    /// panel behave like bare canvas and move between strips instead.
+    /// Whether the panel has a surface that can consume vertical scroll.
+    /// Workspace gesture routing treats an empty panel without an overlay
+    /// as bare canvas.
     pub(crate) fn has_scrollable_conversation(&self) -> bool {
         self.is_default_directory()
             || self.is_machines()
@@ -834,6 +834,11 @@ impl Panel {
             || self.todoist.is_some()
             || self.orchestration.is_some()
             || self.terminal.is_some()
+            || self.login.is_some()
+            || self.model_browser.is_some()
+            || self.extensions.is_some()
+            || self.swarm.focus.is_some()
+            || self.effort_picker.is_some()
             || self.transcript_row_count > 0
             || !self.streaming_text.is_empty()
             || !self.streaming_reasoning.is_empty()
@@ -5339,11 +5344,15 @@ impl Render for Panel {
                                             return;
                                         }
                                         let panel = wheel_panel.read(cx);
-                                        if panel.transcript_list.is_scrollbar_dragging() {
-                                            cx.stop_propagation();
+                                        if panel.diff_review.is_some()
+                                            || panel.login.is_some()
+                                            || panel.model_browser.is_some()
+                                            || panel.extensions.is_some()
+                                        {
                                             return;
                                         }
-                                        if panel.diff_review.is_some() {
+                                        if panel.transcript_list.is_scrollbar_dragging() {
+                                            cx.stop_propagation();
                                             return;
                                         }
                                         if panel.startup_layout.is_some()

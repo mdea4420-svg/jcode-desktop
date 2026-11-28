@@ -1075,15 +1075,14 @@ impl Panel {
                         )
                     },
                 )
-                .child(
-                    div()
-                        .id("login-body")
-                        .track_scroll(&state.scroll)
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(body),
-                )
+                .child(custom_api::scroll_region(
+                    "login-body",
+                    "login-scrollbar",
+                    &state.scroll,
+                    body,
+                    false,
+                    cx,
+                ))
                 .into_any_element(),
         )
     }

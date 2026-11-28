@@ -928,6 +928,7 @@ impl Panel {
                 &state.scroll,
                 rows,
                 false,
+                cx,
             ))
             .into_any_element()
     }
@@ -1234,6 +1235,7 @@ impl Panel {
                 &editor.editor_scroll,
                 div().flex().flex_col().gap_3().child(basic).child(workbench),
                 false,
+                cx,
             ))
         }
         .into_any_element()
@@ -1450,6 +1452,7 @@ impl Panel {
                 &editor.catalog_scroll,
                 rows,
                 !wide,
+                cx,
             ))
     }
 
@@ -1591,6 +1594,7 @@ impl Panel {
                 &editor.settings_scroll,
                 rows,
                 !wide,
+                cx,
             ))
             .child(
                 div()
@@ -1682,40 +1686,45 @@ fn field_block(label: &'static str, input: impl IntoElement) -> gpui::Div {
         .child(input)
 }
 
-fn scroll_region(
+pub(super) fn scroll_region(
     id: &'static str,
     scrollbar_id: &'static str,
     handle: &ScrollHandle,
     content: impl IntoElement,
     nested: bool,
+    cx: &Context<Panel>,
 ) -> gpui::Div {
     let scroll = handle.clone();
     div()
         .relative()
         .flex_1()
         .min_h_0()
+        .on_scroll_wheel(cx.listener(move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+            let delta = event.delta.pixel_delta(window.line_height());
+            let dy = if delta.y == px(0.) { delta.x } else { delta.y };
+            let min = -scroll.max_offset().y.max(px(0.));
+            let current = scroll.offset().y.clamp(min, px(0.));
+            let next = (current + dy).clamp(min, px(0.));
+            if (next - current).abs() > px(0.01) {
+                scroll.set_offset(point(px(0.), next));
+                cx.stop_propagation();
+                cx.notify();
+                window.refresh();
+            } else if !nested {
+                cx.stop_propagation();
+            }
+        }))
         .child(
             selector(id)
                 .size_full()
-                .overflow_y_scroll()
+                // Clip the contents, leaving wheel handling to the outer container
+                // so it also covers the sibling scrollbar and applies each delta once.
+                .overflow_hidden()
                 .track_scroll(handle)
                 .pr(px(crate::scrollbar::GUTTER))
-                .when(nested, |el| {
-                    el.on_scroll_wheel(move |event, window, cx| {
-                        let delta = event.delta.pixel_delta(window.line_height());
-                        let delta_y = if delta.y == px(0.) { delta.x } else { delta.y };
-                        let min = -scroll.max_offset().y;
-                        // GPUI's native handler applies the delta first in the bubble phase.
-                        // Consume it only if the inner viewport can move in that direction.
-                        let raw = scroll.offset().y;
-                        if raw.clamp(min, px(0.)) != (raw - delta_y).clamp(min, px(0.)) {
-                            cx.stop_propagation();
-                        }
-                    })
-                })
                 .child(content),
         )
-        .child(crate::scrollbar::vertical(handle, scrollbar_id))
+        .child(crate::scrollbar::interactive_vertical(handle, scrollbar_id))
 }
 
 fn model_pane(id: &'static str, wide: bool) -> gpui::Stateful<gpui::Div> {
@@ -1854,6 +1863,181 @@ mod tests {
             touch_phase: gpui::TouchPhase::Moved,
         });
         cx.run_until_parked();
+    }
+
+    fn empty_workspace_editor(
+        cx: &mut gpui::TestAppContext,
+        width: f32,
+        height: f32,
+        via_composer: bool,
+    ) -> (&mut gpui::VisualTestContext, [ScrollHandle; 3]) {
+        use crate::workspace::Workspace;
+
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("empty-api-session", cx);
+            workspace
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        workspace.update_in(vcx, |workspace, window, cx| workspace.focus_active(window, cx));
+        vcx.run_until_parked();
+        let source = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        source.read_with(vcx, |panel, _| {
+            assert_eq!(panel.transcript_row_count, 0);
+            assert!(!panel.has_scrollable_conversation());
+        });
+        let panel = if via_composer {
+            vcx.simulate_input("/api");
+            vcx.simulate_keystrokes("enter");
+            vcx.run_until_parked();
+            let accounts = workspace.read_with(vcx, |w, _| w.test_active_panel().unwrap());
+            assert_ne!(accounts, source);
+            accounts
+        } else {
+            // Also exercise the panel-local command in a real Workspace, without
+            // the `accounts://` session that already claimed vertical scrolling.
+            source.update(vcx, |panel, cx| {
+                assert!(panel.handle_slash_command_for_test("/api", cx));
+                assert!(panel.has_scrollable_conversation());
+            });
+            source
+        };
+        vcx.simulate_keystrokes("super-f");
+        // Resize after the action so the Workspace snaps its camera to the
+        // focused panel instead of leaving the controls mid-transition.
+        vcx.simulate_window_resize(window, gpui::size(px(width), px(height)));
+        vcx.run_until_parked();
+        let add = vcx.debug_bounds("custom-api-add").expect("services list");
+        assert!(add.center().x < px(width), "offscreen service action: {add:?}");
+        click(vcx, "custom-api-add");
+        let handles = panel.update(vcx, |panel, cx| {
+            assert_eq!(panel.transcript_row_count, 0);
+            assert_eq!(panel.is_accounts_panel(), via_composer);
+            let editor = panel.custom_api_editor_mut().expect("add-service click opens editor");
+            editor.catalog = (1..=30)
+                .map(|n| CatalogModelEntry {
+                    id: format!("model-{n:02}"),
+                    ..CatalogModelEntry::default()
+                })
+                .collect();
+            for n in 1..=12 {
+                editor.add_model(format!("model-{n:02}"));
+            }
+            editor.model_settings.toggle("model-01", cx);
+            let handles = [
+                editor.catalog_scroll.clone(),
+                editor.settings_scroll.clone(),
+                editor.editor_scroll.clone(),
+            ];
+            cx.notify();
+            handles
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        (vcx, handles)
+    }
+
+    fn line_wheel(cx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>) {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Lines(point(0., -3.)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Started,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn custom_api_empty_workspace_wheel_scrolls_both_wide_panes(cx: &mut gpui::TestAppContext) {
+        let (vcx, [catalog, settings, _]) = empty_workspace_editor(cx, 1100., 820., true);
+        assert!(vcx.debug_bounds("custom-api-editor-scroll").is_none());
+        let left = vcx.debug_bounds("custom-api-catalog-scroll").unwrap();
+        let right = vcx.debug_bounds("custom-api-selected-scroll").unwrap();
+        line_wheel(vcx, left.center());
+        let left_offset = catalog.offset().y;
+        assert!(left_offset < px(0.));
+        assert_eq!(settings.offset().y, px(0.));
+        // The scrollbar is a sibling overlay of the clipped contents.
+        let thumb = vcx.debug_bounds("custom-api-selected-scrollbar").unwrap();
+        assert!(right.contains(&thumb.center()));
+        line_wheel(vcx, thumb.center());
+        assert!(settings.offset().y < px(0.));
+        assert_eq!(catalog.offset().y, left_offset);
+    }
+
+    #[gpui::test]
+    fn custom_api_empty_workspace_wheel_chains_at_narrow_pane_edge(cx: &mut gpui::TestAppContext) {
+        let (vcx, [catalog, settings, page]) = empty_workspace_editor(cx, 520., 700., false);
+        let viewport = vcx.debug_bounds("custom-api-editor-scroll").unwrap();
+        let visible_center = |bounds: gpui::Bounds<gpui::Pixels>| {
+            let top = bounds.top().max(viewport.top());
+            let bottom = bounds.bottom().min(viewport.bottom());
+            assert!(top < bottom, "pane {bounds:?} outside {viewport:?}");
+            point(bounds.center().x, (top + bottom) / 2.)
+        };
+        let left = visible_center(vcx.debug_bounds("custom-api-catalog-scroll").unwrap());
+        line_wheel(vcx, left);
+        assert!(catalog.offset().y < px(0.));
+        assert_eq!(page.offset().y, px(0.));
+        for _ in 0..60 {
+            if catalog.offset().y == -catalog.max_offset().y {
+                break;
+            }
+            line_wheel(vcx, left);
+        }
+        assert_eq!(catalog.offset().y, -catalog.max_offset().y);
+        assert_eq!(page.offset().y, px(0.));
+        line_wheel(vcx, left);
+        assert!(page.offset().y < px(0.));
+        assert_eq!(catalog.offset().y, -catalog.max_offset().y);
+
+        // Reveal the lower pane by continuing to wheel the outer viewport.
+        let lower = "custom-api-selected-scroll";
+        for _ in 0..20 {
+            if vcx.debug_bounds(lower).unwrap().top() < viewport.bottom() - px(20.) {
+                break;
+            }
+            line_wheel(vcx, point(viewport.center().x, viewport.top() + px(8.)));
+        }
+        let right = visible_center(vcx.debug_bounds(lower).unwrap());
+        let page_offset = page.offset().y;
+        line_wheel(vcx, right);
+        assert!(settings.offset().y < px(0.));
+        assert_eq!(page.offset().y, page_offset);
+    }
+
+    #[gpui::test]
+    fn custom_api_empty_workspace_scrollbar_drags_and_pages(cx: &mut gpui::TestAppContext) {
+        let (vcx, [catalog, settings, _]) = empty_workspace_editor(cx, 1100., 820., true);
+        let thumb = vcx.debug_bounds("custom-api-catalog-scrollbar").unwrap();
+        let viewport = vcx.debug_bounds("custom-api-catalog-scroll").unwrap();
+        let grab = point(thumb.center().x - px(8.), thumb.center().y);
+        let outside_track = point(viewport.center().x, grab.y + px(80.));
+        vcx.simulate_mouse_down(grab, gpui::MouseButton::Left, Default::default());
+        vcx.run_until_parked();
+        assert_eq!(catalog.offset().y, px(0.));
+        vcx.simulate_mouse_move(outside_track, gpui::MouseButton::Left, Default::default());
+        vcx.run_until_parked();
+        let dragged = catalog.offset().y;
+        assert!(dragged < px(-40.), "offset after 80px drag: {dragged:?}");
+        vcx.simulate_mouse_up(outside_track, gpui::MouseButton::Left, Default::default());
+        vcx.simulate_mouse_move(grab, None, Default::default());
+        vcx.run_until_parked();
+        assert_eq!(catalog.offset().y, dragged);
+        let moved_thumb = vcx.debug_bounds("custom-api-catalog-scrollbar").unwrap();
+        assert!(moved_thumb.top() > thumb.top());
+        let page_click = point(moved_thumb.center().x, viewport.bottom() - px(8.));
+        assert!(page_click.y > moved_thumb.bottom());
+        vcx.simulate_click(page_click, Default::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            catalog.offset().y,
+            (dragged - viewport.size.height).max(-catalog.max_offset().y),
+        );
+        assert!(catalog.offset().y < dragged);
+        assert_eq!(settings.offset().y, px(0.));
     }
 
     #[gpui::test]

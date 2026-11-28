@@ -16,7 +16,7 @@ pub const GUTTER: f32 = WIDTH + INSET * 2.0;
 const MIN_THUMB_HEIGHT: f32 = 28.0;
 const HIT_WIDTH: f32 = 20.0;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ListGeometry {
     viewport: f32,
     maximum: f32,
@@ -259,6 +259,154 @@ impl RenderOnce for InteractiveListScrollbar {
                 .size_full(),
             )
             .into_any_element()
+    }
+}
+
+struct HandleThumbDrag {
+    start_y: f32,
+    geometry: ListGeometry,
+}
+
+#[derive(IntoElement)]
+struct InteractiveHandleScrollbar {
+    handle: ScrollHandle,
+    selector: &'static str,
+}
+
+/// Render after the tracked viewport, inside its positioned parent. The
+/// selector identifies the thumb, and the parent owns wheel routing.
+pub fn interactive_vertical(handle: &ScrollHandle, selector: &'static str) -> AnyElement {
+    InteractiveHandleScrollbar {
+        handle: handle.clone(),
+        selector,
+    }
+    .into_any_element()
+}
+
+fn handle_geometry(handle: &ScrollHandle) -> Option<ListGeometry> {
+    ListGeometry::new(
+        handle.bounds().size.height.into(),
+        handle.max_offset().y.into(),
+        -f32::from(handle.offset().y),
+    )
+}
+
+impl RenderOnce for InteractiveHandleScrollbar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self { handle, selector } = self;
+        let drag = window.use_keyed_state((selector, 0usize), cx, |_, _| None::<HandleThumbDrag>);
+        let geometry = handle_geometry(&handle);
+        if geometry.is_none() && drag.read(cx).is_some() {
+            drag.update(cx, |drag, _| *drag = None);
+        }
+        let active = drag.read(cx).is_some();
+        let drag_down = drag.clone();
+        let down_handle = handle.clone();
+        let track_origin = Rc::new(Cell::new(0.0));
+        let painted_origin = track_origin.clone();
+
+        div()
+            .id((selector, 1usize))
+            .absolute()
+            .top(px(INSET))
+            .right_0()
+            .w(px(HIT_WIDTH))
+            .h(px(geometry.map_or(0.0, |geometry| geometry.track)))
+            .when_some(geometry, |el, geometry| {
+                el.group(selector)
+                    .cursor_default()
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        let Some(current) = handle_geometry(&down_handle) else {
+                            return;
+                        };
+                        let y = f32::from(event.position.y);
+                        let track_y = y - track_origin.get();
+                        if (geometry.top..=geometry.top + geometry.thumb).contains(&track_y) {
+                            drag_down.update(cx, |drag, _| {
+                                *drag = Some(HandleThumbDrag {
+                                    start_y: y,
+                                    geometry: current,
+                                });
+                            });
+                        } else {
+                            let offset = current.page_offset(track_y < geometry.top);
+                            down_handle.set_offset(point(px(0.), px(-offset)));
+                        }
+                        cx.stop_propagation();
+                        window.refresh();
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(INSET))
+                            .h_full()
+                            .w(px(WIDTH))
+                            .rounded_full()
+                            .bg(Theme::global().MINIMAP_TRACK),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(move || selector.into())
+                            .absolute()
+                            .top(px(geometry.top))
+                            .right(px(INSET))
+                            .w(px(WIDTH))
+                            .h(px(geometry.thumb))
+                            .rounded_full()
+                            .bg(if active {
+                                Theme::global().TEXT_DIM
+                            } else {
+                                Theme::global().TEXT_FAINT
+                            })
+                            .group_hover(selector, |style| style.bg(Theme::global().TEXT_DIM)),
+                    )
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        // The viewport may have just measured new content during prepaint.
+                        if handle_geometry(&handle) != geometry {
+                            window.request_animation_frame();
+                        }
+                        if geometry.is_none() {
+                            return;
+                        }
+                        painted_origin.set(f32::from(bounds.top()));
+                        let drag_move = drag.clone();
+                        let move_handle = handle.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if !phase.capture() || drag_move.read(cx).is_none() {
+                                return;
+                            }
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                if let Some(drag) = drag_move.read(cx) {
+                                    let offset = drag
+                                        .geometry
+                                        .drag_offset(f32::from(event.position.y) - drag.start_y);
+                                    move_handle.set_offset(point(px(0.), px(-offset)));
+                                }
+                            } else {
+                                drag_move.update(cx, |drag, _| *drag = None);
+                            }
+                            cx.stop_propagation();
+                            window.refresh();
+                        });
+                        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                            if phase.capture()
+                                && event.button == MouseButton::Left
+                                && drag.read(cx).is_some()
+                            {
+                                drag.update(cx, |drag, _| *drag = None);
+                                cx.stop_propagation();
+                                window.refresh();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 
