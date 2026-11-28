@@ -26,6 +26,7 @@ pub(super) struct CustomApiEditor {
     manual_model: Entity<PromptInput>,
     catalog_scroll: ScrollHandle,
     settings_scroll: ScrollHandle,
+    editor_scroll: ScrollHandle,
     model_settings: ModelSettingsEditor,
     set_default: bool,
     model_catalog: bool,
@@ -343,6 +344,7 @@ impl Panel {
             manual_model,
             catalog_scroll,
             settings_scroll,
+            editor_scroll: ScrollHandle::new(),
             model_settings: ModelSettingsEditor::new(profile, offline, cx),
             set_default: existing.as_ref().is_none_or(|item| item.is_default),
             model_catalog: existing.as_ref().is_some_and(|item| item.model_catalog),
@@ -920,15 +922,13 @@ impl Panel {
                     el.child(notice(tr("Configuration saved.", "配置已保存。"), false))
                 }
             })
-            .child(
-                div()
-                    .id("custom-api-services-scroll")
-                    .track_scroll(&state.scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
+            .child(scroll_region(
+                "custom-api-services-scroll",
+                "custom-api-services-scrollbar",
+                &state.scroll,
+                rows,
+                false,
+            ))
             .into_any_element()
     }
 
@@ -1083,7 +1083,7 @@ impl Panel {
     pub(super) fn render_custom_api_editor(
         &self,
         editor: &CustomApiEditor,
-        width: gpui::Pixels,
+        size: gpui::Size<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let busy = editor.saving
@@ -1144,8 +1144,9 @@ impl Panel {
                         .on_click(cx.listener(|this, _, _, cx| this.submit_custom_api(cx))),
                     ),
             );
-        let show_columns = width >= px(640.);
-        let wide = width >= px(680.);
+        let show_columns = size.width >= px(640.);
+        let wide = size.width >= px(680.);
+        let pinned = wide && size.height >= px(560.);
         let key = editor.api_key.clone();
         let key_field = div()
             .flex()
@@ -1194,7 +1195,8 @@ impl Panel {
             .child(field_row(
                 show_columns,
                 field_block(tr("Name", "名称"), editor.name.clone()),
-                field_block(tr("Base URL", "接口地址"), editor.base_url.clone()),
+                field_block(tr("Base URL", "接口地址"), editor.base_url.clone())
+                    .debug_selector(|| "custom-api-base-url".into()),
             ))
             .child(field_row(
                 show_columns,
@@ -1207,39 +1209,34 @@ impl Panel {
         let workbench = div()
             .flex()
             .gap_3()
-            .min_h(px(280.))
-            .when(wide, |el| el.flex_1())
-            .when(!wide, |el| el.flex_col().flex_none())
-            .child(self.render_custom_api_catalog(editor, wide, cx))
-            .child(self.render_custom_api_selected(editor, wide, cx));
-        div()
+            .when(pinned, |el| el.flex_1().min_h_0().overflow_hidden())
+            .when(!pinned, |el| el.flex_col().flex_none())
+            .child(self.render_custom_api_catalog(editor, pinned, cx))
+            .child(self.render_custom_api_selected(editor, pinned, cx));
+        let container = div()
             .debug_selector(|| "custom-api-editor".into())
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
+            .overflow_hidden()
             .gap_3()
             .child(toolbar)
             .when_some(editor.notice.as_ref(), |el, (text, error)| {
                 el.child(notice(text, *error))
-            })
-            .child(
-                div()
-                    .id("custom-api-editor-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_h_full()
-                            .gap_3()
-                            .child(basic)
-                            .child(workbench),
-                    ),
-            )
-            .into_any_element()
+            });
+        if pinned {
+            container.child(basic).child(workbench)
+        } else {
+            container.child(scroll_region(
+                "custom-api-editor-scroll",
+                "custom-api-editor-scrollbar",
+                &editor.editor_scroll,
+                div().flex().flex_col().gap_3().child(basic).child(workbench),
+                false,
+            ))
+        }
+        .into_any_element()
     }
 
     fn render_custom_api_advanced(
@@ -1447,15 +1444,13 @@ impl Panel {
             ));
         model_pane("custom-api-catalog-pane", wide)
             .child(header)
-            .child(
-                div()
-                    .id("custom-api-catalog-scroll")
-                    .track_scroll(&editor.catalog_scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
+            .child(scroll_region(
+                "custom-api-catalog-scroll",
+                "custom-api-catalog-scrollbar",
+                &editor.catalog_scroll,
+                rows,
+                !wide,
+            ))
     }
 
     fn render_custom_api_selected(
@@ -1590,15 +1585,13 @@ impl Panel {
                         editor.settings_filter.clone(),
                     )),
             )
-            .child(
-                div()
-                    .id("custom-api-selected-scroll")
-                    .track_scroll(&editor.settings_scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(rows),
-            )
+            .child(scroll_region(
+                "custom-api-selected-scroll",
+                "custom-api-selected-scrollbar",
+                &editor.settings_scroll,
+                rows,
+                !wide,
+            ))
             .child(
                 div()
                     .flex()
@@ -1689,6 +1682,42 @@ fn field_block(label: &'static str, input: impl IntoElement) -> gpui::Div {
         .child(input)
 }
 
+fn scroll_region(
+    id: &'static str,
+    scrollbar_id: &'static str,
+    handle: &ScrollHandle,
+    content: impl IntoElement,
+    nested: bool,
+) -> gpui::Div {
+    let scroll = handle.clone();
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .child(
+            selector(id)
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(handle)
+                .pr(px(crate::scrollbar::GUTTER))
+                .when(nested, |el| {
+                    el.on_scroll_wheel(move |event, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        let delta_y = if delta.y == px(0.) { delta.x } else { delta.y };
+                        let min = -scroll.max_offset().y;
+                        // GPUI's native handler applies the delta first in the bubble phase.
+                        // Consume it only if the inner viewport can move in that direction.
+                        let raw = scroll.offset().y;
+                        if raw.clamp(min, px(0.)) != (raw - delta_y).clamp(min, px(0.)) {
+                            cx.stop_propagation();
+                        }
+                    })
+                })
+                .child(content),
+        )
+        .child(crate::scrollbar::vertical(handle, scrollbar_id))
+}
+
 fn model_pane(id: &'static str, wide: bool) -> gpui::Stateful<gpui::Div> {
     selector(id)
         .flex()
@@ -1699,9 +1728,10 @@ fn model_pane(id: &'static str, wide: bool) -> gpui::Stateful<gpui::Div> {
         .bg(Theme::global().HEADER_BG)
         .text_size(px(12.))
         .min_w_0()
-        .min_h(px(280.))
-        .when(wide, |el| el.flex_1())
-        .when(!wide, |el| el.flex_none().h(px(310.)))
+        .min_h_0()
+        .overflow_hidden()
+        .when(wide, |el| el.flex_1().h_full())
+        .when(!wide, |el| el.flex_none().h(px(300.)))
 }
 
 fn input_selector(id: &'static str, input: Entity<PromptInput>) -> gpui::Stateful<gpui::Div> {
@@ -1814,6 +1844,108 @@ mod tests {
             .unwrap_or_else(|| panic!("missing {selector}"));
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked();
+    }
+
+    fn wheel(cx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>, dy: f32) {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(dy))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn editor_panes_scroll_independently_while_keeping_header_and_manual_bar_pinned(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(1100.), px(820.)));
+        let (catalog_scroll, settings_scroll) = panel.update(vcx, |panel, cx| {
+            assert!(panel.login_command("/login custom", cx));
+            let editor = panel.custom_api_editor_mut().unwrap();
+            editor.catalog = (1..=30)
+                .map(|n| CatalogModelEntry {
+                    id: format!("model-{n:02}"),
+                    ..CatalogModelEntry::default()
+                })
+                .collect();
+            for n in 1..=12 {
+                editor.add_model(format!("model-{n:02}"));
+            }
+            editor.model_settings.toggle("model-01", cx);
+            editor.advanced = true;
+            (editor.catalog_scroll.clone(), editor.settings_scroll.clone())
+        });
+        vcx.run_until_parked();
+        let save = vcx.debug_bounds("custom-api-save").unwrap();
+        let base_url = vcx.debug_bounds("custom-api-base-url").unwrap();
+        let manual = vcx.debug_bounds("custom-api-manual-model-input").unwrap();
+        for bounds in [save, base_url, manual] {
+            assert!(
+                bounds.origin.y >= px(0.) && bounds.bottom() <= px(820.),
+                "{bounds:?}"
+            );
+        }
+        assert!(vcx.debug_bounds("custom-api-editor-scroll").is_none());
+        let catalog = vcx.debug_bounds("custom-api-catalog-scroll").unwrap();
+        let selected = vcx.debug_bounds("custom-api-selected-scroll").unwrap();
+        wheel(vcx, catalog.center(), -160.);
+        let catalog_offset = catalog_scroll.offset().y;
+        assert!(catalog_offset < px(0.));
+        assert_eq!(settings_scroll.offset().y, px(0.));
+        assert_eq!(vcx.debug_bounds("custom-api-base-url"), Some(base_url));
+
+        wheel(vcx, selected.center(), -160.);
+        assert!(settings_scroll.offset().y < px(0.));
+        assert_eq!(catalog_scroll.offset().y, catalog_offset);
+        assert_eq!(vcx.debug_bounds("custom-api-save"), Some(save));
+        assert_eq!(
+            vcx.debug_bounds("custom-api-manual-model-input"),
+            Some(manual)
+        );
+    }
+
+    #[gpui::test]
+    fn custom_api_fallback_scrolls_page_after_the_catalog_reaches_its_edge(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| Panel::new_preview(PreviewState::Empty, cx));
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(620.), px(540.)));
+        let (catalog_scroll, editor_scroll) = panel.update(vcx, |panel, cx| {
+            assert!(panel.login_command("/login custom", cx));
+            let editor = panel.custom_api_editor_mut().unwrap();
+            editor.catalog = (1..=30)
+                .map(|n| CatalogModelEntry {
+                    id: format!("model-{n:02}"),
+                    ..CatalogModelEntry::default()
+                })
+                .collect();
+            (editor.catalog_scroll.clone(), editor.editor_scroll.clone())
+        });
+        vcx.run_until_parked();
+        let page = vcx.debug_bounds("custom-api-editor-scroll").unwrap();
+        let catalog = vcx.debug_bounds("custom-api-catalog-scroll").unwrap();
+        let visible_bottom = catalog.bottom().min(page.bottom());
+        assert!(catalog.origin.y < visible_bottom);
+        let position = point(
+            catalog.center().x,
+            (catalog.origin.y + visible_bottom) / 2.,
+        );
+        assert!(catalog_scroll.max_offset().y > px(0.));
+
+        wheel(vcx, position, -10_000.);
+        assert_eq!(catalog_scroll.offset().y, -catalog_scroll.max_offset().y);
+        assert_eq!(editor_scroll.offset().y, px(0.));
+
+        wheel(vcx, position, -100.);
+        assert_eq!(catalog_scroll.offset().y, -catalog_scroll.max_offset().y);
+        assert!(editor_scroll.offset().y < px(0.));
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub(super) struct LoginState {
     services_loading: bool,
     services_busy: bool,
     services_task: Option<Task<()>>,
-    services_width: Rc<std::cell::Cell<Option<gpui::Pixels>>>,
+    services_bounds: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl Drop for LoginState {
@@ -218,7 +218,7 @@ impl Panel {
             services_loading: false,
             services_busy: false,
             services_task: None,
-            services_width: Default::default(),
+            services_bounds: Default::default(),
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
@@ -828,13 +828,13 @@ impl Panel {
         let theme = Theme::global();
         let remote = self.login_is_remote();
         if state.services_only {
-            let width = state.services_width.get().unwrap_or_else(|| window.viewport_size().width);
+            let size = state.services_bounds.get().map_or_else(|| window.viewport_size(), |bounds| bounds.size);
             let content = if let Some(editor) = &state.custom_api {
-                self.render_custom_api_editor(editor, width, cx)
+                self.render_custom_api_editor(editor, size, cx)
             } else {
                 self.render_custom_api_services(state, cx)
             };
-            let measured_width = state.services_width.clone();
+            let measured_bounds = state.services_bounds.clone();
             return Some(div()
                 .id("login-dialog")
                 .debug_selector(|| "login-dialog".into())
@@ -858,7 +858,7 @@ impl Panel {
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(gpui::canvas(|_, _, _| (), move |bounds, _, window, _| {
-                    if measured_width.replace(Some(bounds.size.width)) != Some(bounds.size.width) {
+                    if measured_bounds.replace(Some(bounds)) != Some(bounds) {
                         window.request_animation_frame();
                     }
                 }).absolute().inset_0().size_full())
