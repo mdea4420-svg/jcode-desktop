@@ -562,6 +562,8 @@ pub struct Panel {
     pub(super) plan_mode: bool,
     pub(super) git_status: git_status::GitStatusState,
     pub(super) copied_prompt: Option<(usize, Instant)>,
+    pub(super) reasoning_started: Option<Instant>,
+    pub(super) reasoning_durations: HashMap<usize, f64>,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1061,6 +1063,8 @@ impl Panel {
             plan_mode: false,
             git_status: Default::default(),
             copied_prompt: None,
+            reasoning_started: None,
+            reasoning_durations: HashMap::new(),
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -2627,7 +2631,9 @@ impl Panel {
                 }
                 "assistant" => {
                     if !message.content.trim().is_empty() {
-                        items.push(Item::Assistant(message.content));
+                        items.extend(reasoning_fold::split_assistant_history_segments(
+                            &message.content,
+                        ));
                     }
                     if let Some(stats) = message.response_stats {
                         let stats: response_stats::ResponseStats = stats.into();
@@ -2971,6 +2977,9 @@ impl Panel {
                 );
             }
             ApiEvent::TextDelta { text, .. } => {
+                if self.streaming_text.is_empty() && !text.is_empty() {
+                    self.transcript_measurements.dirty = true;
+                }
                 self.flush_reasoning();
                 self.streaming_text.push_str(text);
             }
@@ -2979,10 +2988,13 @@ impl Panel {
                 // the text first so the thought paints below it instead of
                 // merging into the earlier thinking block above the text.
                 self.flush_streaming();
+                if self.streaming_reasoning.is_empty() && !text.is_empty() {
+                    self.reasoning_started.get_or_insert_with(Instant::now);
+                }
                 self.streaming_reasoning.push_str(text);
             }
-            ApiEvent::ReasoningDone { .. } => {
-                self.flush_reasoning();
+            ApiEvent::ReasoningDone { duration_secs, .. } => {
+                self.flush_reasoning_with_duration(*duration_secs);
             }
             ApiEvent::ToolStart { call_id, name, .. } => {
                 self.flush_reasoning();
@@ -3377,12 +3389,28 @@ impl Panel {
     }
 
     fn flush_reasoning(&mut self) {
+        self.flush_reasoning_with_duration(None);
+    }
+
+    fn flush_reasoning_with_duration(&mut self, reported_secs: Option<f64>) {
+        let elapsed = reported_secs.or_else(|| {
+            self.reasoning_started
+                .take()
+                .map(|started| started.elapsed().as_secs_f64())
+        });
+        self.reasoning_started = None;
         if !self.streaming_reasoning.trim().is_empty() {
             self.transcript_measurements.dirty = true;
             append_reasoning(
                 &mut self.items,
                 std::mem::take(&mut self.streaming_reasoning),
             );
+            if let Some(secs) = elapsed.filter(|&s| s > 0.0)
+                && !self.items.is_empty()
+            {
+                let target = self.items.len() - 1;
+                *self.reasoning_durations.entry(target).or_insert(0.0) += secs;
+            }
         } else {
             self.streaming_reasoning.clear();
         }
@@ -3713,6 +3741,7 @@ impl Panel {
             show_label: false,
         };
 
+        let turn_start = self.current_turn_start();
         for (index, item) in self.items.iter().enumerate() {
             while let Some((ordinal, (_, instance))) =
                 applets.next_if(|(_, (position, _))| *position <= index)
@@ -3720,14 +3749,18 @@ impl Panel {
                 rows.push(applet_row(ordinal, instance));
             }
             // Filter presentation only, never persisted items.
-            if matches!(item, Item::Reasoning(_))
-                && !matches!(
-                    display.thinking_display,
+            if matches!(item, Item::Reasoning(_)) {
+                let visible = match display.thinking_display {
                     crate::config::ThinkingDisplay::Full
-                        | crate::config::ThinkingDisplay::Collapsed
-                )
-            {
-                continue;
+                    | crate::config::ThinkingDisplay::Collapsed => true,
+                    crate::config::ThinkingDisplay::Current => {
+                        turn_start.is_some_and(|start| index > start)
+                    }
+                    crate::config::ThinkingDisplay::Off => false,
+                };
+                if !visible {
+                    continue;
+                }
             }
             if display.screenshot_mode && matches!(item, Item::ResponseStats(_)) {
                 continue;
@@ -3997,23 +4030,26 @@ impl Panel {
             // Never truncate it by default. `/thinking collapsed` opts into a
             // fold for settled thoughts only.
             Item::Reasoning(text)
-                if reasoning_fold::is_folded(
+                if reasoning_fold::is_folded_with_progress(
                     &display,
                     index,
                     &self.expanded_tools,
                     self.current_turn_start(),
+                    reasoning_fold::followed_by_output(
+                        &self.items,
+                        index,
+                        !self.streaming_text.is_empty(),
+                    ),
                 ) =>
             {
                 self.render_reasoning_fold(index, text, cx)
             }
-            Item::Reasoning(text) => div()
-                .debug_selector(|| "reasoning-inline".into())
-                .font_family(Theme::global().FONT_AI)
-                .flex_none()
-                .px_1()
-                .text_size(px(12.0 * crate::config::text_scale()))
-                .text_color(Theme::global().REASONING)
-                .child(markdown::with_stream_fade(
+            Item::Reasoning(text) => {
+                let collapsible =
+                    display.thinking_display == crate::config::ThinkingDisplay::Collapsed;
+                let live = index >= usize::MAX / 2;
+                let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+                let body = markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
                         self.reasoning_reveal.fade(&self.streaming_reasoning)
                     } else {
@@ -4031,13 +4067,48 @@ impl Panel {
                         )
                         .into_any_element()
                     },
-                ))
-                .when(
-                    display.thinking_display == crate::config::ThinkingDisplay::Collapsed
-                        && index < usize::MAX / 2,
-                    |el| el.flex().flex_col().child(self.render_reasoning_unfold_control(index, cx)),
-                )
-                .into_any_element(),
+                );
+                if collapsible {
+                    div()
+                        .debug_selector(|| "reasoning-inline".into())
+                        .font_family(Theme::global().FONT_AI)
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .gap_1p5()
+                        .w_full()
+                        .min_w_0()
+                        .text_size(px(12.0 * crate::config::text_scale()))
+                        .text_color(Theme::global().REASONING)
+                        .child(self.render_reasoning_expanded_header(index, lines, live, cx))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .px_3()
+                                .py_2()
+                                .rounded_xl()
+                                .bg(Theme::global().CODE_BG)
+                                .border_1()
+                                .border_color(Theme::global().PANEL_BORDER)
+                                .child(body),
+                        )
+                        .when(!live && lines >= 8, |el| {
+                            el.child(self.render_reasoning_bottom_fold(index, cx))
+                        })
+                        .into_any_element()
+                } else {
+                    div()
+                        .debug_selector(|| "reasoning-inline".into())
+                        .font_family(Theme::global().FONT_AI)
+                        .flex_none()
+                        .px_1()
+                        .text_size(px(12.0 * crate::config::text_scale()))
+                        .text_color(Theme::global().REASONING)
+                        .child(body)
+                        .into_any_element()
+                }
+            }
             Item::Todos(payload) => render_todo_card_with_style(
                 payload,
                 false,

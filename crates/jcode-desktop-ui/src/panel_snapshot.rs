@@ -120,7 +120,9 @@ impl Panel {
             match message.role.as_str() {
                 "user" => prefix.push(Item::User(message.content.clone())),
                 "assistant" if !message.content.trim().is_empty() => {
-                    prefix.push(Item::Assistant(message.content.clone()))
+                    prefix.extend(reasoning_fold::split_assistant_history_segments(
+                        &message.content,
+                    ));
                 }
                 _ => {}
             }
@@ -186,7 +188,10 @@ impl Panel {
                 match message.role.as_str() {
                     "user" => self.items.push(Item::User(message.content.clone())),
                     "assistant" if !message.content.trim().is_empty() => {
-                        self.items.push(Item::Assistant(message.content.clone()))
+                        self.items
+                            .extend(reasoning_fold::split_assistant_history_segments(
+                                &message.content,
+                            ));
                     }
                     _ => {}
                 }

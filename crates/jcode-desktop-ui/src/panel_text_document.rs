@@ -37,6 +37,7 @@ impl TranscriptTextDocument {
         let order: Vec<_> = rows.iter().map(|row| row.index).collect();
         let mut changed = preferences_changed || self.order != order;
         let settled_unchanged = self.settled_revision == Some(items.revision());
+        let has_streaming_text = rows.iter().any(|row| row.index == usize::MAX);
         for row in rows {
             let item = match &row.source {
                 TranscriptRowSource::Settled(index) => &items[*index],
@@ -51,12 +52,20 @@ impl TranscriptTextDocument {
                 Item::Stopped(_) | Item::CacheMiss(_) => {
                     expanded_tools.contains(&format!("notice:{}", row.index))
                 }
-                Item::Reasoning(_) => !super::reasoning_fold::is_folded(
-                    &display,
-                    row.index,
-                    expanded_tools,
-                    turn_start,
-                ),
+                Item::Reasoning(_) => {
+                    let concluded = super::reasoning_fold::followed_by_output(
+                        items,
+                        row.index,
+                        has_streaming_text,
+                    );
+                    !super::reasoning_fold::is_folded_with_progress(
+                        &display,
+                        row.index,
+                        expanded_tools,
+                        turn_start,
+                        concluded,
+                    )
+                }
                 _ => false,
             };
             let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);

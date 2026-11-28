@@ -47,6 +47,8 @@ pub struct StepsFold {
     /// Steps that are neither tool calls nor thoughts.
     pub other: usize,
     pub duration_secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// `expanded_tools` key for a turn whose steps the user expanded by hand.
@@ -205,6 +207,7 @@ pub(super) fn apply(
         thoughts: 0,
         other: 0,
         duration_secs: None,
+        preview: None,
     };
     // Step rows are buffered until the block's size is known: a one-row
     // block gains nothing from folding, so those rows pass straight back
@@ -251,6 +254,7 @@ pub(super) fn apply(
                 thoughts: 0,
                 other: 0,
                 duration_secs: None,
+                preview: None,
             };
         }
         // A settled User row opens a new turn; anything before it stays put.
@@ -276,6 +280,7 @@ pub(super) fn apply(
                 thoughts: 0,
                 other: 0,
                 duration_secs,
+                preview: None,
             };
             step_rows.clear();
             out.push(row);
@@ -296,11 +301,27 @@ pub(super) fn apply(
                             summary.tools += 1;
                             summary.failed += usize::from(error.is_some());
                         }
-                        Item::Reasoning(_) => summary.thoughts += 1,
+                        Item::Reasoning(text) => {
+                            summary.thoughts += 1;
+                            if summary.preview.is_none() {
+                                let p = super::reasoning_fold::preview(text);
+                                if !p.is_empty() {
+                                    summary.preview = Some(p);
+                                }
+                            }
+                        }
                         _ => summary.other += 1,
                     },
                     TranscriptRowSource::Owned(item) => match item.as_ref() {
-                        Item::Reasoning(_) => summary.thoughts += 1,
+                        Item::Reasoning(text) => {
+                            summary.thoughts += 1;
+                            if summary.preview.is_none() {
+                                let p = super::reasoning_fold::preview(text);
+                                if !p.is_empty() {
+                                    summary.preview = Some(p);
+                                }
+                            }
+                        }
                         Item::Tool { error, .. } => {
                             summary.tools += 1;
                             summary.failed += usize::from(error.is_some());
@@ -430,21 +451,36 @@ impl Panel {
                 .mt_1()
                 .flex_none()
                 .self_start()
-                .px(px(8.))
-                .h(px(20.))
+                .px(px(10.))
+                .h(px(24.))
                 .flex()
                 .items_center()
+                .gap_2()
                 .rounded_full()
+                .border_1()
+                .border_color(theme.PANEL_BORDER)
                 .bg(theme.INLINE_CODE_BG)
-                .text_size(px(10.5))
+                .font_family(theme.FONT_UI)
+                .text_size(px(11.))
                 .text_color(theme.TEXT_DIM)
                 .cursor_pointer()
-                .hover(|style| style.text_color(theme.TEXT))
+                .hover(|style| {
+                    style
+                        .bg(theme.ACCENT_DIM)
+                        .border_color(theme.ACCENT)
+                        .text_color(theme.TEXT)
+                })
                 .on_click(cx.listener(move |panel, _, _, cx| {
                     cx.stop_propagation();
                     panel.collapse_steps(turn, cx);
                 }))
-                .child(tr("Hide steps", "收起步骤"))
+                .child("▾")
+                .child(label(fold))
+                .child(
+                    div()
+                        .text_color(theme.TEXT_FAINT)
+                        .child(tr("Hide steps", "收起步骤")),
+                )
                 .into_any_element();
         }
         div()
@@ -455,15 +491,22 @@ impl Panel {
             .gap_2()
             .max_w_full()
             .min_w_0()
-            .px(px(10.))
-            .h(px(24.))
+            .px(px(11.))
+            .h(px(26.))
             .rounded_full()
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
             .bg(theme.INLINE_CODE_BG)
-            .font_family(theme.FONT_AI)
+            .font_family(theme.FONT_UI)
             .text_size(px(11.5))
             .text_color(theme.TEXT_DIM)
             .cursor_pointer()
-            .hover(|style| style.text_color(theme.TEXT))
+            .hover(|style| {
+                style
+                    .bg(theme.ACCENT_DIM)
+                    .border_color(theme.ACCENT)
+                    .text_color(theme.TEXT)
+            })
             .on_click(cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
                 panel.expand_steps(turn, cx);
@@ -471,13 +514,30 @@ impl Panel {
             .child(
                 div()
                     .flex_none()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(label(fold)),
+                    .text_size(px(10.5))
+                    .text_color(theme.TEXT_FAINT)
+                    .child("▸"),
             )
-            .child(div().flex_1().min_w_0())
             .child(
                 div()
                     .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(label(fold)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(theme.TEXT_FAINT)
+                    .child(fold.preview.clone().unwrap_or_default()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.5))
                     .text_color(theme.TEXT_FAINT)
                     .child(tr("Show steps", "展开步骤")),
             )
@@ -599,6 +659,7 @@ mod tests {
             thoughts: 1,
             other: 0,
             duration_secs: Some(133.),
+            preview: None,
         };
         assert_eq!(
             label(&fold),
@@ -625,8 +686,9 @@ mod tests {
             thoughts: 1,
             other: 3,
             duration_secs: Some(133.),
+            preview: None,
         };
-        let untimed = StepsFold { duration_secs: None, ..fold };
+        let untimed = StepsFold { duration_secs: None, ..fold.clone() };
         assert_eq!(
             label(&fold),
             "Worked for 2m 13s · 6 tool calls · 1 thought · 3 steps · 2 failed"

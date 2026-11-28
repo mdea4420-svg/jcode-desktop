@@ -32,15 +32,43 @@ fn hide_key(index: usize) -> String {
     format!("reasoning-hide:{index}")
 }
 
+/// Whether a settled reasoning row at `index` is followed by non-reasoning
+/// output (such as tool calls, an assistant reply, or live streaming answer
+/// text), meaning this thinking block has already concluded.
+pub(super) fn followed_by_output(
+    items: &[Item],
+    index: usize,
+    has_streaming_text: bool,
+) -> bool {
+    if index >= usize::MAX / 2 {
+        return false;
+    }
+    has_streaming_text
+        || items
+            .get(index + 1..)
+            .is_some_and(|rest| rest.iter().any(|item| !matches!(item, Item::Reasoning(_))))
+}
+
 /// Whether a reasoning row at `index` is shown folded. `turn_start` is the
-/// user prompt index that began the in-progress turn, if any; settled rows
-/// after it stay expanded until the turn finishes. Live rows use indices at
-/// the top of the range and never fold.
+/// user prompt index that began the in-progress turn, if any; an active
+/// trailing thought stays expanded while the model is still thinking, and
+/// automatically folds once answer text or tool work begins (or when the turn
+/// finishes). Live rows use indices at the top of the range and never fold.
 pub(super) fn is_folded(
     display: &crate::config::DisplayConfig,
     index: usize,
     expanded: &HashSet<String>,
     turn_start: Option<usize>,
+) -> bool {
+    is_folded_with_progress(display, index, expanded, turn_start, false)
+}
+
+pub(super) fn is_folded_with_progress(
+    display: &crate::config::DisplayConfig,
+    index: usize,
+    expanded: &HashSet<String>,
+    turn_start: Option<usize>,
+    concluded_by_output: bool,
 ) -> bool {
     if display.thinking_display != crate::config::ThinkingDisplay::Collapsed
         || index >= usize::MAX / 2
@@ -53,7 +81,89 @@ pub(super) fn is_folded(
     if expanded.contains(&expansion_key(index)) {
         return false;
     }
-    turn_start.is_none_or(|start| index <= start)
+    concluded_by_output || turn_start.is_none_or(|start| index <= start)
+}
+
+/// Split an encoded assistant `HistoryMessage` payload into ordered
+/// `Item::Reasoning` and `Item::Assistant` segments so restored/reloaded
+/// conversations fold their thinking identically to live turns. Fenced code
+/// blocks containing transport markup are preserved verbatim inside the
+/// assistant segment.
+pub(super) fn split_assistant_history_segments(content: &str) -> Vec<Item> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+    if !content
+        .lines()
+        .any(|line| jcode_render_core::reasoning_line_content(line.trim_start()).is_some())
+    {
+        return vec![Item::Assistant(content.to_owned())];
+    }
+
+    let mut out = Vec::new();
+    let mut lines = content.lines().peekable();
+    let mut prose = String::new();
+    let mut fence_marker: Option<char> = None;
+
+    let flush_prose = |prose: &mut String, out: &mut Vec<Item>| {
+        let trimmed_end = prose.trim_end();
+        if !trimmed_end.trim().is_empty() {
+            out.push(Item::Assistant(trimmed_end.trim_start_matches('\n').to_owned()));
+        }
+        prose.clear();
+    };
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if let Some(marker) = fence_marker {
+            prose.push_str(line);
+            prose.push('\n');
+            let t = line.trim();
+            if t.len() >= 3 && t.chars().all(|c| c == marker) {
+                fence_marker = None;
+            }
+            continue;
+        }
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence_marker = trimmed.chars().next();
+            prose.push_str(line);
+            prose.push('\n');
+            continue;
+        }
+        if let Some(mut thought) = jcode_render_core::reasoning_line_content(trimmed) {
+            flush_prose(&mut prose, &mut out);
+            loop {
+                let mut ahead = lines.clone();
+                let mut blank_lines = 0usize;
+                while ahead.peek().is_some_and(|next| next.trim().is_empty()) {
+                    ahead.next();
+                    blank_lines += 1;
+                }
+                let Some(next_thought) = ahead
+                    .next()
+                    .map(str::trim_start)
+                    .and_then(jcode_render_core::reasoning_line_content)
+                else {
+                    break;
+                };
+                for _ in 0..blank_lines {
+                    lines.next();
+                    thought.push('\n');
+                }
+                lines.next();
+                thought.push('\n');
+                thought.push_str(&next_thought);
+            }
+            if !thought.trim().is_empty() {
+                append_reasoning(&mut out, thought);
+            }
+        } else {
+            prose.push_str(line);
+            prose.push('\n');
+        }
+    }
+    flush_prose(&mut prose, &mut out);
+    out
 }
 
 /// First meaningful line, without Markdown heading and list markers.
@@ -122,9 +232,17 @@ impl Panel {
                 matches!(item, Item::Reasoning(_)).then_some(index)
             })
             .collect();
-        let expand = indices
-            .iter()
-            .any(|&index| is_folded(&display, index, &self.expanded_tools, turn_start));
+        let expand = indices.iter().any(|&index| {
+            let concluded =
+                followed_by_output(&self.items, index, !self.streaming_text.is_empty());
+            is_folded_with_progress(
+                &display,
+                index,
+                &self.expanded_tools,
+                turn_start,
+                concluded,
+            )
+        });
         for index in indices {
             if expand {
                 self.expanded_tools.remove(&hide_key(index));
@@ -139,6 +257,28 @@ impl Panel {
         expand
     }
 
+    fn reasoning_meta_label(&self, index: usize, lines: usize, live: bool) -> String {
+        let lines = lines.max(1);
+        let duration = (index < usize::MAX / 2)
+            .then(|| self.reasoning_durations.get(&index).copied())
+            .flatten()
+            .filter(|&secs| secs >= 0.2)
+            .map(|secs| format_tool_elapsed(Duration::from_secs_f64(secs)));
+        if live {
+            return if is_zh() {
+                format!("正在思考… · {lines} 行")
+            } else {
+                format!("Thinking… · {lines} {}", line_word(lines))
+            };
+        }
+        match (is_zh(), duration) {
+            (true, Some(dur)) => format!("已思考 {dur} · {lines} 行"),
+            (true, None) => format!("思考过程 · {lines} 行"),
+            (false, Some(dur)) => format!("Thought for {dur} · {lines} {}", line_word(lines)),
+            (false, None) => format!("Thinking · {lines} {}", line_word(lines)),
+        }
+    }
+
     /// Folded pill. Clicking it expands the thought in place.
     pub(super) fn render_reasoning_fold(
         &self,
@@ -148,6 +288,7 @@ impl Panel {
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         let lines = text.lines().filter(|line| !line.trim().is_empty()).count();
+        let summary = preview(text);
         div()
             .id(("reasoning-fold", index))
             .debug_selector(move || format!("reasoning-fold-{index}").into())
@@ -156,15 +297,22 @@ impl Panel {
             .gap_2()
             .max_w_full()
             .min_w_0()
-            .px(px(10.))
-            .h(px(24.))
+            .px(px(11.))
+            .h(px(26.))
             .rounded_full()
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
             .bg(theme.INLINE_CODE_BG)
-            .font_family(theme.FONT_AI)
+            .font_family(theme.FONT_UI)
             .text_size(px(11.5))
             .text_color(theme.REASONING)
             .cursor_pointer()
-            .hover(|style| style.text_color(theme.TEXT))
+            .hover(|style| {
+                style
+                    .bg(theme.ACCENT_DIM)
+                    .border_color(theme.ACCENT)
+                    .text_color(theme.TEXT)
+            })
             .on_click(cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
                 panel.expand_reasoning(index, cx);
@@ -172,12 +320,15 @@ impl Panel {
             .child(
                 div()
                     .flex_none()
+                    .text_size(px(10.5))
+                    .text_color(theme.TEXT_DIM)
+                    .child("▸"),
+            )
+            .child(
+                div()
+                    .flex_none()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(if is_zh() {
-                        format!("思考 · {lines} 行")
-                    } else {
-                        format!("Thinking · {lines} {}", line_word(lines))
-                    }),
+                    .child(self.reasoning_meta_label(index, lines, false)),
             )
             .child(
                 div()
@@ -187,38 +338,146 @@ impl Panel {
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_color(theme.TEXT_FAINT)
-                    .child(preview(text)),
+                    .child(summary),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.5))
+                    .text_color(theme.TEXT_DIM)
+                    .child(tr("Expand", "展开")),
             )
             .into_any_element()
     }
 
-    /// Compact pill under an expanded thought that folds it again.
-    pub(super) fn render_reasoning_unfold_control(
+    /// Top in-place header bar above an expanded thought so clicking the exact
+    /// same spot folds/unfolds without hunting at the bottom of a long block.
+    pub(super) fn render_reasoning_expanded_header(
+        &self,
+        index: usize,
+        lines: usize,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let meta = self.reasoning_meta_label(index, lines, live);
+        if live {
+            return div()
+                .flex_none()
+                .self_start()
+                .px(px(10.))
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .rounded_full()
+                .bg(theme.INLINE_CODE_BG)
+                .font_family(theme.FONT_UI)
+                .text_size(px(11.))
+                .text_color(theme.ACCENT)
+                .child("▾")
+                .child(meta)
+                .into_any_element();
+        }
+        div()
+            .id(("reasoning-unfold", index))
+            .debug_selector(move || format!("reasoning-unfold-{index}").into())
+            .flex_none()
+            .w_full()
+            .min_w_0()
+            .px(px(11.))
+            .h(px(26.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .rounded_full()
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
+            .bg(theme.INLINE_CODE_BG)
+            .font_family(theme.FONT_UI)
+            .text_size(px(11.5))
+            .text_color(theme.REASONING)
+            .cursor_pointer()
+            .hover(|style| {
+                style
+                    .bg(theme.ACCENT_DIM)
+                    .border_color(theme.ACCENT)
+                    .text_color(theme.TEXT)
+            })
+            .on_click(cx.listener(move |panel, _, _, cx| {
+                cx.stop_propagation();
+                panel.collapse_reasoning(index, cx);
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .text_color(theme.TEXT_DIM)
+                            .child("▾"),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(meta),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.5))
+                    .text_color(theme.TEXT_DIM)
+                    .child(tr("Hide thinking", "收起思考")),
+            )
+            .into_any_element()
+    }
+
+    /// Secondary bottom fold pill shown on long expanded thoughts (`>= 8` lines)
+    /// so the user can collapse right from the bottom without scrolling back up.
+    pub(super) fn render_reasoning_bottom_fold(
         &self,
         index: usize,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
         div()
-            .id(("reasoning-unfold", index))
-            .debug_selector(move || format!("reasoning-unfold-{index}").into())
+            .id(("reasoning-unfold-bottom", index))
+            .debug_selector(move || format!("reasoning-unfold-bottom-{index}").into())
             .mt_1()
             .flex_none()
             .self_start()
-            .px(px(8.))
-            .h(px(20.))
+            .px(px(9.))
+            .h(px(21.))
             .flex()
             .items_center()
+            .gap_1()
             .rounded_full()
+            .border_1()
+            .border_color(theme.PANEL_BORDER)
             .bg(theme.INLINE_CODE_BG)
+            .font_family(theme.FONT_UI)
             .text_size(px(10.5))
             .text_color(theme.TEXT_DIM)
             .cursor_pointer()
-            .hover(|style| style.text_color(theme.TEXT))
+            .hover(|style| {
+                style
+                    .bg(theme.ACCENT_DIM)
+                    .border_color(theme.ACCENT)
+                    .text_color(theme.TEXT)
+            })
             .on_click(cx.listener(move |panel, _, _, cx| {
                 cx.stop_propagation();
                 panel.collapse_reasoning(index, cx);
             }))
+            .child("↑")
             .child(tr("Hide thinking", "收起思考"))
             .into_any_element()
     }
@@ -419,5 +678,83 @@ mod tests {
         assert_eq!(preview("\n\n## Plan the **fix**\n- step"), "Plan the fix");
         let long = "x".repeat(PREVIEW_CHARS + 5);
         assert_eq!(preview(&long).chars().count(), PREVIEW_CHARS + 1);
+    }
+
+    #[test]
+    fn restored_assistant_messages_split_encoded_thinking_into_foldable_items() {
+        let encoded = format!(
+            "{}{}{}\nFinal **answer**.\n```text\n{}```",
+            jcode_render_core::reasoning_line_markup("## Step 1"),
+            jcode_render_core::reasoning_line_markup(""),
+            jcode_render_core::reasoning_line_markup("Inspect the fold state."),
+            jcode_render_core::reasoning_line_markup("Inside code fence stays literal."),
+        );
+        let split = split_assistant_history_segments(&encoded);
+        assert_eq!(split.len(), 2);
+        assert_eq!(
+            split[0],
+            Item::Reasoning("## Step 1\n\nInspect the fold state.".into())
+        );
+        assert!(matches!(&split[1], Item::Assistant(body) if body.starts_with("Final **answer**.") && body.contains("Inside code fence stays literal.")));
+    }
+
+    #[gpui::test]
+    fn settled_thinking_auto_folds_as_soon_as_reply_begins_and_keeps_top_and_bottom_toggles(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (panel, vcx) = fold_fixture(cx);
+        let long_thought = (1..=10)
+            .map(|n| format!("Thought line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::User("Explain this".into()));
+            panel.apply(&session_status("processing"), cx);
+            panel.apply(
+                &ApiEvent::ReasoningDelta {
+                    session_id: "fold-test".into(),
+                    text: long_thought.clone(),
+                },
+                cx,
+            );
+            panel.apply(
+                &ApiEvent::ReasoningDone {
+                    session_id: "fold-test".into(),
+                    duration_secs: Some(3.4),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        // Before answer starts streaming, active thought stays open with top + bottom controls.
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_none());
+        assert!(vcx.debug_bounds("reasoning-unfold-1").is_some());
+        assert!(vcx.debug_bounds("reasoning-unfold-bottom-1").is_some());
+
+        // Once the reply begins streaming, the concluded thought auto-folds out of the way.
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    message_id: None,
+                    session_id: "fold-test".into(),
+                    text: "Here is the final answer.".into(),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        let pill = vcx
+            .debug_bounds("reasoning-fold-1")
+            .expect("settled thought auto-folds when answer streaming begins");
+        // Clicking the pill mid-stream expands it with the in-place top bar and bottom fold pill.
+        vcx.simulate_click(pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-unfold-1").is_some());
+        let bottom = vcx
+            .debug_bounds("reasoning-unfold-bottom-1")
+            .expect("long expanded thought shows bottom fold pill");
+        vcx.simulate_click(bottom.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("reasoning-fold-1").is_some());
     }
 }
