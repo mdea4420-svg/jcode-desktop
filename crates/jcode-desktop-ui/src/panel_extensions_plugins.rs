@@ -734,7 +734,7 @@ impl Panel {
                         .child(soft_wrap_text(&error)),
                 )
             })
-            .child(div().flex_none().child(pill("plugins-create", "plugins-create".into(), tr("Create plugin", "创建插件"), true)
+            .child(div().flex_none().flex().child(pill("plugins-create", "plugins-create".into(), tr("Create plugin", "创建插件"), true)
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.save_plugin_form(cx)))))
             .into_any_element()
     }

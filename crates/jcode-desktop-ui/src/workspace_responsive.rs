@@ -139,8 +139,12 @@ impl Workspace {
             .text_color(Theme::global().TEXT_DIM)
             .occlude()
             .tooltip(|_, cx| {
-                cx.new(|_| super::remotes::HeaderTooltip("Show sidebar (Ctrl+B)".into()))
-                    .into()
+                cx.new(|_| {
+                    super::remotes::HeaderTooltip(
+                        crate::locale::tr("Show sidebar (Ctrl+B)", "显示侧栏（Ctrl+B）").into(),
+                    )
+                })
+                .into()
             })
             .hover(|el| {
                 el.bg(Theme::global().PANEL_BG)

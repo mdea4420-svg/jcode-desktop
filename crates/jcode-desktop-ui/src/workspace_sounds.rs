@@ -95,4 +95,47 @@ mod tests {
         assert!(!workspace.read_with(vcx, |_, cx| sounds::enabled(cx)));
         assert!(vcx.debug_bounds("settings-sounds-preview").is_none());
     }
+
+    #[gpui::test]
+    fn settings_display_pills_and_archive_search_filter_work(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let original = crate::config::display();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_view = SidebarView::Settings;
+            workspace
+        });
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+            vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            vcx.run_until_parked();
+        };
+        click(vcx, "settings-thinking-display-collapsed");
+        assert_eq!(crate::config::display().value("thinking_display").as_deref(), Some("collapsed"));
+        click(vcx, "settings-steps-display-expanded");
+        assert_eq!(crate::config::display().value("steps_display").as_deref(), Some("expanded"));
+        click(vcx, "settings-diff-display-pinned");
+        assert_eq!(crate::config::display().value("diff_display").as_deref(), Some("pinned"));
+        let _ = crate::config::set_display("thinking_display", &original.value("thinking_display").unwrap());
+        let _ = crate::config::set_display("steps_display", &original.value("steps_display").unwrap());
+        let _ = crate::config::set_display("diff_display", &original.value("diff_display").unwrap());
+
+        workspace.update(vcx, |w, cx| {
+            w.sidebar_view = SidebarView::Sessions;
+            let mut alpha = crate::workspace::tests::session_info("arch-alpha", Some("Alpha refactor"));
+            alpha.archived = true;
+            let mut beta = crate::workspace::tests::session_info("arch-beta", Some("Beta deployment"));
+            beta.archived = true;
+            w.load_sidebar_archive(Ok(vec![alpha, beta]));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        click(vcx, "sidebar-archive-toggle");
+        assert!(vcx.debug_bounds("sidebar-archive-search").is_some());
+        click(vcx, "sidebar-archive-search");
+        vcx.simulate_input("beta");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-archive-list").is_some());
+    }
 }

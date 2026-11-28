@@ -685,6 +685,7 @@ impl Panel {
         body.push(
             div()
                 .flex_none()
+                .flex()
                 .child(
                     pill("skill-create", "skill-create".into(), tr("Create", "创建"), true).on_mouse_down(
                         gpui::MouseButton::Left,
