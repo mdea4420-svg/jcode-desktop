@@ -31,6 +31,7 @@
 //! - `Applet`, `StepsFold`: derived rows with no settled index; an applet
 //!   folds when it is emitted inside a steps block.
 use super::*;
+use crate::locale::{is_zh, tr};
 
 /// What the steps-control row of one turn renders.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -324,23 +325,41 @@ fn plural(count: usize) -> &'static str {
 /// The pill text: `Worked for 2m 13s · 6 tool calls · 4 thoughts`, dropping
 /// any part that is zero or unknown.
 fn label(fold: &StepsFold) -> String {
+    let chinese = is_zh();
     let mut parts = Vec::new();
     if fold.tools > 0 {
-        parts.push(format!("{} tool call{}", fold.tools, plural(fold.tools)));
+        parts.push(if chinese {
+            format!("{} 次工具调用", fold.tools)
+        } else {
+            format!("{} tool call{}", fold.tools, plural(fold.tools))
+        });
     }
     if fold.thoughts > 0 {
-        parts.push(format!("{} thought{}", fold.thoughts, plural(fold.thoughts)));
+        parts.push(if chinese {
+            format!("{} 段思考", fold.thoughts)
+        } else {
+            format!("{} thought{}", fold.thoughts, plural(fold.thoughts))
+        });
     }
     if fold.other > 0 {
-        parts.push(format!("{} step{}", fold.other, plural(fold.other)));
+        parts.push(if chinese {
+            format!("{} 个步骤", fold.other)
+        } else {
+            format!("{} step{}", fold.other, plural(fold.other))
+        });
     }
     if fold.failed > 0 {
-        parts.push(format!("{} failed", fold.failed));
+        parts.push(if chinese {
+            format!("{} 项失败", fold.failed)
+        } else {
+            format!("{} failed", fold.failed)
+        });
     }
-    let mut label = String::from("Worked");
+    let mut label = String::from(tr("Worked", "已执行"));
     if let Some(secs) = fold.duration_secs {
         label = format!(
-            "Worked for {}",
+            "{} {}",
+            tr("Worked for", "耗时"),
             format_tool_elapsed(Duration::from_secs_f64(secs.max(0.)))
         );
     }
@@ -425,7 +444,7 @@ impl Panel {
                     cx.stop_propagation();
                     panel.collapse_steps(turn, cx);
                 }))
-                .child("Hide steps")
+                .child(tr("Hide steps", "收起步骤"))
                 .into_any_element();
         }
         div()
@@ -460,7 +479,7 @@ impl Panel {
                 div()
                     .flex_none()
                     .text_color(theme.TEXT_FAINT)
-                    .child("Show steps"),
+                    .child(tr("Show steps", "展开步骤")),
             )
             .into_any_element()
     }
@@ -594,6 +613,29 @@ mod tests {
             ..fold
         };
         assert_eq!(label(&quiet), "Worked · 3 steps");
+    }
+
+    #[test]
+    fn fold_label_localizes_counts_and_elapsed_time() {
+        let fold = StepsFold {
+            turn: 0,
+            folded: true,
+            tools: 6,
+            failed: 2,
+            thoughts: 1,
+            other: 3,
+            duration_secs: Some(133.),
+        };
+        let untimed = StepsFold { duration_secs: None, ..fold };
+        assert_eq!(
+            label(&fold),
+            "Worked for 2m 13s · 6 tool calls · 1 thought · 3 steps · 2 failed"
+        );
+        assert_eq!(label(&untimed), "Worked · 6 tool calls · 1 thought · 3 steps · 2 failed");
+        crate::locale::with_zh(|| {
+            assert_eq!(label(&fold), "耗时 2m 13s · 6 次工具调用 · 1 段思考 · 3 个步骤 · 2 项失败");
+            assert_eq!(label(&untimed), "已执行 · 6 次工具调用 · 1 段思考 · 3 个步骤 · 2 项失败");
+        });
     }
 
     fn steps_fixture(

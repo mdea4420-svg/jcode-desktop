@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::theme::Theme;
+use crate::{locale::tr, theme::Theme};
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px};
 
 pub(crate) const VERSION: &str = env!("JCODE_DESKTOP_DISPLAY_VERSION");
@@ -14,7 +14,7 @@ pub(crate) fn version() -> String {
 pub(crate) fn revision() -> String {
     let hash = env!("JCODE_DESKTOP_GIT_HASH");
     if env!("JCODE_DESKTOP_GIT_DIRTY") == "true" {
-        format!("{hash}, dirty")
+        format!("{hash}, {}", tr("dirty", "未提交改动"))
     } else {
         hash.to_owned()
     }
@@ -27,8 +27,8 @@ pub(crate) fn age() -> String {
         .as_secs();
     BUILT_AT
         .parse::<u64>()
-        .map(|built| format!("Built {}", format_age(now.saturating_sub(built))))
-        .unwrap_or_else(|_| "Build time unavailable".into())
+        .map(|built| format!("{} {}", tr("Built", "构建于"), format_age(now.saturating_sub(built))))
+        .unwrap_or_else(|_| tr("Build time unavailable", "构建时间未知").into())
 }
 
 pub fn label() -> String {
@@ -62,7 +62,7 @@ fn version_label(raw: &str) -> String {
         "alpha" => "Alpha",
         "beta" => "Beta",
         "rc" => "RC",
-        "dev" => "Dev",
+        "dev" => tr("Dev", "开发版"),
         "nightly" => "Nightly",
         _ => return format!("{base} · {pre}"),
     };
@@ -81,11 +81,12 @@ fn footer_label(version: &str, development: bool, built_at: Option<u64>, now: u6
         let already_dev = semver::Version::parse(version.strip_prefix('v').unwrap_or(version))
             .is_ok_and(|version| version.pre.as_str().split('.').next() == Some("dev"));
         if !already_dev {
-            label.push_str(" · Dev");
+            label.push_str(tr(" · Dev", " · 开发版"));
         }
         if let Some(built_at) = built_at {
             label.push_str(&format!(
-                " · built {}",
+                " · {} {}",
+                tr("built", "构建于"),
                 format_age(now.saturating_sub(built_at))
             ));
         }
@@ -116,14 +117,14 @@ impl Render for BuildTooltip {
             .child(format!(
                 "Jcode Desktop · {}",
                 if development() {
-                    "Development build"
+                    tr("Development build", "开发构建")
                 } else {
-                    "Release build"
+                    tr("Release build", "正式构建")
                 }
             ))
-            .child(format!("Version: {VERSION}"))
-            .child(format!("Commit: {}", revision()))
-            .child(format!("Build ID: {BUILD_ID}"))
+            .child(format!("{}{VERSION}", tr("Version: ", "版本：")))
+            .child(format!("{}{}", tr("Commit: ", "提交："), revision()))
+            .child(format!("{}{BUILD_ID}", tr("Build ID: ", "构建 ID：")))
     }
 }
 
@@ -133,10 +134,10 @@ fn format_age(seconds: u64) -> String {
     const DAY: u64 = 24 * HOUR;
 
     match seconds {
-        0..60 => "just now".to_owned(),
-        60..3600 => format!("{}m ago", seconds / MINUTE),
-        3600..86400 => format!("{}h ago", seconds / HOUR),
-        _ => format!("{}d ago", seconds / DAY),
+        0..60 => tr("just now", "刚刚").to_owned(),
+        60..3600 => format!("{}{}", seconds / MINUTE, tr("m ago", " 分钟前")),
+        3600..86400 => format!("{}{}", seconds / HOUR, tr("h ago", " 小时前")),
+        _ => format!("{}{}", seconds / DAY, tr("d ago", " 天前")),
     }
 }
 
@@ -216,6 +217,31 @@ mod tests {
         assert_eq!(format_age(3_600), "1h ago");
         assert_eq!(format_age(86_399), "23h ago");
         assert_eq!(format_age(86_400), "1d ago");
+    }
+
+    #[test]
+    fn build_labels_localize_the_development_suffix_and_age() {
+        let cases = [(0, "just now", "刚刚"), (120, "2m ago", "2 分钟前"),
+            (3_600, "1h ago", "1 小时前"), (172_800, "2d ago", "2 天前")];
+        for (seconds, english, chinese) in cases {
+            assert_eq!(format_age(seconds), english);
+            assert_eq!(crate::locale::with_zh(|| format_age(seconds)), chinese);
+        }
+        assert_eq!(footer_label("0.1.0", true, Some(100), 220), "v0.1.0 · Dev · built 2m ago");
+        crate::locale::with_zh(|| {
+            assert_eq!(footer_label("0.1.0", true, Some(100), 220), "v0.1.0 · 开发版 · 构建于 2 分钟前");
+            assert_eq!(footer_label("0.3.0-dev.12", true, Some(100), 220), "v0.3.0 · 开发版 12 · 构建于 2 分钟前");
+            assert_eq!(footer_label("0.1.0-dev", true, Some(100), 100), "v0.1.0-dev · 构建于 刚刚");
+            assert_eq!(footer_label("0.1.0-beta.15", false, Some(100), 220), "v0.1.0 · Beta 15");
+            if env!("JCODE_DESKTOP_GIT_DIRTY") == "true" {
+                assert!(revision().ends_with(", 未提交改动"));
+            }
+            if BUILT_AT.parse::<u64>().is_ok() {
+                assert!(age().starts_with("构建于 "));
+            } else {
+                assert_eq!(age(), "构建时间未知");
+            }
+        });
     }
 
     #[test]

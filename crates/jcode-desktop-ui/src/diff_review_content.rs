@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use gpui::{AnyElement, App, Entity, ScrollHandle, div, prelude::*};
 
-use crate::{diff_model::DiffPreview, diff_view::DiffView};
+use crate::{diff_model::DiffPreview, diff_view::DiffView, locale::tr};
 
 pub(crate) struct ReviewContent {
     preview: DiffPreview,
@@ -58,7 +58,7 @@ impl ReviewContent {
     pub(crate) fn render(&self) -> AnyElement {
         let Some((view, scroll)) = self.views.get(&self.selected) else {
             return div()
-                .child("No change content supplied.")
+                .child(tr("No change content supplied.", "未提供变更内容。"))
                 .into_any_element();
         };
         div()

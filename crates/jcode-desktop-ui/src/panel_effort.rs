@@ -99,7 +99,11 @@ impl Panel {
             .map(|picker| pill_bounds_marker(picker.pill_bounds.clone()))
     }
 
-    pub(super) fn render_effort_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_effort_picker(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let picker = self.effort_picker.as_ref()?;
         let pill_bounds = picker.pill_bounds.clone();
         let levels = self.effort_ladder();
@@ -135,6 +139,8 @@ impl Panel {
                 .id("effort-picker")
                 .debug_selector(|| "effort-picker".into())
                 .track_focus(&picker.focus)
+                .max_h(super::composer::composer_picker_max_height(window))
+                .overflow_y_scroll()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .flex()
                 .flex_col()

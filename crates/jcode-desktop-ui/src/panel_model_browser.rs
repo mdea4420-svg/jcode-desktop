@@ -1356,6 +1356,7 @@ impl Panel {
                                         .flex()
                                         .items_center()
                                         .gap_3()
+                                        .when(narrow, |bar| bar.flex_wrap().gap_2())
                                         .child(
                                             div()
                                                 .flex_none()
@@ -1370,8 +1371,12 @@ impl Panel {
                                         )
                                         .child(
                                             div()
+                                                .debug_selector(|| "model-browser-search".into())
                                                 .flex_1()
                                                 .min_w_0()
+                                                .when(narrow, |search| {
+                                                    search.flex_basis(px(180.)).min_w(px(180.))
+                                                })
                                                 .rounded_full()
                                                 .bg(theme.INPUT_BG)
                                                 .border_1()
@@ -1742,6 +1747,48 @@ mod tests {
                 .is_some()
         );
         crate::input::model_favorites::reset();
+    }
+
+    #[gpui::test]
+    fn narrow_agent_role_browser_keeps_search_and_actions_inside(cx: &mut gpui::TestAppContext) {
+        for (chinese, width) in [(false, 550.), (false, 420.), (true, 550.), (true, 420.)] {
+            let mut check = || {
+                let (panel, vcx, _commands) = setup(cx);
+                let handle = vcx.update(|window, _| window.window_handle());
+                panel.update(vcx, |panel, cx| panel.open_agent_role_browser(AgentRole::Memory, cx));
+                vcx.simulate_window_resize(handle, gpui::size(px(width), px(410.)));
+                vcx.run_until_parked();
+                vcx.update(|window, _| window.refresh());
+                vcx.run_until_parked();
+
+                let browser = vcx.debug_bounds("model-browser").expect("model browser");
+                let search = vcx.debug_bounds("model-browser-search").expect("search capsule");
+                eprintln!("viewport={width}x410 chinese={chinese}: browser={browser:?}, search={search:?}");
+                assert!(search.size.width >= px(150.), "search is squeezed: {search:?}");
+                assert!(search.size.height <= px(44.), "search wraps: {search:?}");
+                for selector in [
+                    "model-browser-search",
+                    "model-browser-subagent-inherit",
+                    "model-browser-providers",
+                    "model-browser-models",
+                    "model-browser-close",
+                ] {
+                    let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+                    eprintln!("{selector}: {bounds:?}");
+                    assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+                    assert!(
+                        bounds.left() >= browser.left() && bounds.right() <= browser.right()
+                            && bounds.top() >= browser.top() && bounds.bottom() <= browser.bottom(),
+                        "{selector} exceeds the model browser: {bounds:?} vs {browser:?}",
+                    );
+                }
+            };
+            if chinese {
+                crate::locale::with_zh(check);
+            } else {
+                check();
+            }
+        }
     }
 
     #[gpui::test]

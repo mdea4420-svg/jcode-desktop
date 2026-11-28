@@ -22,6 +22,11 @@ const DOCK_VEIL_ALPHA: f32 = 0.86;
 /// Right padding for the in-box voice button and its inset.
 pub(super) const VOICE_TRAILING_SPACE: f32 = 44.;
 
+pub(super) fn composer_picker_max_height(window: &Window) -> gpui::Pixels {
+    // Leave space for the title bar, composer, and its pill row.
+    (window.viewport_size().height - px(168.)).clamp(px(136.), px(440.))
+}
+
 impl Panel {
     /// Prompt input with its pill row below. Every composer location
     /// (fresh session, startup layout, docked) uses this so the pills never
@@ -270,8 +275,8 @@ impl Panel {
             .flex()
             .flex_col()
             .children(strips)
-            .children(self.render_effort_picker(cx))
-            .children(self.render_swarm_picker(cx))
+            .children(self.render_effort_picker(window, cx))
+            .children(self.render_swarm_picker(window, cx))
             .child(
                 // The voice button floats inside the input's right edge. The
                 // input reserves matching trailing space for it.

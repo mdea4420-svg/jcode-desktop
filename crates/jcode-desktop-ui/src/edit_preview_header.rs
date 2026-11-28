@@ -1,6 +1,6 @@
 //! Two-tone edit header: intent and counts above file details.
 use super::*;
-use crate::ui_actions::OpenChangeReview;
+use crate::{locale::tr, ui_actions::OpenChangeReview};
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct PreviewHeader {
@@ -100,9 +100,9 @@ impl TimedPreview {
                 cx.stop_propagation();
             });
         let status = if self.header.review.failed {
-            "Failed".to_owned()
+            tr("Failed", "失败").to_owned()
         } else if !self.done {
-            "Editing…".to_owned()
+            tr("Editing…", "正在编辑…").to_owned()
         } else if countdown {
             format!("{}s", (self.timer.remaining_fraction() * 5.).ceil() as u32)
         } else {
@@ -176,7 +176,7 @@ impl TimedPreview {
                                     self.header
                                         .intent
                                         .clone()
-                                        .unwrap_or_else(|| "Edit file".into()),
+                                        .unwrap_or_else(|| tr("Edit file", "编辑文件").into()),
                                     window,
                                     cx,
                                 ),

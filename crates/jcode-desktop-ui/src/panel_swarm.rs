@@ -274,7 +274,11 @@ impl Panel {
             .into_any_element())
     }
 
-    pub(super) fn render_swarm_picker(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_swarm_picker(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let focus = self.swarm.focus.as_ref()?;
         let theme = Theme::global();
         let live = self.swarm_live();
@@ -319,7 +323,7 @@ impl Panel {
             .id("swarm-picker")
             .debug_selector(|| "swarm-picker".into())
             .track_focus(focus)
-            .max_h(px(440.))
+            .max_h(super::composer::composer_picker_max_height(window))
             .overflow_y_scroll()
             .flex().flex_col().gap_1().mb_2().p_2()
             .rounded_xl().bg(theme.HEADER_BG).text_color(theme.TEXT).text_size(px(12.))
@@ -800,6 +804,42 @@ mod tests {
             vcx.update(|window, _| assert!(other_focus.is_focused(window)));
             vcx.simulate_mouse_up(outside, gpui::MouseButton::Left, Default::default());
         }
+    }
+
+    #[gpui::test]
+    fn short_viewport_keeps_swarm_and_effort_pickers_inside(cx: &mut gpui::TestAppContext) {
+        crate::locale::with_zh(|| {
+            cx.update(crate::input::bind_keys);
+            let (bridge, _commands) = crate::harness::spawn_recording();
+            let (panel, vcx) = cx.add_window_view(|_, cx| {
+                Panel::new("short-picker-test".into(), None, None, bridge, cx)
+            });
+            let handle = vcx.update(|window, cx| {
+                Panel::connect_input(&panel, cx);
+                window.window_handle()
+            });
+            vcx.simulate_window_resize(handle, gpui::size(px(550.), px(410.)));
+            panel.update_in(vcx, |panel, window, cx| {
+                panel.model = Some("gpt-5.6-sol".into());
+                panel.provider = Some("openai".into());
+                panel.identity_effort(Some("high".into()));
+                panel.reopen_swarm_picker(window, cx);
+            });
+            vcx.run_until_parked();
+            let swarm = vcx.debug_bounds("swarm-picker").expect("Swarm picker");
+            let permission = vcx.debug_bounds("swarm-feature-on").expect("tool permission control");
+            eprintln!("viewport=550x410: swarm={swarm:?}, permission={permission:?}");
+            assert!(swarm.top() >= px(0.) && swarm.bottom() <= px(410.));
+            assert_eq!(swarm.size.height, px(242.));
+            assert!(permission.top() >= swarm.top() && permission.bottom() <= swarm.bottom());
+
+            panel.update_in(vcx, |panel, window, cx| panel.toggle_effort_picker(window, cx));
+            vcx.run_until_parked();
+            let effort = vcx.debug_bounds("effort-picker").expect("effort picker");
+            eprintln!("viewport=550x410: effort={effort:?}");
+            assert!(effort.top() >= px(0.) && effort.bottom() <= px(410.));
+            assert!(effort.size.height > px(0.) && effort.size.height <= px(242.));
+        });
     }
 
     #[gpui::test]

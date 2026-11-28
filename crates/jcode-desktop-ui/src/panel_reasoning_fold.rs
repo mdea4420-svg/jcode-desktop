@@ -7,6 +7,7 @@
 //! selection document. `alt-t` or `/thinking toggle` toggles every settled
 //! thought at once.
 use super::*;
+use crate::locale::{is_zh, tr};
 
 gpui::actions!(reasoning_fold, [ToggleAllThinking]);
 
@@ -172,7 +173,11 @@ impl Panel {
                 div()
                     .flex_none()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(format!("Thinking · {lines} {}", line_word(lines))),
+                    .child(if is_zh() {
+                        format!("思考 · {lines} 行")
+                    } else {
+                        format!("Thinking · {lines} {}", line_word(lines))
+                    }),
             )
             .child(
                 div()
@@ -214,7 +219,7 @@ impl Panel {
                 cx.stop_propagation();
                 panel.collapse_reasoning(index, cx);
             }))
-            .child("Hide thinking")
+            .child(tr("Hide thinking", "收起思考"))
             .into_any_element()
     }
 }

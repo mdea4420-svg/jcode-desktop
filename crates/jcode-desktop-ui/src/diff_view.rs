@@ -7,6 +7,7 @@ use gpui::{
 };
 
 use crate::diff_model::{DiffFile, DiffLine, DiffPreview, LineKind, replacement_pairs};
+use crate::locale::{is_zh, tr};
 use crate::markdown::{flatten_highlights, highlight_code};
 use crate::text_selection::{self, TextSelection};
 use crate::theme::{Theme, to_hsla};
@@ -253,11 +254,11 @@ impl DiffView {
 
     fn status(&self) -> &'static str {
         if self.failed {
-            "Apply failed · proposed changes"
+            tr("Apply failed · proposed changes", "应用失败 · 建议的更改")
         } else if self.done {
-            "Completed · requested changes"
+            tr("Completed · requested changes", "已完成 · 请求的更改")
         } else {
-            "Proposed changes"
+            tr("Proposed changes", "建议的更改")
         }
     }
 
@@ -328,7 +329,7 @@ impl DiffView {
         let id = id.into();
         let selector = id.clone();
         let label = if self.copied.as_ref() == Some(&id) {
-            "Copied!".to_owned()
+            tr("Copied!", "已复制！").to_owned()
         } else {
             label.into()
         };
@@ -463,7 +464,10 @@ impl DiffView {
                     .when(clipped, |el| el.child(div()
                         .debug_selector(move || notice_selector.clone())
                         .py_1().text_size(px(10.)).text_color(theme.TEXT_DIM)
-                        .child("Long line preview: first 4096 characters. Copy diff retains the full line."))),
+                        .child(tr(
+                            "Long line preview: first 4096 characters. Copy diff retains the full line.",
+                            "超长行预览：仅显示前 4096 个字符，复制差异会保留完整内容。",
+                        )))),
             )
             .into_any_element()
     }
@@ -513,9 +517,9 @@ impl DiffView {
                             .child(self.control(
                                 format!("diff-collapse-{index}"),
                                 if state.collapsed {
-                                    "▸ Expand"
+                                    tr("▸ Expand", "▸ 展开")
                                 } else {
-                                    "▾ Collapse"
+                                    tr("▾ Collapse", "▾ 折叠")
                                 },
                                 false,
                                 Control::Collapse(index),
@@ -537,7 +541,7 @@ impl DiffView {
                             div()
                                 .px_2()
                                 .text_color(theme.TEXT_DIM)
-                                .child(format!("From {old}")),
+                                .child(format!("{} {old}", tr("From", "原路径"))),
                         )
                     })
                     .child(
@@ -549,7 +553,7 @@ impl DiffView {
                             .when(self.files.len() > 1, |el| {
                                 el.child(self.control(
                                     format!("diff-copy-file-{index}"),
-                                    "Copy diff",
+                                    tr("Copy diff", "复制差异"),
                                     false,
                                     Control::CopyDiff(Some(index)),
                                     cx,
@@ -557,7 +561,7 @@ impl DiffView {
                             })
                             .child(self.control(
                                 format!("diff-copy-path-{index}"),
-                                "Copy path",
+                                tr("Copy path", "复制路径"),
                                 false,
                                 Control::CopyPath(index),
                                 cx,
@@ -591,7 +595,7 @@ impl DiffView {
                     .when(state.page > 0, |el| {
                         el.child(self.control(
                             format!("diff-prev-{index}"),
-                            "Previous 80 lines",
+                            tr("Previous 80 lines", "上 80 行"),
                             false,
                             Control::Page {
                                 file: index,
@@ -600,16 +604,15 @@ impl DiffView {
                             cx,
                         ))
                     })
-                    .child(div().px_2().text_color(theme.TEXT_DIM).child(format!(
-                        "Rows {}–{} of {}",
-                        start + 1,
-                        end,
-                        state.rows.len()
-                    )))
+                    .child(div().px_2().text_color(theme.TEXT_DIM).child(if is_zh() {
+                        format!("第 {}–{} 行 / 共 {} 行", start + 1, end, state.rows.len())
+                    } else {
+                        format!("Rows {}–{} of {}", start + 1, end, state.rows.len())
+                    }))
                     .when(end < state.rows.len(), |el| {
                         el.child(self.control(
                             format!("diff-more-{index}"),
-                            "Show next 80 lines",
+                            tr("Show next 80 lines", "下 80 行"),
                             false,
                             Control::Page {
                                 file: index,
@@ -626,8 +629,8 @@ impl DiffView {
                     .flex()
                     .flex_row()
                     .text_color(theme.TEXT_DIM)
-                    .child(div().flex_1().px_2().child("Old"))
-                    .child(div().flex_1().px_2().child("New")),
+                    .child(div().flex_1().px_2().child(tr("Old", "修改前")))
+                    .child(div().flex_1().px_2().child(tr("New", "修改后"))),
             );
         }
         // Give the scroll viewport a genuinely wide child. Text overflow alone
@@ -673,17 +676,24 @@ impl DiffView {
                         .text_color(theme.TEXT_DIM)
                         .child(file.hunks[*hunk].header.clone())
                         .into_any_element(),
-                    Row::Fold { hunk, start, end } => self.control(
-                        format!("diff-reveal-{index}-{hunk}-{start}"),
-                        format!("↕ Show {} unchanged lines", end - start - CONTEXT_EDGE * 2),
-                        false,
-                        Control::Reveal {
-                            file: index,
-                            hunk: *hunk,
-                            start: *start,
-                        },
-                        cx,
-                    ),
+                    Row::Fold { hunk, start, end } => {
+                        let count = end - start - CONTEXT_EDGE * 2;
+                        self.control(
+                            format!("diff-reveal-{index}-{hunk}-{start}"),
+                            if is_zh() {
+                                format!("↕ 展开 {count} 行未改动代码")
+                            } else {
+                                format!("↕ Show {count} unchanged lines")
+                            },
+                            false,
+                            Control::Reveal {
+                                file: index,
+                                hunk: *hunk,
+                                start: *start,
+                            },
+                            cx,
+                        )
+                    }
                     Row::Line { hunk, left, right } => {
                         if self.split {
                             div()
@@ -827,11 +837,14 @@ impl Render for DiffView {
                             })
                             .child(self.status()),
                     )
-                    .child(format!(
-                        "{} file{}",
-                        self.files.len(),
-                        if self.files.len() == 1 { "" } else { "s" }
-                    ))
+                    .child({
+                        let count = self.files.len();
+                        if is_zh() {
+                            format!("{count} 个文件")
+                        } else {
+                            format!("{count} file{}", if count == 1 { "" } else { "s" })
+                        }
+                    })
                     .child(stats(self.counts)),
             )
             .child(
@@ -842,18 +855,24 @@ impl Render for DiffView {
                     .gap_1()
                     .child(self.control(
                         "diff-unified",
-                        "Unified",
+                        tr("Unified", "统一视图"),
                         !self.split,
                         Control::Unified,
                         cx,
                     ))
-                    .child(self.control("diff-split", "Split", self.split, Control::Split, cx))
+                    .child(self.control(
+                        "diff-split",
+                        tr("Split", "并排对比"),
+                        self.split,
+                        Control::Split,
+                        cx,
+                    ))
                     .child(self.control(
                         "diff-wrap",
                         if self.wrap {
-                            "Wrap: on"
+                            tr("Wrap: on", "自动换行：开")
                         } else {
-                            "Wrap: off ↔"
+                            tr("Wrap: off ↔", "自动换行：关 ↔")
                         },
                         self.wrap,
                         Control::Wrap,
@@ -861,7 +880,7 @@ impl Render for DiffView {
                     ))
                     .child(self.control(
                         "diff-copy",
-                        "Copy diff",
+                        tr("Copy diff", "复制差异"),
                         false,
                         Control::CopyDiff(None),
                         cx,
@@ -879,22 +898,21 @@ impl Render for DiffView {
                     .when(start > 0, |el| {
                         el.child(self.control(
                             "diff-files-prev",
-                            "Previous files",
+                            tr("Previous files", "上一组文件"),
                             false,
                             Control::Files(false),
                             cx,
                         ))
                     })
-                    .child(format!(
-                        "Files {}–{} of {}",
-                        start + 1,
-                        end,
-                        self.files.len()
-                    ))
+                    .child(if is_zh() {
+                        format!("第 {}–{} 个文件 / 共 {} 个", start + 1, end, self.files.len())
+                    } else {
+                        format!("Files {}–{} of {}", start + 1, end, self.files.len())
+                    })
                     .when(end < self.files.len(), |el| {
                         el.child(self.control(
                             "diff-files-next",
-                            "Show next files",
+                            tr("Show next files", "下一组文件"),
                             false,
                             Control::Files(true),
                             cx,
@@ -1240,6 +1258,24 @@ mod tests {
             view.read_with(vcx, |view, _| view.status()),
             "Apply failed · proposed changes"
         );
+    }
+
+    #[gpui::test]
+    fn diff_status_labels_are_bilingual(cx: &mut gpui::TestAppContext) {
+        let (view, vcx) = cx.add_window_view(|_, cx| {
+            DiffView::new(DiffPreview { files: vec![] }, cx)
+        });
+        for (done, failed, english, chinese) in [
+            (false, false, "Proposed changes", "建议的更改"),
+            (true, false, "Completed · requested changes", "已完成 · 请求的更改"),
+            (true, true, "Apply failed · proposed changes", "应用失败 · 建议的更改"),
+        ] {
+            view.update(vcx, |view, cx| view.set_status(done, failed, cx));
+            assert_eq!(view.read_with(vcx, |view, _| view.status()), english);
+            crate::locale::with_zh(|| {
+                assert_eq!(view.read_with(vcx, |view, _| view.status()), chinese);
+            });
+        }
     }
 
     #[gpui::test]
