@@ -15,6 +15,27 @@ pub(crate) struct ModelDetails {
     pub usage: Option<ModelUsage>,
 }
 
+#[derive(Default)]
+pub(crate) struct ModelCatalog {
+    routes: HashMap<String, ModelDetails>,
+    pub metas: HashMap<String, ModelMeta>,
+    pub remote: bool,
+}
+
+impl std::ops::Deref for ModelCatalog {
+    type Target = HashMap<String, ModelDetails>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.routes
+    }
+}
+
+impl ModelCatalog {
+    fn alias(&self, spec: &str) -> Option<&str> {
+        self.metas.get(spec)?.alias.as_deref()
+    }
+}
+
 /// Route identity: everything that decides its spec and recommendation.
 /// Usage is deliberately absent, since usage ticks are what rebroadcast.
 type RouteKey = (String, String, String, String);
@@ -59,7 +80,7 @@ fn route_identity(route: &ModelRouteInfo) -> (String, bool) {
     })
 }
 
-pub(crate) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDetails> {
+pub(crate) fn from_routes(routes: &[ModelRouteInfo]) -> ModelCatalog {
     let mut details = HashMap::<String, ModelDetails>::with_capacity(routes.len());
     for route in routes.iter().filter(|route| route.available) {
         let (spec, recommended) = route_identity(route);
@@ -79,7 +100,7 @@ pub(crate) fn from_routes(routes: &[ModelRouteInfo]) -> HashMap<String, ModelDet
             }
         }
     }
-    details
+    ModelCatalog { routes: details, ..ModelCatalog::default() }
 }
 
 /// Use the same routing policy as the daemon and TUI, never infer auth from a label.
@@ -534,7 +555,7 @@ pub(crate) fn recent_models(
 /// Friendly picker title for a route spec (`claude-oauth:claude-opus-4-8`
 /// reads `Claude Opus 4.8`) with the channel suffix (` · codex`). The exact
 /// id stays visible in the detail line.
-pub(crate) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>) -> String {
+pub(crate) fn pretty_title(model: &str, details: &ModelCatalog) -> String {
     let (pretty, channel) = title_parts(model, details);
     match channel {
         Some(channel) => format!("{pretty} · {channel}"),
@@ -546,18 +567,21 @@ pub(crate) fn pretty_title(model: &str, details: &HashMap<String, ModelDetails>)
 /// suffix is dropped.
 pub(crate) fn pretty_title_in_group(
     model: &str,
-    details: &HashMap<String, ModelDetails>,
+    details: &ModelCatalog,
 ) -> String {
     title_parts(model, details).0
 }
 
 fn title_parts<'a>(
     model: &'a str,
-    details: &'a HashMap<String, ModelDetails>,
+    details: &'a ModelCatalog,
 ) -> (String, Option<&'a str>) {
     let detail = details.get(model);
     let raw = detail.map_or(model, |detail| detail.model.as_str());
-    let pretty = jcode_provider_core::model_names::pretty_picker_model_name(raw);
+    let pretty = details.alias(model).map_or_else(
+        || jcode_provider_core::model_names::pretty_picker_model_name(raw),
+        str::to_owned,
+    );
     let pretty = if pretty.is_empty() {
         raw.to_string()
     } else {
@@ -566,37 +590,56 @@ fn title_parts<'a>(
     (pretty, channel_namespace(raw, detail))
 }
 
-/// Capability metadata shown as the row's detail line.
+/// Configured title and capabilities for a model route.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ModelMeta {
+    pub alias: Option<String>,
     pub context_window: Option<usize>,
+    pub max_output_tokens: Option<usize>,
     pub image_input: Option<bool>,
+    pub pdf_input: Option<bool>,
     pub reasoning: Option<bool>,
+    pub subagent_schedulable: Option<bool>,
 }
 
 impl ModelMeta {
     fn parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(window) = self.context_window {
-            parts.push(format!("{} {}", format_context_window(window), tr("context", "上下文")));
+            parts.push(format!("{} {}", format_token_count(window), tr("context", "上下文")));
+        }
+        if let Some(limit) = self.max_output_tokens {
+            parts.push(format!("{} {}", format_token_count(limit), tr("max output", "最大输出")));
         }
         if self.image_input == Some(true) {
             parts.push(tr("Images", "图片").into());
         }
+        if self.pdf_input == Some(true) {
+            parts.push("PDF".into());
+        }
         if self.reasoning == Some(true) {
             parts.push(tr("Reasoning", "推理").into());
+        }
+        if let Some(schedulable) = self.subagent_schedulable {
+            parts.push(if schedulable {
+                tr("Subagents", "子代理")
+            } else {
+                tr("Subagents unavailable", "不可用于子代理")
+            }.into());
         }
         parts
     }
 }
 
-fn format_context_window(window: usize) -> String {
-    if window >= 1_000_000 {
-        let millions = window as f64 / 1_000_000.0;
+fn format_token_count(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        let millions = tokens as f64 / 1_000_000.0;
         let text = format!("{millions:.1}");
         format!("{}M", text.trim_end_matches(".0"))
+    } else if tokens >= 1000 {
+        format!("{}K", tokens / 1000)
     } else {
-        format!("{}K", window / 1000)
+        tokens.to_string()
     }
 }
 
@@ -816,7 +859,7 @@ mod tests {
             routed,
         ]);
         assert_eq!(details.len(), 3);
-        for (spec, detail) in &details {
+        for (spec, detail) in details.iter() {
             assert_eq!(model_logo(spec, &details), "openai", "{spec}");
             let parts = header_parts(spec, &details);
             let expected = match detail.api_method.as_str() {
@@ -1018,7 +1061,6 @@ mod tests {
             &ModelFilter::Favorites,
             &models,
             &details,
-            &Default::default(),
             &favorites,
             None,
             "",
@@ -1105,7 +1147,6 @@ mod tests {
                     &filter,
                     &models,
                     &details,
-                    &Default::default(),
                     &favorites,
                     Some(spec),
                     "",
@@ -1124,7 +1165,6 @@ mod tests {
             &ModelFilter::Group(group_key(spec, &details)),
             &models,
             &details,
-            &Default::default(),
             &[],
             Some(spec),
             "",
@@ -1161,11 +1201,43 @@ mod tests {
     }
 
     #[test]
+    fn alias_search_keeps_the_route_spec_in_both_pickers() {
+        let mut details = from_routes(&[magpie_route("codex/gpt-6.2-sol", 0, None)]);
+        let spec = "magpie:codex/gpt-6.2-sol";
+        let models = vec![spec.to_string()];
+        details.metas.insert(spec.into(), ModelMeta {
+            alias: Some("Build assistant".into()),
+            max_output_tokens: Some(8_000),
+            pdf_input: Some(true),
+            subagent_schedulable: Some(false),
+            ..ModelMeta::default()
+        });
+        let compact = grouped_rows(
+            &models, &details, None, &Default::default(), &[],
+            &Hidden::NONE, true, false, "build assistant",
+        );
+        assert_eq!(compact.len(), 1);
+        assert_eq!(compact[0].value, format!("/model {spec}"));
+        assert_eq!(pretty_title_in_group(spec, &details), "Build assistant");
+        for filter in [ModelFilter::All, ModelFilter::Favorites] {
+            let rows = browser_rows(
+                &filter, &models, &details, &models, None,
+                "build assistant", 0, &Hidden::NONE,
+            );
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].spec, spec);
+            assert!(rows[0].title.starts_with("Build assistant"));
+            assert_eq!(rows[0].detail.as_deref(), Some("8K max output · PDF · Subagents unavailable"));
+        }
+    }
+
+    #[test]
     fn detail_label_formats_meta_and_used_time() {
         let meta = |context_window, image_input, reasoning| ModelMeta {
             context_window,
             image_input,
             reasoning,
+            ..ModelMeta::default()
         };
         assert_eq!(
             detail_label(Some(&meta(Some(272_000), Some(true), Some(true))), None, 0).as_deref(),
@@ -1394,8 +1466,7 @@ pub(crate) fn browser_filters(
 pub(crate) fn browser_rows(
     filter: &ModelFilter,
     models: &[String],
-    details: &HashMap<String, ModelDetails>,
-    metas: &HashMap<String, ModelMeta>,
+    details: &ModelCatalog,
     favorites: &[String],
     current: Option<&str>,
     query: &str,
@@ -1411,7 +1482,7 @@ pub(crate) fn browser_rows(
     let row = |spec: &str, title: String, used: Option<u64>| BrowserRow {
         spec: spec.to_string(),
         title,
-        detail: detail_label(metas.get(spec), used, now),
+        detail: detail_label(details.metas.get(spec), used, now),
         header: None,
         header_logo: "",
         logo: model_logo(spec, details),
@@ -1509,7 +1580,7 @@ pub(crate) fn browser_rows(
 /// `specs` ranked by `model_search` for `query`, or unchanged when empty.
 fn apply_query<'a>(
     specs: &'a [String],
-    details: &HashMap<String, ModelDetails>,
+    details: &ModelCatalog,
     query: &super::model_search::ModelQuery,
 ) -> Vec<&'a String> {
     if query.is_empty() {
@@ -1520,7 +1591,8 @@ fn apply_query<'a>(
         details,
         |model| {
             let key = group_key(model, details);
-            format!("{} {}", group_base_label(model, details), key)
+            let alias = details.alias(model).unwrap_or_default();
+            format!("{} {key} {alias}", group_base_label(model, details))
         },
         query,
     )
@@ -1531,7 +1603,7 @@ fn apply_query<'a>(
 
 pub(crate) fn grouped_rows(
     models: &[String],
-    details: &HashMap<String, ModelDetails>,
+    details: &ModelCatalog,
     current: Option<&str>,
     expanded: &std::collections::HashSet<String>,
     favorites: &[String],
@@ -1597,7 +1669,8 @@ pub(crate) fn grouped_rows(
             details,
             |model| {
                 let key = group_key(model, details);
-                format!("{} {}", labels[&key], key)
+                let alias = details.alias(model).unwrap_or_default();
+                format!("{} {key} {alias}", labels[&key])
             },
             &query,
         );
@@ -1675,7 +1748,7 @@ mod grouping_performance_tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn fixture(count: usize, group_count: usize) -> (Vec<String>, HashMap<String, ModelDetails>) {
+    fn fixture(count: usize, group_count: usize) -> (Vec<String>, ModelCatalog) {
         let models: Vec<_> = (0..count)
             .map(|i| format!("provider:model-{i:04}"))
             .collect();
@@ -1695,7 +1768,7 @@ mod grouping_performance_tests {
                 )
             })
             .collect();
-        (models, details)
+        (models, ModelCatalog { routes: details, ..ModelCatalog::default() })
     }
 
     #[test]
@@ -1730,7 +1803,7 @@ mod grouping_performance_tests {
         use std::time::Instant;
         type Grouping = fn(
             &[String],
-            &HashMap<String, ModelDetails>,
+            &ModelCatalog,
             Option<&str>,
             &HashSet<String>,
             &[String],
@@ -1796,7 +1869,7 @@ mod grouping_performance_tests {
     // correctness and performance, not a second production code path.
     fn legacy_grouped_rows(
         models: &[String],
-        details: &HashMap<String, ModelDetails>,
+        details: &ModelCatalog,
         current: Option<&str>,
         expanded: &std::collections::HashSet<String>,
         _favorites: &[String],

@@ -1242,8 +1242,8 @@ impl Panel {
         );
         let mut out = Vec::new();
         let query = state.search.read(cx).content.to_string();
-        if let Some(custom_section) = self.render_custom_api_section(&query, cx) {
-            out.push(custom_section);
+        if self.custom_api_matches_query(&query) {
+            out.push(self.render_custom_api_section(state, cx));
         }
         if !groups.pooled.is_empty() || !groups.manual.is_empty() {
             out.push(self.render_account_group(

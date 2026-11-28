@@ -110,6 +110,10 @@ fn screenshot_magpie_routes(now: u64) -> Vec<jcode_sdk::ModelRouteInfo> {
     .collect()
 }
 
+fn is_subagent_schedulable(meta: Option<&model_menu::ModelMeta>) -> bool {
+    meta.and_then(|meta| meta.subagent_schedulable) != Some(false)
+}
+
 impl Panel {
     pub(super) fn toggle_model_routes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model_browser.is_some() {
@@ -133,13 +137,8 @@ impl Panel {
         };
         let input = self.input.read(cx);
         let details = input.model_details();
-        let fallback;
-        let models = if input.command_models().is_empty() {
-            fallback = details.keys().cloned().collect::<Vec<_>>();
-            fallback.as_slice()
-        } else {
-            input.command_models()
-        };
+        let mut models = self.model_browser_catalog_models(input);
+        model_menu::rank(&mut models, details);
         let (_, hidden_groups) = model_favorites::hidden_groups();
         let (_, hidden_models) = model_favorites::hidden_models();
         let hidden = model_menu::Hidden {
@@ -167,10 +166,10 @@ impl Panel {
             });
         let filter = current_spec
             .map(String::as_str)
-            .or_else(|| model_menu::current_spec(current, models, details))
+            .or_else(|| model_menu::current_spec(current, &models, details))
             .map(|spec| model_menu::group_key(spec, details))
             .filter(|key| {
-                model_menu::groups_of(models, details, current, &hidden)
+                model_menu::groups_of(&models, details, current, &hidden)
                     .iter()
                     .any(|(visible, _, _)| visible == key)
             })
@@ -263,9 +262,8 @@ impl Panel {
                     .unwrap_or(models);
                 input.set_command_models(models, cx);
             }
+            input.load_configured_model_meta();
         });
-        let input = self.input.clone();
-        cx.defer(move |cx| input.update(cx, |input, _cx| input.load_configured_model_meta()));
         cx.notify();
     }
 
@@ -400,6 +398,24 @@ impl Panel {
         }
     }
 
+    fn model_browser_catalog_models(&self, input: &PromptInput) -> Vec<String> {
+        let details = input.model_details();
+        let mut models: Vec<String> = if details.is_empty() {
+            input.command_models().to_vec()
+        } else {
+            details.keys().cloned().collect()
+        };
+        if self.model_browser.as_ref()
+            .is_some_and(|state| matches!(state.purpose, BrowserPurpose::AgentRole(_)))
+        {
+            let current = self.browser_current_model();
+            models.retain(|spec| {
+                current == Some(spec.as_str()) || is_subagent_schedulable(details.metas.get(spec))
+            });
+        }
+        models
+    }
+
     /// Rows for the active filter and search query.
     fn model_browser_rows(&self, cx: &App) -> Vec<BrowserRow> {
         let Some(state) = &self.model_browser else {
@@ -407,11 +423,7 @@ impl Panel {
         };
         let input = self.input.read(cx);
         let details = input.model_details();
-        let models: Vec<String> = if details.is_empty() {
-            input.command_models().to_vec()
-        } else {
-            details.keys().cloned().collect()
-        };
+        let models = self.model_browser_catalog_models(input);
         let (_, favorites) = model_favorites::favorites();
         let (_, hidden_groups) = model_favorites::hidden_groups();
         let (_, hidden_models) = model_favorites::hidden_models();
@@ -420,7 +432,6 @@ impl Panel {
             &state.filter,
             &models,
             details,
-            input.model_metas(),
             &favorites,
             self.browser_current_model(),
             &query,
@@ -439,11 +450,7 @@ impl Panel {
     fn model_browser_manage_rows(&self, cx: &App) -> Vec<ManageGroup> {
         let input = self.input.read(cx);
         let details = input.model_details();
-        let models: Vec<String> = if details.is_empty() {
-            input.command_models().to_vec()
-        } else {
-            details.keys().cloned().collect()
-        };
+        let models = self.model_browser_catalog_models(input);
         let (_, hidden) = model_favorites::hidden_groups();
         let query = self
             .model_browser
@@ -500,18 +507,14 @@ impl Panel {
     fn model_browser_manage_model_rows(&self, cx: &App) -> Vec<ManageModel> {
         let input = self.input.read(cx);
         let details = input.model_details();
-        let models: Vec<String> = if details.is_empty() {
-            input.command_models().to_vec()
-        } else {
-            details.keys().cloned().collect()
-        };
+        let models = self.model_browser_catalog_models(input);
         let (_, hidden_models) = model_favorites::hidden_models();
         let query = self
             .model_browser
             .as_ref()
             .map(|state| state.search.read(cx).content.to_lowercase())
             .unwrap_or_default();
-        let metas = input.model_metas();
+        let metas = &details.metas;
         let now = model_menu::now_unix_secs();
         let current = self.browser_current_model();
         let mut ranked = model_menu::ranked_specs(&models, details);
@@ -539,7 +542,10 @@ impl Panel {
     /// Apply a subagent override or select the main model via `/model <spec>`.
     fn choose_browser_model(&mut self, spec: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(BrowserPurpose::AgentRole(role)) = self.model_browser.as_ref().map(|state| state.purpose) {
-            self.select_agent_role_model(role, Some(spec), window, cx);
+            let meta = self.input.read(cx).model_details().metas.get(&spec);
+            if is_subagent_schedulable(meta) {
+                self.select_agent_role_model(role, Some(spec), window, cx);
+            }
             return;
         }
         self.model_browser = None;
@@ -571,11 +577,7 @@ impl Panel {
         let filters = {
             let input = self.input.read(cx);
             let details = input.model_details();
-            let models: Vec<String> = if details.is_empty() {
-                input.command_models().to_vec()
-            } else {
-                details.keys().cloned().collect()
-            };
+            let models = self.model_browser_catalog_models(input);
             let (_, favorites) = model_favorites::favorites();
             let (_, hidden_groups) = model_favorites::hidden_groups();
             let (_, hidden_models) = model_favorites::hidden_models();
@@ -1615,6 +1617,45 @@ mod tests {
 
     fn rows(panel: &gpui::Entity<Panel>, vcx: &mut gpui::VisualTestContext) -> Vec<BrowserRow> {
         panel.read_with(vcx, |panel, cx| panel.model_browser_rows(cx))
+    }
+
+    #[gpui::test]
+    fn subagent_browser_filters_unschedulable_models_but_keeps_current_role_model(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        crate::input::model_favorites::reset();
+        let (panel, vcx, _) = setup(cx);
+        let spec = panel.update(vcx, |panel, cx| {
+            panel.input.update(cx, |input, _| {
+                input.set_configured_model_meta(std::collections::HashMap::from([(
+                    ("magpie".into(), "codex/gpt-6.2-sol".into()),
+                    crate::custom_providers::ConfiguredModelMeta {
+                        subagent_schedulable: Some(false),
+                        ..Default::default()
+                    },
+                )]));
+                input.model_details().metas.iter()
+                    .find(|(_, meta)| meta.subagent_schedulable == Some(false))
+                    .expect("configured model metadata is present")
+                    .0.clone()
+            })
+        });
+        panel.update_in(vcx, |panel, window, cx| panel.toggle_model_picker(window, cx));
+        assert!(rows(&panel, vcx).iter().any(|row| row.spec == spec));
+
+        panel.update(vcx, |panel, cx| panel.open_agent_role_browser(AgentRole::Memory, cx));
+        let role_rows = rows(&panel, vcx);
+        assert!(!role_rows.is_empty());
+        assert!(role_rows.iter().all(|row| row.spec != spec));
+
+        panel.update(vcx, |panel, _| {
+            panel.sync_swarm_result(
+                jcode_sdk::api::RuntimeCommand::Agents,
+                &serde_json::json!({"overrides": {"memory": &spec}}),
+            );
+        });
+        assert!(rows(&panel, vcx).iter().any(|row| row.spec == spec));
+        crate::input::model_favorites::reset();
     }
 
     #[gpui::test]

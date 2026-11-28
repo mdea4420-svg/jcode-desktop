@@ -126,7 +126,7 @@ impl Panel {
                 .hover(|row| row.bg(theme.ACCENT_DIM))
                 .child(effort_level_label(level))
                 .when(current, |row| row.child(tr("Current", "当前")))
-                .when(self.magpie_default_effort() == Some(level), |row| {
+                .when(self.custom_provider_default_effort() == Some(level), |row| {
                     row.child(tr("Gateway default", "网关默认"))
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -192,7 +192,7 @@ impl Panel {
 
     /// Levels the serving model accepts.
     pub(super) fn effort_ladder(&self) -> Vec<&'static str> {
-        if self.is_magpie_effort_route() {
+        if self.uses_custom_provider_effort() {
             return match &self.magpie_effort {
                 Some(MagpieEffort::Known { levels, fixed: false, .. }) => levels.clone(),
                 _ => Vec::new(),
@@ -201,21 +201,45 @@ impl Panel {
         effort::ladder(self.provider.as_deref(), self.model.as_deref())
     }
 
-    fn is_magpie_effort_route(&self) -> bool {
-        self.provider.as_deref() == Some("magpie")
+    fn uses_custom_provider_effort(&self) -> bool {
+        self.magpie_effort_model.is_some() || self.provider.as_deref() == Some("magpie")
     }
 
+    fn custom_provider_effort_target<'a>(&'a self, cx: &'a App) -> Option<(&'a str, &'a str)> {
+        let model = self.model.as_deref()?;
+        let provider = self.provider.as_deref();
+        let input = self.input.read(cx);
+        let is_configured = |profile: &str| {
+            profile == "magpie" || input.is_configured_model_profile(profile)
+        };
+        let route = input.route_for_model(model, provider).filter(|(_, route)| {
+            provider.is_none_or(|provider| route.provider.eq_ignore_ascii_case(provider))
+        });
+        let profile = route
+            .and_then(|(_, route)| route.api_method.strip_prefix("openai-compatible:"))
+            .filter(|profile| is_configured(profile))
+            .or_else(|| {
+                let provider = provider?;
+                let profile = provider.strip_prefix("openai-compatible:").unwrap_or(provider);
+                is_configured(profile).then_some(profile)
+            })?;
+        let id = crate::input::custom_profile_model_id(model, profile);
+        (!id.is_empty()).then_some((profile, id))
+    }
+
+    // Keep the existing Panel entry point while probing all configured endpoints.
     pub(super) fn refresh_magpie_effort(&mut self, cx: &mut Context<Self>) {
-        if !self.is_magpie_effort_route() {
+        let Some((profile, model)) = self.custom_provider_effort_target(cx) else {
             self.magpie_effort_model = None;
             self.magpie_effort = None;
             return;
-        }
-        if self.magpie_effort_model == self.model {
+        };
+        let route_key = format!("{profile}:{model}");
+        if self.magpie_effort_model.as_deref() == Some(route_key.as_str()) {
             return;
         }
-        let Some(model) = self.model.clone() else { return; };
-        self.magpie_effort_model = Some(model.clone());
+        let (profile, model) = (profile.to_owned(), model.to_owned());
+        self.magpie_effort_model = Some(route_key);
         self.magpie_effort_generation += 1;
         let generation = self.magpie_effort_generation;
         self.magpie_effort = None;
@@ -226,12 +250,12 @@ impl Panel {
             return;
         }
         let work = cx.background_executor().spawn(async move {
-            crate::custom_providers::magpie_effort(&model)
+            crate::custom_providers::custom_provider_effort(&profile, &model)
         });
         cx.spawn(async move |this, cx| {
             let capability = work.await;
             let _ = this.update(cx, |panel, cx| {
-                if panel.is_magpie_effort_route()
+                if panel.uses_custom_provider_effort()
                     && panel.magpie_effort_generation == generation
                 {
                     panel.magpie_effort = Some(capability);
@@ -249,7 +273,7 @@ impl Panel {
         }).detach();
     }
 
-    fn magpie_default_effort(&self) -> Option<&str> {
+    fn custom_provider_default_effort(&self) -> Option<&str> {
         match self.magpie_effort.as_ref() {
             Some(MagpieEffort::Known { default, .. }) => default.as_deref(),
             _ => None,
@@ -261,7 +285,7 @@ impl Panel {
         if let Some(level) = self.reasoning_effort.as_deref().filter(|level| super::swarm::is_swarm_effort(level)) {
             return Some(super::swarm::effort_label(level).into());
         }
-        if self.is_magpie_effort_route() {
+        if self.uses_custom_provider_effort() {
             return Some(match self.magpie_effort.as_ref() {
                 Some(MagpieEffort::Unsupported) => tr("No reasoning", "无推理").into(),
                 Some(MagpieEffort::Known { fixed: true, default, .. }) => {
@@ -281,12 +305,12 @@ impl Panel {
     }
 
     pub(super) fn effort_unavailable_message(&self) -> String {
-        if !self.is_magpie_effort_route() {
+        if !self.uses_custom_provider_effort() {
             return tr("This model offers no adjustable reasoning effort.", "此模型没有可调节的推理强度。").into();
         }
         match self.magpie_effort.as_ref() {
-            None => tr("Reading Magpie's model catalog…", "正在读取 Magpie 模型目录…").into(),
-            Some(MagpieEffort::Unknown) => tr("No effort levels were available from the Magpie catalog.", "未从 Magpie 目录取得推理档位。").into(),
+            None => tr("Reading the endpoint’s model catalog…", "正在读取端点模型目录…").into(),
+            Some(MagpieEffort::Unknown) => tr("No effort levels were available from the endpoint catalog.", "未从端点目录取得推理档位。").into(),
             Some(MagpieEffort::Unsupported) => tr("Reasoning is disabled for this route.", "此路由未启用推理。").into(),
             Some(MagpieEffort::RuntimeLimited) => tr("This Jcode runtime cannot apply the advertised levels.", "当前 Jcode 运行时无法应用网关声明的档位。").into(),
             Some(MagpieEffort::Known { default, .. }) => match default.as_deref() {

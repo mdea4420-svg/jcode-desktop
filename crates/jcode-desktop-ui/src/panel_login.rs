@@ -2,6 +2,7 @@
 use super::*;
 use crate::locale::{is_zh, tr};
 use crate::login_input::LoginInput;
+use std::rc::Rc;
 use jcode_sdk::{
     AuthClient, AuthFlow, AuthInputKind, AuthOptions, AuthPrompt, LoginMethod, LoginProvider,
 };
@@ -57,6 +58,13 @@ pub(super) struct LoginState {
     live_errors: HashMap<String, String>,
     live_tasks: Vec<Task<()>>,
     custom_api: Option<custom_api::CustomApiEditor>,
+    services_only: bool,
+    services_return_to_accounts: bool,
+    services_search: Entity<PromptInput>,
+    services_loading: bool,
+    services_busy: bool,
+    services_task: Option<Task<()>>,
+    services_width: Rc<std::cell::Cell<Option<gpui::Pixels>>>,
 }
 
 impl Drop for LoginState {
@@ -81,6 +89,9 @@ impl Panel {
         if let Some(editor) = &state.custom_api {
             return Some(editor.base_url.focus_handle(cx));
         }
+        if state.services_only {
+            return Some(state.services_search.focus_handle(cx));
+        }
         if state.provider.is_none() {
             return Some(state.search.focus_handle(cx));
         }
@@ -101,6 +112,10 @@ impl Panel {
     }
 
     pub(super) fn open_login_picker(&mut self, cx: &mut Context<Self>) {
+        self.open_login_picker_with_mode(false, cx);
+    }
+
+    fn open_login_picker_with_mode(&mut self, services_only: bool, cx: &mut Context<Self>) {
         self.effort_picker = None;
         self.swarm.focus = None;
         self.recovery_picker_open = false;
@@ -112,7 +127,9 @@ impl Panel {
             binary: crate::platform::companion_executable("jcode"),
             ..Default::default()
         });
-        let providers = if self.preview_state.is_some() {
+        let providers = if services_only && !self.login_is_remote() {
+            Vec::new()
+        } else if self.preview_state.is_some() {
             vec![
                 LoginProvider {
                     id: "openai",
@@ -195,17 +212,28 @@ impl Panel {
             live_errors: HashMap::new(),
             live_tasks: Vec::new(),
             custom_api: None,
+            services_only: services_only && !self.login_is_remote(),
+            services_return_to_accounts: false,
+            services_search: custom_api::plain_field(tr("Search services…", "搜索服务…"), "", cx),
+            services_loading: false,
+            services_busy: false,
+            services_task: None,
+            services_width: Default::default(),
         });
         // Local credentials cannot authenticate an SSH-hosted session.
         if self.login_is_remote() {
             self.login.as_mut().unwrap().error = Some(
                 tr("This session runs on another machine. Desktop login currently connects accounts on this computer only. Your remote credentials have not been changed.", "此会话在另一台机器上运行。桌面登录目前只能连接本机账户。远程凭据未更改。").into());
         } else {
-            self.refresh_login_status(cx);
+            self.load_custom_api_services(cx);
+            if !services_only {
+                self.refresh_login_status(cx);
+            }
         }
         // Offline screenshot fixture: an OAuth sign-in waiting for the
         // browser, so the checklist can be reviewed without a network.
-        if crate::harness::screenshot_mode()
+        if !services_only
+            && crate::harness::screenshot_mode()
             && std::env::var("JCODE_DESKTOP_SCREENSHOT_SIGN_IN_STEPS").as_deref() == Ok("1")
             && let Some(state) = self.login.as_mut()
         {
@@ -254,7 +282,7 @@ impl Panel {
                     accounts: crate::accounts::fetch(),
                     logins: jcode_base::auth::account_pool::oauth_logins(),
                     pool: jcode_base::auth::account_pool::AccountPool::load(),
-                    custom: crate::custom_providers::list(),
+                    custom: Vec::new(),
                     default_route,
                     default_key: None,
                 }
@@ -265,6 +293,7 @@ impl Panel {
             let _ = this.update(cx, |panel, cx| {
                 if let Some(state) = panel.login.as_mut() {
                     let mut data = data;
+                    data.custom = std::mem::take(&mut state.accounts.custom);
                     data.resolve_default(&state.providers);
                     state.accounts = data;
                     cx.notify();
@@ -398,20 +427,23 @@ impl Panel {
 
     pub(crate) fn login_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
         if crate::commands::is_custom_api_command(content) {
-            self.open_custom_api_editor(None, cx);
+            self.close_custom_api_editor(cx);
+            self.open_custom_api_services(false, cx);
             return true;
         }
         let mut words = content.split_whitespace();
         if words.next() != Some("/login") {
             return false;
         }
+        let provider = words.next();
+        let extra = words.next().is_some();
+        if provider == Some("custom") && !extra {
+            self.open_custom_api_editor(None, cx);
+            return true;
+        }
         self.open_login_picker(cx);
-        if let Some(provider) = words.next() {
-            if provider == "custom" && words.next().is_none() {
-                self.open_custom_api_editor(None, cx);
-                return true;
-            }
-            if words.next().is_some() {
+        if let Some(provider) = provider {
+            if extra {
                 self.login.as_mut().unwrap().error =
                     Some(tr("Choose a provider below to sign in.", "请在下方选择要登录的服务商。").into());
             } else if let Some(provider) = {
@@ -776,29 +808,14 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if let Some(state) = self.login.as_mut()
-            && state.focus_pending
-        {
-            state.focus_pending = false;
-            if let Some(editor) = &state.custom_api {
-                editor.base_url.focus_handle(cx).focus(window, cx);
-            } else if state.provider.is_none() {
-                state.search.focus_handle(cx).focus(window, cx);
-            } else if state
-                .provider
-                .as_ref()
-                .is_some_and(|provider| provider.method == LoginMethod::ApiKey)
-            {
-                let focus = state.input.read(cx).focus_handle.clone();
-                focus.focus(window, cx);
-            } else if manual_input_visible(state) {
-                let focus = state.input.read(cx).focus_handle.clone();
-                focus.focus(window, cx);
-            } else {
-                self.focus_handle.focus(window, cx);
-            }
+        if self.login.as_ref().is_some_and(|state| state.focus_pending) {
+            self.login.as_mut().unwrap().focus_pending = false;
+            self.login_input_focus_handle(cx)
+                .unwrap_or_else(|| self.focus_handle.clone())
+                .focus(window, cx);
         }
         if let Some(state) = self.login.as_mut()
+            && !state.services_only
             && !state.browser_opened
             && let Some(prompt) = &state.prompt
         {
@@ -810,6 +827,44 @@ impl Panel {
         let state = self.login.as_ref()?;
         let theme = Theme::global();
         let remote = self.login_is_remote();
+        if state.services_only {
+            let width = state.services_width.get().unwrap_or_else(|| window.viewport_size().width);
+            let content = if let Some(editor) = &state.custom_api {
+                self.render_custom_api_editor(editor, width, cx)
+            } else {
+                self.render_custom_api_services(state, cx)
+            };
+            let measured_width = state.services_width.clone();
+            return Some(div()
+                .id("login-dialog")
+                .debug_selector(|| "login-dialog".into())
+                .absolute().inset_0().size_full().occlude()
+                .bg(theme.PANEL_BG).text_color(theme.TEXT).text_size(px(14.))
+                .flex().flex_col().p_4()
+                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.is_held { return; }
+                    match event.keystroke.key.as_str() {
+                        "escape" => {
+                            if this.login.as_ref().is_some_and(|state| state.custom_api.is_some()) {
+                                this.close_custom_api_editor(cx);
+                            } else {
+                                this.close_custom_api_services(window, cx);
+                            }
+                            cx.stop_propagation();
+                        }
+                        _ => {}
+                    }
+                }))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .child(gpui::canvas(|_, _, _| (), move |bounds, _, window, _| {
+                    if measured_width.replace(Some(bounds.size.width)) != Some(bounds.size.width) {
+                        window.request_animation_frame();
+                    }
+                }).absolute().inset_0().size_full())
+                .child(content)
+                .into_any_element());
+        }
         let mut body = div().flex().flex_col().gap_3();
         // An in-progress sign-in shows its error inside the failed step.
         if let Some(error) = state
@@ -824,15 +879,6 @@ impl Panel {
                     .child(error.clone()),
             );
         }
-        if state.provider.is_none()
-            && state.custom_api.is_none()
-            && matches!(state.custom_api_reload, Some(crate::custom_providers::RuntimeReloadStatus::Deferred))
-        {
-            body = body.child(div().text_color(theme.WARN).child(crate::locale::tr(
-                "Configuration saved. The background service reload did not complete.",
-                "配置已保存。后台服务暂未完成重载。"
-            )));
-        }
         if state.complete {
             if let Some(provider) = state.provider {
                 body = body.child(self.render_login_steps(state, provider, cx));
@@ -846,9 +892,7 @@ impl Panel {
                         } else {
                             theme.OK
                         })
-                        .child(if state.custom_api_reload.is_some() && state.provider.is_none() {
-                            crate::locale::tr("Configuration saved.", "配置已保存。")
-                        } else if self.login_target_session().is_some() {
+                        .child(if self.login_target_session().is_some() {
                             tr("Account connected. This session now uses it.", "账户已连接，当前会话已切换到此账户。")
                         } else {
                             tr("Account connected.", "账户已连接。")
@@ -884,8 +928,6 @@ impl Panel {
                             ),
                         ),
                 );
-        } else if let Some(editor) = &state.custom_api {
-            body = body.child(self.render_custom_api_editor(editor, cx));
         } else if let Some(provider) = state.provider {
             body = body.child(
                 div()
@@ -935,31 +977,17 @@ impl Panel {
                 .occlude()
                 .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && !event.is_held {
-                        if this
-                            .login
-                            .as_ref()
-                            .is_some_and(|state| state.custom_api.is_some())
-                        {
-                            this.close_custom_api_editor(cx);
+                        this.close_login_picker(cx);
+                        if this.is_accounts_panel() {
+                            cx.emit(AccountsPanelClosed);
                         } else {
-                            this.close_login_picker(cx);
-                            if this.is_accounts_panel() {
-                                cx.emit(AccountsPanelClosed);
-                            } else {
-                                this.focus_input(window, cx);
-                            }
+                            this.focus_input(window, cx);
                         }
                         cx.stop_propagation();
                     }
                 }))
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                    if event.keystroke.key == "enter"
-                        && !event.is_held
-                        && this
-                            .login
-                            .as_ref()
-                            .is_none_or(|state| state.custom_api.is_none())
-                    {
+                    if event.keystroke.key == "enter" && !event.is_held {
                         this.submit_login(cx);
                         cx.stop_propagation();
                     }
@@ -985,7 +1013,6 @@ impl Panel {
                         )
                         .when(
                             state.provider.is_none()
-                                && state.custom_api.is_none()
                                 && !state.complete
                                 && !remote,
                             |el| {
@@ -1037,7 +1064,6 @@ impl Panel {
                 )
                 .when(
                     state.provider.is_none()
-                        && state.custom_api.is_none()
                         && !state.complete
                         && !remote,
                     |el| {
@@ -1554,6 +1580,11 @@ mod tests {
             assert!(panel.login_command("/api", cx));
         });
         vcx.run_until_parked();
+        assert!(vcx.debug_bounds("custom-api-services").is_some());
+        assert!(vcx.debug_bounds("login-group-auto").is_none());
+        let add = vcx.debug_bounds("custom-api-add").unwrap();
+        vcx.simulate_click(add.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
         assert!(vcx.debug_bounds("custom-api-editor").is_some());
         assert!(vcx.debug_bounds("custom-api-save").is_some());
 
@@ -1563,8 +1594,7 @@ mod tests {
                 .base_url
                 .update(cx, |input, cx| input.set_content("https://api.siliconflow.cn".into(), cx));
             editor
-                .default_model
-                .update(cx, |input, cx| input.set_content("deepseek-ai/DeepSeek-V3".into(), cx));
+                .add_model("deepseek-ai/DeepSeek-V3".into());
             editor
                 .api_key
                 .update(cx, |input, cx| input.set_secret("sk-private-third-party-key".into(), cx));
@@ -1582,7 +1612,8 @@ mod tests {
         assert!(
             matches!(commands.try_recv(), Ok(Command::SetModel { session_id, model }) if session_id == "custom-api-test" && model == "siliconflow:deepseek-ai/DeepSeek-V3")
         );
-        assert!(vcx.debug_bounds("login-done").is_some());
+        assert!(vcx.debug_bounds("custom-api-services").is_some());
+        assert!(vcx.debug_bounds("custom-api-row-siliconflow").is_some());
     }
 }
 

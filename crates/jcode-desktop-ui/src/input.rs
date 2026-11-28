@@ -191,9 +191,7 @@ pub struct PromptInput {
     command_completion: bool,
     command_menu_active: bool,
     command_selection: usize,
-    model_details: HashMap<String, model_menu::ModelDetails>,
-    /// Capability metadata per route spec for the pickers' detail line.
-    model_meta: HashMap<String, model_menu::ModelMeta>,
+    model_details: model_menu::ModelCatalog,
     /// `[providers.<name>].models` config, loaded when a picker opens.
     configured_profile_names: HashSet<String>,
     configured_model_meta:
@@ -621,8 +619,7 @@ impl PromptInput {
             command_completion: true,
             command_menu_active: true,
             command_selection: 0,
-            model_details: HashMap::new(),
-            model_meta: HashMap::new(),
+            model_details: model_menu::ModelCatalog::default(),
             configured_profile_names: HashSet::new(),
             configured_model_meta: HashMap::new(),
             applied_model_routes: None,
@@ -887,6 +884,7 @@ impl PromptInput {
             .get(self.command_selection)
             .cloned();
         self.model_details = model_menu::from_routes(routes);
+        self.model_details.remote = remote;
         self.refresh_model_meta();
         self.suggestions_revision += 1;
         self.current_model = current_model;
@@ -1026,7 +1024,7 @@ impl PromptInput {
                             })
                     });
                     suggestion.detail = model_menu::detail_label(
-                        self.model_meta.get(model),
+                        self.model_details.metas.get(model),
                         used.flatten(),
                         now,
                     );
@@ -1528,35 +1526,33 @@ impl PromptInput {
     /// Rebuild per-spec capability metadata from details + configured values.
     /// Runs on route or config reload, never per frame.
     fn refresh_model_meta(&mut self) {
-        self.model_meta = self
+        let configured = (!self.model_details.remote).then_some(&self.configured_model_meta);
+        self.model_details.metas = self
             .model_details
             .iter()
             .map(|(spec, detail)| {
                 (
                     spec.clone(),
-                    model_meta_for(detail, &self.configured_model_meta),
+                    model_meta_for(detail, configured),
                 )
             })
             .collect();
     }
 
-    /// The whole capability map, for the model browser's row building.
-    pub(crate) fn model_metas(&self) -> &HashMap<String, model_menu::ModelMeta> {
-        &self.model_meta
-    }
-
     /// Route metadata for the model browser's own row construction.
-    pub(crate) fn model_details(
-        &self,
-    ) -> &HashMap<String, model_menu::ModelDetails> {
+    pub(crate) fn model_details(&self) -> &model_menu::ModelCatalog {
         &self.model_details
     }
 
     pub(crate) fn is_compatible_profile(&self, provider: &str) -> bool {
         provider.eq_ignore_ascii_case("magpie")
             || provider.starts_with("openai-compatible:")
-            || self.configured_profile_names.contains(provider)
-            || self.configured_model_meta.keys().any(|(profile, _)| profile == provider)
+            || self.is_configured_model_profile(provider)
+    }
+
+    pub(crate) fn is_configured_model_profile(&self, profile: &str) -> bool {
+        self.configured_profile_names.contains(profile)
+            || self.configured_model_meta.keys().any(|(name, _)| name == profile)
     }
 
     pub(crate) fn route_for_model(
@@ -1583,9 +1579,9 @@ impl PromptInput {
     ) -> Option<u64> {
         let route_context = self.route_for_model(model, provider).and_then(|(spec, route)| {
             if remote {
-                model_meta_for(route, &HashMap::new()).context_window
+                model_meta_for(route, None).context_window
             } else {
-                self.model_meta.get(spec)?.context_window
+                self.model_details.metas.get(spec)?.context_window
             }
         });
         route_context.or_else(|| {
@@ -1593,7 +1589,7 @@ impl PromptInput {
                 return None;
             }
             let profile = provider?;
-            let bare = model.strip_prefix(profile).and_then(|rest| rest.strip_prefix(':')).unwrap_or(model);
+            let bare = custom_profile_model_id(model, profile);
             self.configured_model_meta.get(&(profile.to_owned(), bare.to_owned()))?.context_window
         }).filter(|window| *window > 0).map(|window| window as u64)
     }
@@ -4024,23 +4020,40 @@ mod model_profile_tests;
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
 
+pub(crate) fn custom_profile_model_id<'a>(model: &'a str, profile: &str) -> &'a str {
+    let bare = jcode_provider_core::explicit_model_provider_prefix(model)
+        .map_or(model, |(_, _, bare)| bare);
+    match bare.split_once(':') {
+        Some((prefix, id)) if prefix.eq_ignore_ascii_case(profile) => id,
+        _ => bare,
+    }
+}
+
 /// Capability metadata for one route: `[providers.<name>].models` config
 /// first (OpenAI-compatible profiles only), then the shared model-family
 /// context fallback, which returns `None` for ids it does not know.
 fn model_meta_for(
     detail: &model_menu::ModelDetails,
-    configured: &HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>,
+    configured: Option<&HashMap<(String, String), crate::custom_providers::ConfiguredModelMeta>>,
 ) -> model_menu::ModelMeta {
     let mut meta = model_menu::ModelMeta::default();
-    let mut bare = jcode_provider_core::explicit_model_provider_prefix(&detail.model)
-        .map_or(detail.model.as_str(), |(_, _, bare)| bare);
-    if let Some(profile) = detail.api_method.strip_prefix("openai-compatible:") {
-        bare = bare.strip_prefix(profile).and_then(|rest| rest.strip_prefix(':')).unwrap_or(bare);
-        if let Some(conf) = configured.get(&(profile.to_string(), bare.to_string())) {
-            meta.context_window = conf.context_window;
-            meta.image_input = conf.image_input;
-            meta.reasoning = conf.reasoning;
-        }
+    let profile = detail.api_method.strip_prefix("openai-compatible:");
+    let bare = custom_profile_model_id(&detail.model, profile.unwrap_or_default());
+    if let (Some(profile), Some(configured)) = (profile, configured)
+        && let Some(conf) = configured.get(&(profile.to_string(), bare.to_string()))
+    {
+        meta = model_menu::ModelMeta {
+            alias: conf.alias.as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty())
+                .map(str::to_owned),
+            context_window: conf.context_window,
+            max_output_tokens: conf.max_output_tokens,
+            image_input: conf.image_input,
+            pdf_input: conf.pdf_input,
+            reasoning: conf.reasoning,
+            subagent_schedulable: conf.subagent_schedulable,
+        };
     }
     if meta.context_window.is_none() {
         meta.context_window = jcode_provider_core::context_limit_for_model_with_provider(
