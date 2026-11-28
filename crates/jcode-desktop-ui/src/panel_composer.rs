@@ -19,8 +19,8 @@ const DOCK_FADE: f32 = 28.;
 /// Opacity of the veil behind the composer. High enough that history behind
 /// the controls is a quiet hint, never competing with the draft.
 const DOCK_VEIL_ALPHA: f32 = 0.86;
-/// Right padding for the in-box voice button and its inset.
-pub(super) const VOICE_TRAILING_SPACE: f32 = 44.;
+/// Right padding for the in-box attach + voice buttons and their inset.
+pub(super) const VOICE_TRAILING_SPACE: f32 = 76.;
 
 pub(super) fn composer_picker_max_height(window: &Window) -> gpui::Pixels {
     // Leave space for the title bar, composer, and its pill row.
@@ -37,6 +37,7 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let _ = window;
+        self.maybe_refresh_git_status(false, cx);
         let theme = Theme::global();
         let screenshot_mode = crate::config::display().screenshot_mode;
         let route_channel = self.current_route_channel(cx);
@@ -189,7 +190,11 @@ impl Panel {
                             })),
                     )
                     .children(self.render_context_meter(cx))
-                    .children(self.render_swarm_pill(cx)),
+                    .children(self.render_swarm_pill(cx))
+                    .children(
+                        (window.viewport_size().width >= px(320.) || self.plan_mode)
+                            .then(|| self.render_plan_mode_pill(cx)),
+                    ),
             )
             .child(
                 div()
@@ -203,6 +208,7 @@ impl Panel {
                     .gap_1()
                     .overflow_hidden()
                     .child(meta)
+                    .children(self.render_git_and_rules_pills(cx))
                     .children(self.render_publish_button(cx))
                     .children(remote_machine.map(|machine| {
                         // Remote sessions name their machine first, so a cloud
@@ -293,10 +299,105 @@ impl Panel {
                             .right(px(VOICE_INSET))
                             .flex()
                             .items_center()
+                            .gap_1()
+                            .child(self.render_attach_button(cx))
                             .child(self.render_voice_tab(cx)),
                     ),
             )
             .child(pills)
+            .into_any_element()
+    }
+
+    fn render_plan_mode_pill(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let active = self.plan_mode;
+        composer_pill("panel-plan-mode")
+            .when(active, |pill| {
+                pill.bg(theme.ACCENT)
+                    .text_color(theme.PANEL_BG)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+            })
+            .when(!active, |pill| pill.text_color(theme.TEXT_FAINT))
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    super::usage::MeterTooltip(
+                        crate::locale::tr(
+                            "Toggle Plan / Code mode (Shift+Tab). Plan mode generates a structured plan without editing files.",
+                            "切换「规划 / 执行」模式（Shift+Tab）。规划模式下仅输出结构化方案卡片，不直接改动代码。",
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.plan_mode = !this.plan_mode;
+                this.focus_input(window, cx);
+                cx.notify();
+                cx.stop_propagation();
+            }))
+            .child(if active {
+                crate::locale::tr("Plan", "规划模式")
+            } else {
+                crate::locale::tr("Code", "执行")
+            })
+            .into_any_element()
+    }
+
+    fn render_attach_button(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let input = self.input.clone();
+        div()
+            .id("composer-attach")
+            .debug_selector(|| "composer-attach".into())
+            .size(px(26.))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(16.))
+            .text_color(theme.TEXT_DIM)
+            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    super::usage::MeterTooltip(
+                        crate::locale::tr(
+                            "Attach images or insert file paths (or type @ in the prompt)",
+                            "添加图片或插入文件路径（也可在输入框中直接键入 @ 搜索项目文件）",
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |_, _, window, cx| {
+                    cx.stop_propagation();
+                    let input = input.clone();
+                    let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: true,
+                        prompt: Some(
+                            crate::locale::tr("Choose images or files", "选择要添加的图片或文件")
+                                .into(),
+                        ),
+                    });
+                    cx.spawn_in(window, async move |_, cx| {
+                        if let Ok(Ok(Some(paths))) = receiver.await
+                            && !paths.is_empty()
+                        {
+                            let _ = cx.update(|window, app| {
+                                input.update(app, |input, cx| input.drop_files(&paths, window, cx));
+                            });
+                        }
+                    })
+                    .detach();
+                }),
+            )
+            .child("+")
             .into_any_element()
     }
 
@@ -714,5 +815,63 @@ mod tests {
                 assert_eq!(copied.as_deref(), Some("/srv/projects/jcode"));
             }
         }
+    }
+
+    #[gpui::test]
+    fn plan_mode_shift_tab_at_mentions_and_markdown_export_work(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/widget_helper.rs"), "pub fn run() {}\n").unwrap();
+        let dir_str = dir.path().display().to_string();
+
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("harness-features".into(), Some("Feature Session".into()), Some(dir_str.clone()), bridge, cx)
+        });
+        vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1100.), px(760.)));
+        panel.update_in(vcx, |panel, window, cx| {
+            panel.input.update(cx, |input, _| input.set_working_dir(Some(&dir_str)));
+            panel.focus_input(window, cx);
+        });
+        vcx.run_until_parked();
+
+        // 1. @file completion popup & Tab insertion
+        vcx.simulate_input("Check @widg");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("at-mention-overlay").is_some());
+        vcx.simulate_keystrokes("tab");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert_eq!(panel.input.read(cx).content.as_ref(), "Check src/widget_helper.rs ");
+        });
+
+        // 2. Plan mode toggle via Shift+Tab routes regular prompt through /plan workflow
+        panel.read_with(vcx, |panel, _| assert!(!panel.plan_mode));
+        vcx.simulate_keystrokes("shift-tab");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| assert!(panel.plan_mode));
+        assert!(vcx.debug_bounds("panel-plan-mode").is_some());
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        let mut sent_plan = false;
+        while let Ok(cmd) = commands.try_recv() {
+            if let Command::Send { content, .. } = cmd
+                && content.contains("src/widget_helper.rs")
+                && content.to_lowercase().contains("plan")
+            {
+                sent_plan = true;
+            }
+        }
+        assert!(sent_plan, "Plan mode should expand prompt via /plan workflow");
+
+        // 3. /export clip copies conversation Markdown to clipboard
+        panel.update(vcx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/export clip", cx));
+        });
+        let clip = vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text());
+        assert!(clip.as_deref().is_some_and(|md| md.contains("# Feature Session") && md.contains("widget_helper.rs")));
     }
 }

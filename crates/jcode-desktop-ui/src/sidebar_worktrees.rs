@@ -350,6 +350,43 @@ impl Workspace {
                 }),
             );
 
+        let search_sessions = div()
+            .id("sidebar-search-sessions")
+            .debug_selector(|| "sidebar-search-sessions".into())
+            .flex_none()
+            .h(px(30.0))
+            .px_2p5()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .bg(Theme::global().TOOL_BG)
+            .text_color(Theme::global().TEXT_DIM)
+            .hover(|el| el.bg(Theme::global().PANEL_BG).text_color(Theme::global().TEXT))
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    remotes::HeaderTooltip(
+                        tr(
+                            "Full-text search across all past conversations",
+                            "跨全部历史会话进行全文检索与恢复",
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .child(tr("Search", "搜索"))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.open_resume(&OpenResume, window, cx);
+                }),
+            );
+
         div()
             .flex_none()
             .w_full()
@@ -360,7 +397,14 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().flex().gap_1().child(new_session).child(hide_sidebar))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(new_session)
+                    .child(search_sessions)
+                    .child(hide_sidebar),
+            )
             .into_any_element()
     }
 }

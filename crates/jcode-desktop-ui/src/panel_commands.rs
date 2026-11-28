@@ -266,6 +266,8 @@ impl Panel {
             ).into())),
             "/screenshot" => self.export_debug_snapshot(args, cx),
             "/record" => self.record_debug_demo(args, cx),
+            "/export" => self.export_conversation(args, None, cx),
+            "/git-review" if args.is_empty() => self.open_working_tree_diff(cx),
             "/version" | "/transcript" | "/config" | "/log" | "/hotkeys" | "/keys" | "/keybindings" | "/terminal-setup" => self.items.push(Item::Error(if is_zh() {
                 format!("`{command}` 不接受额外参数。")
             } else {

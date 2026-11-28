@@ -38,6 +38,10 @@ mod runtime_commands;
 
 #[path = "panel_commands.rs"]
 mod desktop_commands;
+#[path = "panel_git_status.rs"]
+mod git_status;
+#[path = "panel_export.rs"]
+mod export;
 
 #[cfg(test)]
 #[path = "panel_command_workflow_tests.rs"]
@@ -555,6 +559,8 @@ pub struct Panel {
     changelog_view: crate::update_notes::View,
     changelog_scroll_latest: ScrollHandle,
     changelog_scroll_history: ScrollHandle,
+    pub(super) plan_mode: bool,
+    pub(super) git_status: git_status::GitStatusState,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1051,6 +1057,8 @@ impl Panel {
             changelog_view: crate::update_notes::View::Latest,
             changelog_scroll_latest: ScrollHandle::new(),
             changelog_scroll_history: ScrollHandle::new(),
+            plan_mode: false,
+            git_status: Default::default(),
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -1976,6 +1984,16 @@ impl Panel {
                                 if images.is_empty() && this.handle_slash_command(&content, cx) {
                                     return;
                                 }
+                                let content = if this.plan_mode
+                                    && !content.trim_start().starts_with('/')
+                                    && content.trim() != "[image]"
+                                {
+                                    let cmd = format!("/plan {}", content.trim());
+                                    jcode_desktop_model::command_workflows::workflow_prompt(&cmd)
+                                        .unwrap_or(cmd)
+                                } else {
+                                    content
+                                };
                                 this.submit_or_queue(content, images, queued, cx);
                             });
                         }
@@ -2263,10 +2281,18 @@ impl Panel {
                     self.items.push(Item::Assistant(notice));
                 }
                 "/rename" => self.items.push(Item::Error(
-                    "Usage: `/rename <session name>` or `/rename --clear`.".into(),
+                    crate::locale::tr(
+                        "Usage: `/rename <session name>` or `/rename --clear`.",
+                        "用法：`/rename <会话名称>` 或 `/rename --clear`。",
+                    )
+                    .into(),
                 )),
                 "/rewind" => self.items.push(Item::Assistant(
-                    "Use `/rewind <message number>` to rewind, or `/rewind undo` to restore.".into(),
+                    crate::locale::tr(
+                        "Use `/rewind <message number>` to rewind, or `/rewind undo` to restore.",
+                        "输入 `/rewind <消息序号>`（或悬停用户消息点击「回退到此步」）即可回退，输入 `/rewind undo` 恢复。",
+                    )
+                    .into(),
                 )),
                 "/commit" => self.submit_command_prompt(
                     "Make interactive, logical commits for the current uncommitted work. Inspect git state first, group related changes into coherent commits, preserve unrelated work, validate appropriately, and report the commits created plus remaining changes.",
@@ -2275,10 +2301,18 @@ impl Panel {
                 "/publish" => {
                     let item = match self.publish_checkout() {
                         Some(_) => Item::Assistant(
-                            "Opened the publish tracker. Commit, push, release, and publish progress appears in its panel.".into(),
+                            crate::locale::tr(
+                                "Opened the publish tracker. Commit, push, release, and publish progress appears in its panel.",
+                                "已打开发布跟踪面板，提交、推送与构建发布进度将在面板内展示。",
+                            )
+                            .into(),
                         ),
                         None => Item::Error(
-                            "`/publish` is only available in Jcode Desktop self-development sessions.".into(),
+                            crate::locale::tr(
+                                "`/publish` is only available in Jcode Desktop self-development sessions.",
+                                "`/publish` 仅在 Jcode Desktop 自研开发会话中可用。",
+                            )
+                            .into(),
                         ),
                     };
                     self.items.push(item);
@@ -2287,11 +2321,23 @@ impl Panel {
                     let restart_server = trimmed == "/restart-all";
                     self.items.push(match crate::restart_spawn::spawn_worker(restart_server) {
                         Ok(()) => Item::Assistant(if restart_server {
-                            "Restarting the Jcode server and every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.".into()
+                            crate::locale::tr(
+                                "Restarting the Jcode server and every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.",
+                                "正在重启 Jcode 后台服务与所有桌面窗口，窗口布局、会话和草稿将在数秒内自动恢复。",
+                            )
+                            .into()
                         } else {
-                            "Restarting every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.".into()
+                            crate::locale::tr(
+                                "Restarting every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.",
+                                "正在重启所有桌面窗口，窗口布局、会话和草稿将在数秒内自动恢复。",
+                            )
+                            .into()
                         }),
-                        Err(error) => Item::Error(format!("Could not start the restart: {error}")),
+                        Err(error) => Item::Error(if crate::locale::is_zh() {
+                            format!("无法启动重启流程：{error}")
+                        } else {
+                            format!("Could not start the restart: {error}")
+                        }),
                     });
                 }
                 "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
@@ -5230,6 +5276,12 @@ impl Render for Panel {
                     panel.background_running_tool_if_any(cx);
                 }),
             )
+            .on_action(cx.listener(|panel, _: &shortcuts::TogglePlanMode, _, cx| {
+                if !panel.is_side_document() && !panel.is_accounts_panel() {
+                    panel.plan_mode = !panel.plan_mode;
+                    cx.notify();
+                }
+            }))
             .on_action(
                 cx.listener(|panel, _: &shortcuts::JumpToLatestIfEmpty, _, cx| {
                     panel.jump_to_latest_if_empty(cx);

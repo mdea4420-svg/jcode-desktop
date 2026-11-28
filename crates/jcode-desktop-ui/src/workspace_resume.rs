@@ -389,7 +389,10 @@ impl Workspace {
         let search = cx.new(|cx| {
             PromptInput::new(
                 cx,
-                "Search sessions by title, folder, ID, or conversation…",
+                crate::locale::tr(
+                    "Search sessions by title, folder, ID, or conversation…",
+                    "按标题、目录、会话 ID 或历史对话内容全文搜索…",
+                ),
                 move |_, _, window, app| {
                     let _ = submit.update(app, |this, cx| this.resume_selected(window, cx));
                 },
@@ -623,9 +626,10 @@ impl Workspace {
         let theme = Theme::global();
         let mut rows = div()
             .id("resume-results")
-            .flex_1()
+            .size_full()
             .min_h_0()
             .overflow_y_scroll()
+            .pr(px(crate::scrollbar::GUTTER))
             .track_scroll(&scroll);
         for (index, session) in matches.iter().enumerate() {
             let id = session.session_id.clone();
@@ -638,15 +642,21 @@ impl Workspace {
             };
             let live = liveness(session);
             let status = match live {
-                Liveness::Working => "working".to_string(),
-                Liveness::Open => "open".to_string(),
-                Liveness::Crashed | Liveness::Inactive => session.status.clone(),
+                Liveness::Working => crate::locale::tr("working", "运行中").to_string(),
+                Liveness::Open => crate::locale::tr("open", "已打开").to_string(),
+                Liveness::Crashed => crate::locale::tr("crashed", "异常中断").to_string(),
+                Liveness::Inactive => if crate::locale::is_zh() && session.status == "idle" {
+                    "空闲".to_string()
+                } else {
+                    session.status.clone()
+                },
             };
             let metadata = format!(
                 "{}{} · {}",
                 saved_marker,
                 status,
-                sidebar_session_meta(session).unwrap_or_else(|| "Session history".into())
+                sidebar_session_meta(session)
+                    .unwrap_or_else(|| crate::locale::tr("Session history", "历史会话").into())
             );
             let badge =
                 resume_liveness_badge(live, open_spinners.get(&session.session_id).cloned(), index);
@@ -691,7 +701,9 @@ impl Workspace {
                                     .working_dir
                                     .as_deref()
                                     .map(compact_working_dir)
-                                    .unwrap_or_else(|| "No working directory".into()),
+                                    .unwrap_or_else(|| {
+                                        crate::locale::tr("No working directory", "未绑定工作目录").into()
+                                    }),
                             ),
                     )
                     .child(
@@ -713,11 +725,14 @@ impl Workspace {
         if matches.is_empty() {
             rows = rows.child(div().p_4().text_color(theme.TEXT_DIM).child(
                 if self.sessions.is_empty() {
-                    "No sessions available yet."
+                    crate::locale::tr("No sessions available yet.", "暂无历史会话。")
                 } else if content_pending {
-                    "Searching conversations…"
+                    crate::locale::tr("Searching conversations…", "正在检索历史对话正文…")
                 } else {
-                    "No matching sessions. Try another search or filter."
+                    crate::locale::tr(
+                        "No matching sessions. Try another search or filter.",
+                        "没有匹配的会话，请尝试其他关键词或筛选条件。",
+                    )
                 },
             ));
         }
@@ -733,7 +748,7 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .bg(theme.TOOL_BG)
-            .rounded_lg();
+            .rounded_xl();
         if let Some(session) = matches
             .iter()
             .find(|s| Some(&s.session_id) == selected.as_ref())
@@ -745,16 +760,23 @@ impl Workspace {
                         .working_dir
                         .as_deref()
                         .map(compact_working_dir)
-                        .unwrap_or_else(|| "No working directory".into()),
+                        .unwrap_or_else(|| {
+                            crate::locale::tr("No working directory", "未绑定工作目录").into()
+                        }),
                 ),
                 Some(format!(
                     "{}{}",
                     match liveness(session) {
-                        Liveness::Working => "working now".to_string(),
-                        Liveness::Open => "open in Desktop".to_string(),
-                        Liveness::Crashed | Liveness::Inactive => session.status.clone(),
+                        Liveness::Working => crate::locale::tr("working now", "正在运行").to_string(),
+                        Liveness::Open => crate::locale::tr("open in Desktop", "已在桌面端打开").to_string(),
+                        Liveness::Crashed => crate::locale::tr("crashed", "异常中断").to_string(),
+                        Liveness::Inactive => session.status.clone(),
                     },
-                    if session.saved { " · saved" } else { "" }
+                    if session.saved {
+                        crate::locale::tr(" · saved", " · 已收藏")
+                    } else {
+                        ""
+                    }
                 )),
                 sidebar_session_meta(session),
             ]
@@ -783,10 +805,10 @@ impl Workspace {
                 .as_ref()
                 .and_then(|state| state.preview.as_ref())
             {
-                None => resume_preview_notice("Loading conversation…"),
+                None => resume_preview_notice(crate::locale::tr("Loading conversation…", "正在加载对话记录…")),
                 Some(Err(error)) => resume_preview_notice(error.clone()),
                 Some(Ok(panel)) if panel.read(cx).items.is_empty() => {
-                    resume_preview_notice("No conversation messages yet.")
+                    resume_preview_notice(crate::locale::tr("No conversation messages yet.", "该会话暂无消息记录。"))
                 }
                 Some(Ok(panel)) => panel.clone().into_any_element(),
             };
@@ -801,7 +823,10 @@ impl Workspace {
                     .child(transcript),
             );
         } else {
-            preview = preview.child("Select a session to see its details.");
+            preview = preview.child(crate::locale::tr(
+                "Select a session to see its details.",
+                "在左侧选择一条会话以预览完整对话记录。",
+            ));
         }
         div()
             .debug_selector(|| "resume-panel".into())
@@ -837,20 +862,25 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_size(px(22.0)).child("Resume session"))
+                    .child(
+                        div()
+                            .text_size(px(22.0))
+                            .child(crate::locale::tr("Resume session", "搜索与恢复历史会话")),
+                    )
                     .child(
                         div()
                             .id("resume-close")
                             .debug_selector(|| "resume-close".into())
                             .cursor_pointer()
                             .px_3()
-                            .py_2()
-                            .rounded_md()
+                            .py_1p5()
+                            .rounded_full()
+                            .bg(theme.HEADER_BG)
                             .hover(|el| el.bg(theme.TOOL_BG))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_resume(window, cx)),
                             )
-                            .child("Back · Esc"),
+                            .child(crate::locale::tr("Back · Esc", "返回 · Esc")),
                     ),
             )
             .child(
@@ -861,13 +891,15 @@ impl Workspace {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
+                    .items_center()
                     .gap_2()
                     .children(
                         [
-                            (Filter::All, "All", "resume-all"),
-                            (Filter::Active, "Active", "resume-active"),
-                            (Filter::Saved, "Saved", "resume-saved"),
-                            (Filter::Crashed, "Crashed", "resume-crashed"),
+                            (Filter::All, crate::locale::tr("All", "全部"), "resume-all"),
+                            (Filter::Active, crate::locale::tr("Active", "运行中"), "resume-active"),
+                            (Filter::Saved, crate::locale::tr("Saved", "已收藏"), "resume-saved"),
+                            (Filter::Crashed, crate::locale::tr("Crashed", "异常中断"), "resume-crashed"),
                         ]
                         .into_iter()
                         .map(|(value, label, id)| {
@@ -875,9 +907,10 @@ impl Workspace {
                                 .id(id)
                                 .px_3()
                                 .py_1()
-                                .rounded_md()
+                                .rounded_full()
                                 .cursor_pointer()
-                                .when(value == filter, |el| el.bg(theme.TOOL_BG))
+                                .when(value == filter, |el| el.bg(theme.ACCENT).text_color(theme.PANEL_BG))
+                                .when(value != filter, |el| el.bg(theme.HEADER_BG).hover(|s| s.bg(theme.TOOL_BG)))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_resume_filter(value, cx)
                                 }))
@@ -885,9 +918,19 @@ impl Workspace {
                         }),
                     )
                     .child(div().text_color(theme.TEXT_DIM).child(if content_pending {
-                        format!("{} sessions · searching conversations…", matches.len())
+                        if crate::locale::is_zh() {
+                            format!("{} 个会话 · 正在检索对话内容…", matches.len())
+                        } else {
+                            format!("{} sessions · searching conversations…", matches.len())
+                        }
                     } else if working_count > 0 {
-                        format!("{} sessions · {working_count} working", matches.len())
+                        if crate::locale::is_zh() {
+                            format!("{} 个会话 · {working_count} 个运行中", matches.len())
+                        } else {
+                            format!("{} sessions · {working_count} working", matches.len())
+                        }
+                    } else if crate::locale::is_zh() {
+                        format!("{} 个会话", matches.len())
                     } else {
                         format!("{} sessions", matches.len())
                     })),
@@ -900,17 +943,24 @@ impl Workspace {
                     .min_h_0()
                     .child(
                         div()
+                            .relative()
                             .w(relative(0.4))
                             .min_w_0()
+                            .min_h_0()
                             .flex()
                             .flex_col()
-                            .child(rows),
+                            .child(rows)
+                            .child(crate::scrollbar::interactive_vertical(
+                                &scroll,
+                                "resume-scrollbar",
+                            )),
                     )
                     .child(preview),
             )
-            .child(div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(
+            .child(div().text_size(px(11.0)).text_color(theme.TEXT_DIM).child(crate::locale::tr(
                 "↑ ↓ Navigate   Page Up / Down   Enter Resume   Esc Back   Ctrl+1/2/3/4 Filters",
-            ))
+                "↑ ↓ 选择会话   Page Up / Down 翻页   Enter 打开恢复   Esc 返回   Ctrl+1/2/3/4 切换筛选",
+            )))
     }
 
     fn load_resume_preview(&mut self, selected: Option<&str>, cx: &mut Context<Self>) {

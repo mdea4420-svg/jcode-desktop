@@ -10,6 +10,7 @@ pub(super) struct DiffReview {
     files: Arc<Vec<FileDiff>>,
     selected: usize,
     source: String,
+    working_tree: bool,
     collapsed: HashSet<String>,
     rows: Vec<DiffRow>,
     scroll: ListState,
@@ -92,6 +93,7 @@ impl DiffReview {
             files,
             selected,
             source,
+            working_tree: false,
             collapsed: HashSet::new(),
             rows,
             scroll,
@@ -488,6 +490,21 @@ impl Panel {
         cx.notify();
     }
 
+    pub(super) fn open_working_tree_diff_files(
+        &mut self,
+        files: Arc<Vec<FileDiff>>,
+        source: String,
+        cx: &mut Context<Self>,
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        let mut review = DiffReview::new(files, 0, source);
+        review.working_tree = true;
+        self.diff_review = Some(review);
+        cx.notify();
+    }
+
     pub(super) fn close_diff_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_change_review() {
             self.focus_handle.focus(window, cx);
@@ -663,13 +680,82 @@ impl Panel {
             .absolute().inset_0().size_full().flex().flex_col().bg(theme.PANEL_BG).occlude()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .child(div().flex_none().flex().items_center().gap_3().p_3().border_b_1().border_color(theme.CODE_BORDER)
-                .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT).child("Change review"))
+            .child(div().flex_none().flex().flex_wrap().items_center().gap_2().p_3().border_b_1().border_color(theme.CODE_BORDER)
+                .child(div().flex_1().min_w(px(160.)).flex().flex_col().gap_1()
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT)
+                        .child(crate::locale::tr("Change review", "变更审阅")))
                     .child(div().truncate().text_size(px(10.)).text_color(theme.TEXT_DIM).child(review.source.clone())))
-                .child(div().id("diff-close").debug_selector(|| "diff-close".into()).px_2().py_1().rounded_md()
+                .when(review.working_tree, |header| {
+                    header
+                        .child(
+                            div()
+                                .id("diff-action-refresh")
+                                .debug_selector(|| "diff-action-refresh".into())
+                                .px_2p5()
+                                .py_1()
+                                .rounded_full()
+                                .bg(theme.CODE_BG)
+                                .border_1()
+                                .border_color(theme.CODE_BORDER)
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.ACCENT_DIM))
+                                .child(crate::locale::tr("Refresh", "刷新"))
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.open_working_tree_diff(cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("diff-action-review")
+                                .debug_selector(|| "diff-action-review".into())
+                                .px_2p5()
+                                .py_1()
+                                .rounded_full()
+                                .bg(theme.CODE_BG)
+                                .border_1()
+                                .border_color(theme.CODE_BORDER)
+                                .text_size(px(11.))
+                                .text_color(theme.TEXT)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.ACCENT_DIM))
+                                .child(crate::locale::tr("AI review", "AI 审查改动"))
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_diff_review(window, cx);
+                                    let _ = this.handle_slash_command("/review", cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id("diff-action-commit")
+                                .debug_selector(|| "diff-action-commit".into())
+                                .px_2p5()
+                                .py_1()
+                                .rounded_full()
+                                .bg(theme.ACCENT)
+                                .text_size(px(11.))
+                                .text_color(theme.PANEL_BG)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.9))
+                                .child(crate::locale::tr("Commit", "整理并提交"))
+                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_diff_review(window, cx);
+                                    let _ = this.handle_slash_command("/commit", cx);
+                                })),
+                        )
+                })
+                .child(div().id("diff-close").debug_selector(|| "diff-close".into()).px_2p5().py_1().rounded_full()
                     .text_size(px(11.)).text_color(theme.TEXT_DIM).cursor_pointer().hover(|s| s.bg(theme.QUOTE_BG))
-                    .child(if self.is_change_review() { "Close review · Esc" } else { "Back to chat · Esc" })
+                    .child(if self.is_change_review() {
+                        crate::locale::tr("Close review · Esc", "关闭审阅 · Esc")
+                    } else {
+                        crate::locale::tr("Back to chat · Esc", "返回对话 · Esc")
+                    })
                     .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                         this.close_diff_review(window, cx); cx.stop_propagation();
@@ -678,7 +764,8 @@ impl Panel {
                 .child(div().debug_selector(|| "diff-file-tree".into()).w(relative(0.25)).min_w(px(160.)).max_w(px(300.))
                     .flex_none().flex().flex_col().m_2().mr_0().rounded_xl().border_1().border_color(theme.CODE_BORDER).bg(theme.CODE_BG).overflow_hidden()
                     .child(div().flex_none().flex().items_center().gap_2().px_3().pt_2().pb_1()
-                        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT).child("Files"))
+                        .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT)
+                            .child(crate::locale::tr("Files", "文件")))
                         .child(div().text_size(px(11.)).text_color(theme.TEXT_FAINT).child(review.files.len().to_string())))
                     .child(tree)
                     .child(div().flex_none().flex().justify_end().px_3().py_1p5().font_family(mono)
@@ -686,22 +773,27 @@ impl Panel {
                 .child(div().min_w_0().flex_1().flex().flex_col()
                     .when(review.rich.is_none(), |el| el.child(div().flex_none().p_3().flex().flex_col().gap_2().border_b_1().border_color(theme.CODE_BORDER)
                         .child(div().debug_selector(|| "diff-selected-path".into()).text_size(px(12.)).font_family(theme.FONT_MONO).text_color(theme.TEXT).child(file.path.clone()))
-                        .when_some(file.previous_path.clone(), |el, path| el.child(div().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("Previously {path}"))))
+                        .when_some(file.previous_path.clone(), |el, path| el.child(div().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("{} {path}", crate::locale::tr("Previously", "原路径")))))
                         .child(div().flex().items_center().gap_3().text_size(px(11.))
                             .child(div().text_color(theme.TEXT_DIM).child(file.kind.clone())).child(counts(file))
                             .child(div().id("diff-copy")
-                                        .debug_selector(|| "diff-copy".into()).ml_auto().cursor_pointer().text_color(theme.ACCENT).child("Copy diff")
+                                        .debug_selector(|| "diff-copy".into()).ml_auto().cursor_pointer().text_color(theme.ACCENT)
+                                        .child(crate::locale::tr("Copy diff", "复制差异"))
                                 .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
                                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())); cx.stop_propagation();
                                 })))))
                     .child(div().flex_1().min_h_0().relative().bg(theme.CODE_BG)
                         .when(review.rich.is_none(), |el| el
                             .when(review.rows.is_empty(), |el| el.child(div().p_4().text_size(px(12.)).text_color(theme.TEXT_DIM)
-                                .child("No line content supplied by this tool.")))
+                                .child(crate::locale::tr("No line content supplied by this tool.", "未提供具体行差异内容。"))))
                             .child(diff_list).child(crate::scrollbar::vertical_list(&review.scroll, "diff-scrollbar")))
                         .when_some(review.rich.as_ref(), |el, rich| el.child(rich.render())))
                     .child(div().flex_none().px_3().py_2().text_size(px(10.)).text_color(theme.TEXT_FAINT)
-                        .child("Recorded tool change, not a live working-tree diff."))))
+                        .child(if review.working_tree {
+                            crate::locale::tr("Live Git working-tree changes in this project.", "当前工作区实时的 Git 未提交变更。")
+                        } else {
+                            crate::locale::tr("Recorded tool change, not a live working-tree diff.", "已记录的工具修改快照，非实时工作区差异。")
+                        }))))
             .into_any_element())
     }
 }

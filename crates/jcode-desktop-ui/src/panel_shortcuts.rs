@@ -2,7 +2,9 @@ use super::*;
 
 // Declared in the leaf `ui_actions` module so the composer can bind them
 // without depending on the panel.
-pub(crate) use crate::ui_actions::{BackgroundRunningTool, JumpToLatest, JumpToLatestIfEmpty};
+pub(crate) use crate::ui_actions::{
+    BackgroundRunningTool, JumpToLatest, JumpToLatestIfEmpty, TogglePlanMode,
+};
 
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([

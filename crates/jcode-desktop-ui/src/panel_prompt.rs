@@ -268,7 +268,7 @@ impl Panel {
                                 .text_color(theme.TEXT_DIM)
                                 .size(px(10.)),
                         )
-                        .child("Transcribed"),
+                        .child(crate::locale::tr("Transcribed", "语音转写")),
                 )
             })
             .when(preview.is_some(), |card| {
@@ -290,16 +290,74 @@ impl Panel {
                             cx.notify();
                         }))
                         .child(if expanded {
-                            "Collapse prompt"
+                            crate::locale::tr("Collapse prompt", "收起提示词")
                         } else {
-                            "… Expand prompt"
+                            crate::locale::tr("… Expand prompt", "… 展开提示词")
+                        }),
+                )
+            })
+            .when(!pinned && !self.is_side_document(), |card| {
+                let prompt_copy = super::voice::tag::strip(text).0.to_owned();
+                let turn_number = number;
+                let can_rewind = turn_number.is_some() && self.preview_state.is_none();
+                let hover_group: gpui::SharedString = format!("prompt-hover-{index}").into();
+                card.child(
+                    div()
+                        .mt_1()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .opacity(0.)
+                        .group_hover(hover_group, |s| s.opacity(1.))
+                        .child(
+                            div()
+                                .id(("prompt-reuse", index))
+                                .debug_selector(move || format!("prompt-reuse-{index}").into())
+                                .px_2()
+                                .py(px(1.))
+                                .rounded_full()
+                                .bg(Theme::global().INLINE_CODE_BG)
+                                .text_size(px(10.))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(Theme::global().ACCENT_DIM).text_color(Theme::global().TEXT))
+                                .child(crate::locale::tr("Reuse", "重填编辑"))
+                                .on_click(cx.listener(move |panel, _, window, cx| {
+                                    cx.stop_propagation();
+                                    let text = prompt_copy.clone();
+                                    panel.input.update(cx, |input, cx| input.set_content(text, cx));
+                                    panel.focus_input(window, cx);
+                                })),
+                        )
+                        .when(can_rewind, |bar| {
+                            let n = turn_number.unwrap();
+                            bar.child(
+                                div()
+                                    .id(("prompt-rewind", index))
+                                    .debug_selector(move || format!("prompt-rewind-{index}").into())
+                                    .px_2()
+                                    .py(px(1.))
+                                    .rounded_full()
+                                    .bg(Theme::global().INLINE_CODE_BG)
+                                    .text_size(px(10.))
+                                    .text_color(Theme::global().TEXT_DIM)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(Theme::global().ACCENT_DIM).text_color(Theme::global().TEXT))
+                                    .child(crate::locale::tr("Rewind here", "回退到此步"))
+                                    .on_click(cx.listener(move |panel, _, _, cx| {
+                                        cx.stop_propagation();
+                                        let _ = panel.handle_slash_command(&format!("/rewind {n}"), cx);
+                                    })),
+                            )
                         }),
                 )
             })
             .into_any_element();
         // Animate and hide the complete row so inline and sticky badges always
         // travel with their cards. Shrink only the card when markdown wraps.
+        let row_group: gpui::SharedString = format!("prompt-hover-{index}").into();
         div()
+            .group(row_group)
             .flex()
             .flex_none()
             .w_full()

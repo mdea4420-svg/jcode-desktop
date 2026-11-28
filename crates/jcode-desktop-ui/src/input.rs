@@ -28,6 +28,8 @@ mod layout;
 mod motion;
 use layout::PromptLayout;
 
+#[path = "input_at_mention.rs"]
+pub(crate) mod at_mention;
 #[path = "input_file_drop.rs"]
 pub(crate) mod file_drop;
 #[path = "input_model_favorites.rs"]
@@ -77,6 +79,7 @@ actions!(
         Clear,
         Submit,
         Queue,
+        AcceptCompletion,
     ]
 );
 
@@ -101,6 +104,7 @@ pub fn bind_keys(cx: &mut App) {
     // Must follow the composer's Alt+B/Ctrl+B word motions: later bindings win
     // at equal context depth, and the handler falls through when idle.
     cx.bind_keys(crate::ui_actions::background_tool_bindings());
+    cx.bind_keys(crate::ui_actions::plan_mode_bindings());
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("PromptInput")),
         KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("PromptInput")),
@@ -148,6 +152,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-end", End, Some("PromptInput")),
         KeyBinding::new("enter", Submit, Some("PromptInput")),
         KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
+        KeyBinding::new("tab", AcceptCompletion, Some("PromptInput")),
     ]);
     // Registered after the composer keys so the effort chords outrank word
     // motion in a chat composer. See `effort::bind_keys` for the fallthrough.
@@ -234,6 +239,7 @@ pub struct PromptInput {
     example_prompts: bool,
     /// Project this composer works in. Scopes personalized example prompts.
     working_dir: Option<String>,
+    at_mention: at_mention::AtMentionState,
     /// Shared with paint and the ticker, outside the entity, so that caret
     /// and placeholder frames do not count as changes to this input: GPUI
     /// retains views between frames and builds again a view whose entities
@@ -547,8 +553,12 @@ impl PromptInput {
         self.attachment_preview = None;
         self.attachment_notice = match self.attachments.len() {
             0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
+            1 => Some(crate::locale::tr("1 image attached", "已添加 1 张图片").into()),
+            count => Some(if crate::locale::is_zh() {
+                format!("已添加 {count} 张图片").into()
+            } else {
+                format!("{count} images attached").into()
+            }),
         };
         self.marked_range = None;
         self.undo.clear();
@@ -564,8 +574,12 @@ impl PromptInput {
         self.attachment_preview = None;
         self.attachment_notice = match self.attachments.len() {
             0 => None,
-            1 => Some("1 image attached".into()),
-            count => Some(format!("{count} images attached").into()),
+            1 => Some(crate::locale::tr("1 image attached", "已添加 1 张图片").into()),
+            count => Some(if crate::locale::is_zh() {
+                format!("已添加 {count} 张图片").into()
+            } else {
+                format!("{count} images attached").into()
+            }),
         };
         cx.notify();
     }
@@ -644,6 +658,7 @@ impl PromptInput {
             chrome: true,
             example_prompts: false,
             working_dir: None,
+            at_mention: Default::default(),
             motion: Default::default(),
         }
     }
@@ -720,7 +735,82 @@ impl PromptInput {
     pub(crate) fn set_working_dir(&mut self, working_dir: Option<&str>) {
         if self.working_dir.as_deref() != working_dir {
             self.working_dir = working_dir.map(str::to_owned);
+            self.at_mention.invalidate();
         }
+    }
+
+    fn active_at_mentions(&self) -> Option<(Range<usize>, Vec<at_mention::MentionEntry>)> {
+        if !self.command_completion
+            || !self.command_menu_active
+            || self.content.trim_start().starts_with('/')
+        {
+            return None;
+        }
+        let (range, query) = at_mention::active_at_token(&self.content, self.cursor_offset())?;
+        let token_str = self.content[range.clone()].to_owned();
+        if self
+            .at_mention
+            .dismissed_token
+            .as_ref()
+            .is_some_and(|(r, t)| *r == range && *t == token_str)
+        {
+            return None;
+        }
+        let entries = self.at_mention.entries_for(self.working_dir.as_deref());
+        let matches = at_mention::match_entries(&entries, query);
+        (!matches.is_empty()).then_some((range, matches))
+    }
+
+    fn accept_at_mention(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        let Some((range, matches)) = self.active_at_mentions() else {
+            return false;
+        };
+        let Some(entry) = matches.get(index.min(matches.len() - 1)) else {
+            return false;
+        };
+        let replacement = at_mention::replacement_text(entry);
+        self.undo.push(self.content.to_string());
+        self.redo.clear();
+        let next = format!(
+            "{}{}{}",
+            &self.content[..range.start],
+            replacement,
+            &self.content[range.end..]
+        );
+        let cursor = range.start + replacement.len();
+        self.content = next.into();
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.at_mention.selection = 0;
+        self.at_mention.dismissed_token = None;
+        self.at_mention.scroll.set_offset(point(px(0.), px(0.)));
+        if let Some(on_change) = &self.on_change {
+            on_change(&self.content, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    fn accept_completion(
+        &mut self,
+        _: &AcceptCompletion,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.accept_at_mention(self.at_mention.selection, cx) {
+            return;
+        }
+        if self.command_completion && self.attachments.is_empty() {
+            let suggestions = self.command_suggestions();
+            if let Some(accepted) =
+                accepted_command_submission(&suggestions, self.command_selection)
+            {
+                self.set_content(format!("{accepted} "), cx);
+                return;
+            }
+        }
+        cx.propagate();
     }
 
     pub(crate) fn working_dir(&self) -> Option<&str> {
@@ -1068,6 +1158,9 @@ impl PromptInput {
         if !self.submission_enabled {
             return;
         }
+        if !queued && self.accept_at_mention(self.at_mention.selection, cx) {
+            return;
+        }
         if self.pending_session
             && self.command_completion
             && self.content.trim_start().starts_with('/')
@@ -1204,7 +1297,9 @@ impl PromptInput {
     ) {
         let label = image.label();
         let Some(preview) = preview_image(&image.media_type, image.bytes.clone()) else {
-            self.attachment_notice = Some("could not preview pasted image".into());
+            self.attachment_notice = Some(
+                crate::locale::tr("could not preview pasted image", "无法预览粘贴的图片").into(),
+            );
             cx.notify();
             return;
         };
@@ -1217,8 +1312,16 @@ impl PromptInput {
         });
         self.attachment_preview = Some(paste_preview::Preview::new(self.attachments.len() - 1));
         self.attachment_notice = Some(match self.attachments.len() {
-            1 => format!("image attached ({label})").into(),
-            count => format!("{count} images attached").into(),
+            1 => if crate::locale::is_zh() {
+                format!("已添加图片（{label}）").into()
+            } else {
+                format!("image attached ({label})").into()
+            },
+            count => if crate::locale::is_zh() {
+                format!("已添加 {count} 张图片").into()
+            } else {
+                format!("{count} images attached").into()
+            },
         });
         cx.notify();
     }
@@ -1231,7 +1334,11 @@ impl PromptInput {
             }
             Ok(None) => {}
             Err(error) => {
-                self.attachment_notice = Some(format!("image paste unavailable: {error}").into());
+                self.attachment_notice = Some(if crate::locale::is_zh() {
+                    format!("无法粘贴图片：{error}").into()
+                } else {
+                    format!("image paste unavailable: {error}").into()
+                });
             }
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -1321,6 +1428,12 @@ impl PromptInput {
     }
 
     fn history_prev(&mut self, _: &HistoryPrev, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, matches)) = self.active_at_mentions() {
+            let max = matches.len().saturating_sub(1);
+            self.at_mention.selection = self.at_mention.selection.min(max).saturating_sub(1);
+            cx.notify();
+            return;
+        }
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = self.command_selection.saturating_sub(1);
@@ -1343,6 +1456,12 @@ impl PromptInput {
     }
 
     fn history_next(&mut self, _: &HistoryNext, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, matches)) = self.active_at_mentions() {
+            let max = matches.len().saturating_sub(1);
+            self.at_mention.selection = (self.at_mention.selection + 1).min(max);
+            cx.notify();
+            return;
+        }
         let suggestions = self.command_suggestions();
         if !suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1).min(suggestions.len() - 1);
@@ -1363,6 +1482,12 @@ impl PromptInput {
     }
 
     fn clear(&mut self, _: &Clear, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((range, _)) = self.active_at_mentions() {
+            let token = self.content[range.clone()].to_owned();
+            self.at_mention.dismissed_token = Some((range, token));
+            cx.notify();
+            return;
+        }
         if let Some(cancel) = &self.on_overlay_cancel {
             if cancel(cx) {
                 return;
@@ -2007,6 +2132,8 @@ impl EntityInputHandler for PromptInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         self.command_selection = 0;
+        self.at_mention.selection = 0;
+        self.at_mention.dismissed_token = None;
         self.reveal_command(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
@@ -2603,7 +2730,7 @@ impl Render for PromptInput {
                         .child(
                             div()
                                 .text_color(Theme::global().TEXT_FAINT)
-                                .child("remove ×"),
+                                .child(crate::locale::tr("remove ×", "移除 ×")),
                         ),
                 )
                 .cursor_pointer()
@@ -2639,6 +2766,141 @@ impl Render for PromptInput {
                 .top_0()
                 .left_0()
                 .size_full()
+            })
+            .when_some(self.active_at_mentions(), |el, (_, mentions)| {
+                let selected = self.at_mention.selection.min(mentions.len().saturating_sub(1));
+                let scroll = self.at_mention.scroll.clone();
+                let scroll_wheel = scroll.clone();
+                let rows = mentions.into_iter().enumerate().map(|(index, entry)| {
+                    let active = index == selected;
+                    let badge = if entry.is_dir {
+                        crate::locale::tr("dir", "目录")
+                    } else {
+                        crate::locale::tr("file", "文件")
+                    };
+                    let display = if entry.is_dir {
+                        format!("{}/", entry.rel_path)
+                    } else {
+                        entry.rel_path.clone()
+                    };
+                    div()
+                        .id(("at-mention-row", index))
+                        .debug_selector(move || format!("at-mention-row-{index}").into())
+                        .w_full()
+                        .min_w_0()
+                        .px_3()
+                        .py_1p5()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when(active, |s| s.bg(Theme::global().ACCENT_DIM))
+                        .hover(|s| s.bg(Theme::global().TOOL_BG))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.accept_at_mention(index, cx);
+                            }),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .px_1p5()
+                                .rounded_full()
+                                .bg(Theme::global().TOOL_BG)
+                                .text_size(px(10.))
+                                .text_color(Theme::global().TEXT_DIM)
+                                .child(badge),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(Theme::global().FONT_MONO)
+                                .text_size(px(12.))
+                                .text_color(if active {
+                                    Theme::global().ACCENT
+                                } else {
+                                    Theme::global().TEXT
+                                })
+                                .child(display),
+                        )
+                });
+                el.child(
+                    gpui::deferred(popup::Popup::new(
+                        div()
+                            .id("at-mention-suggestions")
+                            .debug_selector(|| "at-mention-overlay".into())
+                            .w_full()
+                            .max_h_full()
+                            .flex()
+                            .flex_col()
+                            .rounded_xl()
+                            .border_1()
+                            .border_color(Theme::global().PANEL_BORDER_FOCUS)
+                            .bg(Theme::global().HEADER_BG)
+                            .shadow_lg()
+                            .occlude()
+                            .p_1p5()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .flex()
+                                    .justify_between()
+                                    .text_size(px(10.5))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(crate::locale::tr(
+                                        "Workspace files & folders",
+                                        "引用当前项目文件或目录",
+                                    ))
+                                    .child(crate::locale::tr(
+                                        "↑↓ · Tab/Enter insert · Esc close",
+                                        "↑↓ 选择 · Tab/回车插入 · Esc 关闭",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .min_h_0()
+                                    .max_h(px(260.))
+                                    .on_scroll_wheel(cx.listener(
+                                        move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                            if crate::scrollbar::advance_scroll_wheel(
+                                                &scroll_wheel,
+                                                event,
+                                                window,
+                                            ) {
+                                                cx.notify();
+                                            }
+                                            cx.stop_propagation();
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .id("at-mention-scroll")
+                                            .max_h(px(260.))
+                                            .overflow_hidden()
+                                            .track_scroll(&scroll)
+                                            .pr(px(crate::scrollbar::GUTTER))
+                                            .flex()
+                                            .flex_col()
+                                            .gap_0p5()
+                                            .children(rows),
+                                    )
+                                    .child(crate::scrollbar::interactive_vertical(
+                                        &scroll,
+                                        "at-mention-scrollbar",
+                                    )),
+                            ),
+                        px(6.0),
+                    ))
+                    .with_priority(1),
+                )
             })
             .when(command_visible, |el| {
                 el.child(
@@ -2747,6 +3009,8 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::history_next))
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::queue))
+            .on_action(cx.listener(Self::accept_completion))
             .on_action(cx.listener(Self::queue))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))

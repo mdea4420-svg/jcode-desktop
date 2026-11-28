@@ -236,6 +236,8 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/screenshot-mode", "Hide identifying interface metadata"),
     RegisteredCommand::public("/screenshot", "Export a private JSON screenshot debug snapshot"),
     RegisteredCommand::public("/record", "Record a bounded debug snapshot timeline (JSONL)"),
+    RegisteredCommand::public("/export", "Export conversation transcript to Markdown (or `/export clip`)"),
+    RegisteredCommand::public("/git-review", "Open visual diff review for uncommitted Git changes"),
     RegisteredCommand::remote("/client-reload", "Rebuild and hot-reload the Desktop UI"),
     RegisteredCommand::remote("/server-reload", "Request a graceful server binary reload"),
     RegisteredCommand::remote(
@@ -363,6 +365,8 @@ pub(crate) fn localized_command_help_for_locale(
         "/log" => "在 jcode 日志中标记当前位置",
         "/keys" => "列出桌面端快捷键与作用域（`/keys refresh` 可刷新）",
         "/diff" => "切换或设置差异展示模式（off/inline/full/pinned/file）",
+        "/export" => "将当前对话导出为 Markdown 文件（`/export clip` 复制到剪贴板）",
+        "/git-review" => "打开图形化面板审阅当前工作区全部未提交 Git 改动",
         "/onboarding-preview" => "在独立新配置窗口中打开首次运行引导预览（Alt+9）",
         "/onboarding-sim" => "使用隔离的新配置打开首次运行引导桌面端（Alt+9）",
         "/reload" => "热重载到最新可用的二进制版本",

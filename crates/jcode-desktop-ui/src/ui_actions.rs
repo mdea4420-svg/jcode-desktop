@@ -104,7 +104,7 @@ gpui::actions!(
 
 gpui::actions!(
     panel_shortcuts,
-    [JumpToLatest, JumpToLatestIfEmpty, BackgroundRunningTool]
+    [JumpToLatest, JumpToLatestIfEmpty, BackgroundRunningTool, TogglePlanMode]
 );
 
 /// Alt+B/Ctrl+B move the running tool to the background, matching the TUI.
@@ -125,5 +125,12 @@ pub(crate) fn background_tool_bindings() -> [gpui::KeyBinding; 4] {
             BackgroundRunningTool,
             Some("ChatPanel > PromptInput"),
         ),
+    ]
+}
+
+pub(crate) fn plan_mode_bindings() -> [gpui::KeyBinding; 2] {
+    [
+        gpui::KeyBinding::new("shift-tab", TogglePlanMode, Some("ChatPanel")),
+        gpui::KeyBinding::new("shift-tab", TogglePlanMode, Some("ChatPanel > PromptInput")),
     ]
 }
