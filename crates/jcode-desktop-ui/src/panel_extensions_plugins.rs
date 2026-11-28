@@ -81,6 +81,9 @@ impl Panel {
         let Some(state) = self.extensions.as_ref() else {
             return div().into_any_element();
         };
+        if state.plugin_studio.is_some() {
+            return self.render_plugin_studio(cx);
+        }
         if let Some(form) = &state.plugin_form {
             return self.render_plugin_form(form, cx);
         }
@@ -124,7 +127,13 @@ impl Panel {
             .items_center()
             .gap_1p5()
             .child(
-                pill("plugins-new", "plugins-new".into(), tr("+ New plugin", "+ 新建插件"), true)
+                pill("plugins-ai-create", "plugins-ai-create".into(), tr("✨ AI Create", "✨ AI 写插件"), true)
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.open_ai_plugin_builder(None, cx);
+                    })),
+            )
+            .child(
+                pill("plugins-new", "plugins-new".into(), tr("+ New plugin", "+ 新建脚手架"), false)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                         this.open_plugin_form(window, cx);
                     })),
@@ -178,7 +187,11 @@ impl Panel {
                 pill("plugins-reload", "plugins-reload".into(), tr("Reload", "重新加载"), false)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
                         if let Some(state) = &this.extensions {
-                            let report = crate::plugins::sync_in(&state.plugin_layout());
+                            let layout = state.plugin_layout();
+                            let report = crate::plugins::sync_in(&layout);
+                            if layout == crate::plugins::layout() {
+                                crate::applet_runtime::get(cx).reload_plugin_applets();
+                            }
                             this.extensions_apply(Ok(plugin_summary(&report)), tr("Reloaded:", "已重新加载："), cx);
                         }
                     })),
@@ -277,6 +290,10 @@ impl Panel {
         let delete_name = name.clone();
         let confirm_name = name.clone();
         let open_path = plugin.root.clone();
+        let edit_root = plugin.root.clone();
+        let ai_edit_root = plugin.root.clone();
+        let edit_name = name.clone();
+        let ai_edit_name = name.clone();
         let inspect_file = plugin.entry_file.clone();
         let confirm_root = plugin.root.clone();
         let removable = plugin.source != "claude" && plugin.root.starts_with(plugins_dir);
@@ -391,11 +408,51 @@ impl Panel {
                     )
                     .child(
                         div()
-                            .flex_none()
+                            .min_w_0()
+                            .max_w_full()
                             .flex()
                             .flex_wrap()
                             .items_center()
                             .gap_1p5()
+                            .when(removable, |el| {
+                                let studio_id = edit_name.clone();
+                                let ai_id = ai_edit_name.clone();
+                                el.child(
+                                    pill(
+                                        format!("plugin-edit-{studio_id}"),
+                                        format!("plugin-edit-{studio_id}"),
+                                        tr("Edit", "在线编辑"),
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.open_plugin_code_editor(
+                                                edit_name.clone(),
+                                                edit_root.clone(),
+                                                cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                                .child(
+                                    pill(
+                                        format!("plugin-ai-edit-{ai_id}"),
+                                        format!("plugin-ai-edit-{ai_id}"),
+                                        tr("AI Modify", "AI 修改"),
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.open_ai_plugin_builder(
+                                                Some((ai_edit_name.clone(), ai_edit_root.clone())),
+                                                cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            })
                             .when_some(inspect_file, |el, file| {
                                 let inspect_id = name.clone();
                                 let label = if plugin.code {
@@ -734,16 +791,36 @@ impl Panel {
                         .child(soft_wrap_text(&error)),
                 )
             })
-            .child(div().flex_none().flex().child(pill("plugins-create", "plugins-create".into(), tr("Create plugin", "创建插件"), true)
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.save_plugin_form(cx)))))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        pill("plugins-create", "plugins-create".into(), tr("Create plugin", "创建插件"), true)
+                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.save_plugin_form(false, cx))),
+                    )
+                    .child(
+                        pill(
+                            "plugins-create-and-edit",
+                            "plugins-create-and-edit".into(),
+                            tr("Create & edit code", "创建并在线编辑"),
+                            false,
+                        )
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| this.save_plugin_form(true, cx))),
+                    ),
+            )
             .into_any_element()
     }
 
-    fn save_plugin_form(&mut self, cx: &mut Context<Self>) {
+    fn save_plugin_form(&mut self, open_editor: bool, cx: &mut Context<Self>) {
         let Some(state) = &self.extensions else { return; };
         let Some(form) = &state.plugin_form else { return; };
         let name = form.name.read(cx).content.trim();
-        let result = if jcode_plugins::manifest::sanitize_name(name).starts_with('.') {
+        let sanitized = jcode_plugins::manifest::sanitize_name(name);
+        let result = if sanitized.starts_with('.') {
             Err(tr("Plugin names cannot start with a dot.", "插件名称不能以点开头。").to_owned())
         } else {
             crate::plugins::create_in(&state.plugin_layout(), name, form.code)
@@ -752,9 +829,12 @@ impl Panel {
             match result {
                 Ok(root) => {
                     state.plugin_form = None;
-                    state.focus_pending = true;
+                    state.focus_pending = !open_editor;
                     state.scroll.set_offset(point(px(0.), px(0.)));
                     self.extensions_apply(Ok(root.display().to_string()), tr("Created", "已创建"), cx);
+                    if open_editor {
+                        self.open_plugin_code_editor(sanitized, root, cx);
+                    }
                 }
                 Err(error) => {
                     if let Some(form) = &mut state.plugin_form {

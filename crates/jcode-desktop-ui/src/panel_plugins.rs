@@ -3,11 +3,43 @@ use super::*;
 use crate::locale::{is_zh, tr};
 
 impl Panel {
-    /// `/plugins [enable|disable|new|reload] [name]`.
+    /// `/plugins [enable|disable|new|reload|ai] [name]` and `/plugin-create <spec>`.
     pub(super) fn handle_plugins_command(&mut self, content: &str, cx: &mut Context<Self>) -> bool {
+        if let Some(spec) = content.strip_prefix("/plugin-create").map(str::trim) {
+            if spec.is_empty() {
+                self.open_ai_plugin_builder(None, cx);
+            } else {
+                self.dispatch_ai_plugin_request(
+                    None,
+                    None,
+                    super::plugin_studio::AiPluginArch::Auto,
+                    spec,
+                    cx,
+                );
+            }
+            return true;
+        }
         let mut words = content.split_whitespace();
-        if !matches!(words.next(), Some("/plugins" | "/plugin")) {
+        let Some(cmd) = words.next() else {
             return false;
+        };
+        if !matches!(cmd, "/plugins" | "/plugin") {
+            return false;
+        }
+        let rest = content[cmd.len()..].trim();
+        if let Some(spec) = rest.strip_prefix("ai").map(str::trim) {
+            if spec.is_empty() {
+                self.open_ai_plugin_builder(None, cx);
+            } else {
+                self.dispatch_ai_plugin_request(
+                    None,
+                    None,
+                    super::plugin_studio::AiPluginArch::Auto,
+                    spec,
+                    cx,
+                );
+            }
+            return true;
         }
         let action = words.next().unwrap_or("list");
         let name = words.next();
@@ -47,12 +79,12 @@ impl Panel {
                 Err(error) => Item::Error(error),
             },
             ("reload" | "sync", _) => {
-                Item::Assistant(crate::plugins::report_markdown(&crate::plugins::sync_now()))
+                Item::Assistant(crate::plugins::report_markdown(&crate::plugins::sync_and_hot_reload(cx)))
             }
             _ => Item::Error(
                 tr(
-                    "Usage: `/plugins`, `/plugins enable <name>`, `/plugins disable <name>`, `/plugins new <name>`, `/plugins reload`.",
-                    "用法：`/plugins` 查看列表，`/plugins enable <name>` 开启，`/plugins disable <name>` 关闭，`/plugins new <name>` 新建，`/plugins reload` 重新加载。",
+                    "Usage: `/plugins`, `/plugin-create <spec>`, `/plugins enable <name>`, `/plugins disable <name>`, `/plugins new <name>`, `/plugins reload`.",
+                    "用法：`/plugins` 打开插件面板，`/plugin-create <需求描述>` 让 Agent 自动编写并安装插件，`/plugins enable|disable <name>` 开关，`/plugins reload` 热重载。",
                 ).into(),
             ),
         };

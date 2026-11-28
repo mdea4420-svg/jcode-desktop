@@ -633,3 +633,58 @@ fn plugins_tab_bounds_long_text_in_narrow_window_filters_and_trashes_safely(
     assert!(vcx.debug_bounds("plugin-row-imported-helper").is_some());
     assert!(vcx.debug_bounds("plugin-inspect-imported-helper").is_some());
 }
+
+#[gpui::test]
+fn plugin_studio_ai_builder_and_in_app_code_editor_work_end_to_end(cx: &mut gpui::TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let paths = fixture_paths(root.path());
+    let layout = crate::plugins::layout_for_paths(&paths);
+    let (panel, vcx, commands) = setup(cx);
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(gpui::px(980.), gpui::px(720.)));
+
+    let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+
+    // 1. Create a code plugin & jump straight into the in-app multi-file code editor.
+    panel.update(vcx, |panel, cx| {
+        panel.open_extensions_with_paths(paths.clone(), None, ExtensionTab::Plugins, cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("plugins-ai-create").is_some());
+    click(vcx, "plugins-new");
+    vcx.simulate_input("studio-demo");
+    vcx.run_until_parked();
+    click(vcx, "plugins-kind-code");
+    click(vcx, "plugins-create-and-edit");
+    assert!(vcx.debug_bounds("extensions-plugin-code-editor").is_some());
+    assert!(vcx.debug_bounds("snippet-cmd").is_some());
+
+    // Insert a command snippet, save & validate/reload, and verify disk write.
+    click(vcx, "snippet-cmd");
+    click(vcx, "plugin-editor-save");
+    let saved_code = std::fs::read_to_string(layout.plugins_dir.join("studio-demo/index.mjs")).unwrap();
+    assert!(saved_code.contains("quick-summary"));
+    assert!(vcx.debug_bounds("plugin-editor-status").is_some());
+
+    // 2. Switch to AI Builder via `plugin-editor-ask-ai`, pick template, and dispatch authoring prompt.
+    click(vcx, "plugin-editor-ask-ai");
+    assert!(vcx.debug_bounds("extensions-plugin-ai-builder").is_some());
+    click(vcx, "plugin-ai-tpl-0");
+    click(vcx, "plugin-ai-submit");
+    assert!(vcx.debug_bounds("extensions").is_none(), "submitting AI builder closes overlay");
+
+    let mut sent_authoring = false;
+    while let Ok(cmd) = commands.try_recv() {
+        if let crate::harness::Command::Send { content, .. } = cmd
+            && content.contains("studio-demo")
+            && content.contains("jcode.command")
+        {
+            sent_authoring = true;
+        }
+    }
+    assert!(sent_authoring, "AI Plugin Studio should dispatch structured authoring prompt");
+}

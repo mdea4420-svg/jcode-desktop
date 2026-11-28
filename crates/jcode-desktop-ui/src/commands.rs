@@ -238,6 +238,8 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/record", "Record a bounded debug snapshot timeline (JSONL)"),
     RegisteredCommand::public("/export", "Export conversation transcript to Markdown (or `/export clip`)"),
     RegisteredCommand::public("/git-review", "Open visual diff review for uncommitted Git changes"),
+    RegisteredCommand::public("/plugin-create", "Open Plugin Studio or ask Jcode to author & enable a plugin (`/plugin-create <spec>`)"),
+    RegisteredCommand::hidden("/plugin-studio", "Alias for /plugin-create"),
     RegisteredCommand::remote("/client-reload", "Rebuild and hot-reload the Desktop UI"),
     RegisteredCommand::remote("/server-reload", "Request a graceful server binary reload"),
     RegisteredCommand::remote(
@@ -367,6 +369,7 @@ pub(crate) fn localized_command_help_for_locale(
         "/diff" => "切换或设置差异展示模式（off/inline/full/pinned/file）",
         "/export" => "将当前对话导出为 Markdown 文件（`/export clip` 复制到剪贴板）",
         "/git-review" => "打开图形化面板审阅当前工作区全部未提交 Git 改动",
+        "/plugin-create" => "打开插件工坊，或输入需求让 Agent 给自己编写并启用插件",
         "/onboarding-preview" => "在独立新配置窗口中打开首次运行引导预览（Alt+9）",
         "/onboarding-sim" => "使用隔离的新配置打开首次运行引导桌面端（Alt+9）",
         "/reload" => "热重载到最新可用的二进制版本",

@@ -119,11 +119,65 @@ pub(crate) fn start() {
     let _ = std::thread::Builder::new()
         .name("plugin-sync".into())
         .spawn(|| {
+            let _ = jcode_plugins::creator_skill::ensure(&layout());
             let report = sync_now();
             for warning in &report.warnings {
                 eprintln!("jcode desktop: plugins: {warning}");
             }
         });
+}
+
+/// Sync plugins and hot-reload Desktop's command catalog + plugin applet panels.
+pub(crate) fn sync_and_hot_reload(cx: &mut gpui::App) -> SyncReport {
+    let report = sync_now();
+    crate::applet_runtime::get(cx).reload_plugin_applets();
+    report
+}
+
+/// Fast fingerprint of `~/.jcode/plugins` (entry names + mtimes) so Desktop can
+/// detect when an Agent turn created or modified a plugin and auto-sync it.
+pub(crate) fn plugins_fingerprint() -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let root = layout().plugins_dir;
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return 0;
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.starts_with('.'))
+        })
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        dir.hash(&mut hasher);
+        if let Ok(meta) = std::fs::metadata(&dir)
+            && let Ok(mod_time) = meta.modified()
+        {
+            mod_time.hash(&mut hasher);
+        }
+        for rel in [
+            ".claude-plugin/plugin.json",
+            "plugin.json",
+            "index.mjs",
+            "hooks/hooks.json",
+            ".mcp.json",
+        ] {
+            let f = dir.join(rel);
+            if let Ok(meta) = std::fs::metadata(&f) {
+                rel.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                if let Ok(mod_time) = meta.modified() {
+                    mod_time.hash(&mut hasher);
+                }
+            }
+        }
+    }
+    hasher.finish()
 }
 
 /// `applets/` folders of enabled plugins, started like `~/.jcode/applets`.

@@ -47,6 +47,7 @@ pub(super) struct ExtensionsState {
     /// New-skill form.
     pub skill_form: Option<SkillForm>,
     pub plugin_form: Option<PluginForm>,
+    pub plugin_studio: Option<super::plugin_studio::PluginStudio>,
     /// Import-skill path field (folder picker fallback).
     pub skill_import: Option<Entity<PromptInput>>,
     /// Import-plugin path field (folder picker fallback).
@@ -341,6 +342,7 @@ impl Panel {
             mcp_form: None,
             skill_form: None,
             plugin_form: None,
+            plugin_studio: None,
             skill_import: None,
             plugin_import: None,
             error: None,
@@ -375,6 +377,10 @@ impl Panel {
         content: &str,
         cx: &mut Context<Self>,
     ) -> bool {
+        if matches!(content, "/plugin-create" | "/plugin-studio") {
+            self.open_ai_plugin_builder(None, cx);
+            return true;
+        }
         let tab = match content {
             "/mcp" | "/mcp-servers" => ExtensionTab::Mcp,
             "/extensions" => ExtensionTab::Last,
@@ -421,6 +427,14 @@ impl Panel {
             state.mcp_form = None;
         } else if state.skill_form.is_some() {
             state.skill_form = None;
+        } else if let Some(super::plugin_studio::PluginStudio::CodeEditor {
+            new_file: slot @ Some(_),
+            ..
+        }) = state.plugin_studio.as_mut()
+        {
+            *slot = None;
+        } else if state.plugin_studio.take().is_some() {
+            state.focus_pending = true;
         } else if state.plugin_form.take().is_some() {
             state.focus_pending = true;
         } else if state.skill_import.is_some() {

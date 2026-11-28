@@ -334,8 +334,16 @@ impl Runtime {
     /// Fire a launcher, starting its local provider first if needed.
     /// Returns an already-mounted singleton instance to focus.
     pub fn launch(&self, applet: &str, index: usize) -> Option<String> {
-        if let Some(dir) = applets_dir()
-            && let Some(local) = discover(&dir).into_iter().find(|a| a.id == applet)
+        let local = applets_dir()
+            .into_iter()
+            .flat_map(|dir| discover(&dir))
+            .chain(
+                crate::plugins::applet_dirs()
+                    .into_iter()
+                    .flat_map(|dir| discover(&dir)),
+            )
+            .find(|a| a.id == applet);
+        if let Some(local) = local
             && let Err(error) = self.start(&local)
         {
             eprintln!("jcode desktop: {error}");
@@ -343,6 +351,39 @@ impl Runtime {
         let focus = self.host.borrow_mut().launch(applet, index);
         self.flush();
         focus
+    }
+
+    /// Hot-reload local plugin applet providers after plugin creation, edits,
+    /// or enable/disable changes without restarting Jcode Desktop.
+    pub fn reload_plugin_applets(&self) {
+        if cfg!(test) || crate::harness::screenshot_mode() {
+            return;
+        }
+        let plugin_ids: Vec<String> = self
+            .processes
+            .borrow()
+            .keys()
+            .filter(|id| id.starts_with("plugin-"))
+            .cloned()
+            .collect();
+        for id in plugin_ids {
+            if let Some(mut proc) = self.processes.borrow_mut().remove(&id) {
+                let _ = proc.child.kill();
+                let _ = proc.child.wait();
+            }
+            self.host.borrow_mut().provider_disconnected(&id);
+        }
+        for applet in crate::plugins::applet_dirs()
+            .into_iter()
+            .flat_map(|dir| discover(&dir))
+        {
+            if applet.autostart
+                && let Err(error) = self.start(&applet)
+            {
+                eprintln!("jcode desktop: {error}");
+            }
+        }
+        self.bump();
     }
 
     /// Index of the applet's first launcher with this trigger.

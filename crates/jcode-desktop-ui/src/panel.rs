@@ -123,6 +123,8 @@ mod preview;
 mod prompt;
 #[path = "panel_plugins.rs"]
 mod plugins;
+#[path = "panel_plugin_studio.rs"]
+mod plugin_studio;
 #[path = "panel_queue.rs"]
 mod queue;
 #[path = "panel_reasoning_fold.rs"]
@@ -564,6 +566,7 @@ pub struct Panel {
     pub(super) copied_prompt: Option<(usize, Instant)>,
     pub(super) reasoning_started: Option<Instant>,
     pub(super) reasoning_durations: HashMap<usize, f64>,
+    pub(super) plugins_fingerprint: u64,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1065,6 +1068,11 @@ impl Panel {
             copied_prompt: None,
             reasoning_started: None,
             reasoning_durations: HashMap::new(),
+            plugins_fingerprint: if cfg!(test) || crate::harness::screenshot_mode() {
+                0
+            } else {
+                crate::plugins::plugins_fingerprint()
+            },
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -3096,6 +3104,7 @@ impl Panel {
                 self.finish_response();
                 self.input.update(cx, |input, _| input.invalidate_at_mentions());
                 self.maybe_refresh_git_status(true, cx);
+                self.maybe_hot_reload_plugins_after_turn(cx);
             }
             ApiEvent::TurnStopped {
                 reason,
@@ -3390,6 +3399,38 @@ impl Panel {
 
     fn flush_reasoning(&mut self) {
         self.flush_reasoning_with_duration(None);
+    }
+
+    fn maybe_hot_reload_plugins_after_turn(&mut self, cx: &mut Context<Self>) {
+        if cfg!(test)
+            || crate::harness::screenshot_mode()
+            || self.is_side_document()
+            || self.is_accounts_panel()
+            || self.preview_state.is_some()
+        {
+            return;
+        }
+        let prev = self.plugins_fingerprint;
+        let check = cx.background_executor().spawn(async move {
+            let next = crate::plugins::plugins_fingerprint();
+            if next != prev {
+                let report = crate::plugins::sync_now();
+                Some((next, report))
+            } else {
+                None
+            }
+        });
+        cx.spawn(async move |panel, cx| {
+            let Some((next, _report)) = check.await else {
+                return;
+            };
+            let _ = panel.update(cx, |this, cx| {
+                this.plugins_fingerprint = next;
+                crate::applet_runtime::get(cx).reload_plugin_applets();
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn flush_reasoning_with_duration(&mut self, reported_secs: Option<f64>) {

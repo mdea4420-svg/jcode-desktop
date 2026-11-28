@@ -23,6 +23,7 @@
 
 pub mod code;
 pub mod commands;
+pub mod creator_skill;
 pub mod hooks;
 pub mod manifest;
 pub mod paths;

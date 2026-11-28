@@ -228,6 +228,7 @@ pub struct PromptInput {
     revealed_caret: Option<(usize, SharedString, gpui::Size<Pixels>)>,
     submission_enabled: bool,
     submit_untrimmed: bool,
+    multiline_code: bool,
     pending_session: bool,
     spacious: bool,
     /// Right padding reserved for a control the host floats inside the box
@@ -652,6 +653,7 @@ impl PromptInput {
             revealed_caret: None,
             submission_enabled: true,
             submit_untrimmed: false,
+            multiline_code: false,
             pending_session: false,
             spacious: false,
             trailing_inset: 0.,
@@ -666,6 +668,17 @@ impl PromptInput {
     /// Chat composers show animated example prompts while empty.
     pub(crate) fn with_example_prompts(mut self) -> Self {
         self.example_prompts = true;
+        self
+    }
+
+    /// Multi-line monospace code editor mode for in-app plugin/config editing:
+    /// preserves newlines on paste, inserts indented newlines on Enter, and
+    /// inserts two spaces on Tab.
+    pub(crate) fn with_multiline_code(mut self) -> Self {
+        self.multiline_code = true;
+        self.command_completion = false;
+        self.submission_enabled = false;
+        self.submit_untrimmed = true;
         self
     }
 
@@ -802,9 +815,13 @@ impl PromptInput {
     fn accept_completion(
         &mut self,
         _: &AcceptCompletion,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.multiline_code {
+            self.replace_text_in_range(None, "  ", window, cx);
+            return;
+        }
         if self.accept_at_mention(self.at_mention.selection, cx) {
             return;
         }
@@ -1162,6 +1179,16 @@ impl PromptInput {
     }
 
     fn submit_prompt(&mut self, queued: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.multiline_code {
+            let cur = self.cursor_offset().min(self.content.len());
+            let line_start = self.content[..cur].rfind('\n').map_or(0, |i| i + 1);
+            let indent: String = self.content[line_start..cur]
+                .chars()
+                .take_while(|&c| c == ' ')
+                .collect();
+            self.replace_text_in_range(None, &format!("\n{indent}"), window, cx);
+            return;
+        }
         if !self.submission_enabled {
             return;
         }
@@ -1349,7 +1376,12 @@ impl PromptInput {
             }
         }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            let normalized = if self.multiline_code {
+                text.replace("\r\n", "\n")
+            } else {
+                text.replace('\n', " ")
+            };
+            self.replace_text_in_range(None, &normalized, window, cx);
         }
     }
 
@@ -2659,8 +2691,12 @@ impl Render for PromptInput {
         }
         let focused = self.focus_handle.is_focused(window);
         let text_scale = crate::config::text_scale();
-        let editor_height = (f32::from(window.viewport_size().height) * 0.25)
-            .clamp((22.0 * text_scale).max(28.0), 160.0);
+        let editor_height = if self.multiline_code {
+            (f32::from(window.viewport_size().height) * 0.44).clamp(180.0, 360.0)
+        } else {
+            (f32::from(window.viewport_size().height) * 0.25)
+                .clamp((22.0 * text_scale).max(28.0), 160.0)
+        };
         let spacious = self.spacious
             && self.voice_preview.is_none()
             && window.viewport_size().height >= px(400.);
@@ -3047,7 +3083,7 @@ impl Render for PromptInput {
             // Near-pill corners. A single-line composer is ~38px tall, so an
             // 18px radius reads as fully round while multi-line drafts keep
             // straight sides instead of turning into an ellipse.
-            .rounded(px(18.0))
+            .rounded(if self.multiline_code { px(12.0) } else { px(18.0) })
             .when(!self.attachments.is_empty(), |el| {
                 el.child(
                     div()
@@ -3083,8 +3119,13 @@ impl Render for PromptInput {
                     .items_start()
                     .px_4()
                     .py_2()
-                    .font_family(Theme::global().FONT_UI)
-                    .text_size(px(14.0 * text_scale))
+                    .font_family(if self.multiline_code {
+                        Theme::global().FONT_MONO
+                    } else {
+                        Theme::global().FONT_UI
+                    })
+                    .text_size(px((if self.multiline_code { 12.5 } else { 14.0 }) * text_scale))
+                    .when(self.multiline_code, |el| el.min_h(px(180.0)))
                     .when(spacious, |el| {
                         // One line of 16px text plus padding.
                         el.min_h(px(SPACIOUS_MIN_HEIGHT))
