@@ -325,12 +325,12 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_1()
-            .child(div().pt_2().text_color(theme.TEXT_DIM).child("Applets"));
+            .child(div().pt_2().text_color(theme.TEXT_DIM).child(crate::locale::tr("Applets", "小程序权限")));
         for (id, title, granted, decided) in rows {
             let summary = if !decided {
-                "Not asked yet".to_owned()
+                crate::locale::tr("Not asked yet", "尚未请求").to_owned()
             } else if granted.is_empty() {
-                "Denied".to_owned()
+                crate::locale::tr("Denied", "已拒绝").to_owned()
             } else {
                 granted
                     .iter()
@@ -364,7 +364,7 @@ impl Workspace {
                                     this.applet_consent_dismissed.remove(&revoke_id);
                                     cx.notify();
                                 }))
-                                .child("Revoke"),
+                                .child(crate::locale::tr("Revoke", "撤销")),
                         )
                     }),
             );

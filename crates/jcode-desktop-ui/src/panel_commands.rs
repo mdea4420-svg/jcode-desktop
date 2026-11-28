@@ -1,6 +1,7 @@
 //! Desktop-native commands. Declare this as a child of `panel`, not at crate root.
 //! IO runs on the background executor. Nothing here submits an agent prompt.
 use super::*;
+use crate::locale::{is_zh, tr};
 use std::path::PathBuf;
 
 type RecordingFlags =
@@ -58,20 +59,28 @@ impl Panel {
             }
             if key == "thinking_display" && value == "toggle" {
                 let expanded = self.toggle_all_thinking(cx);
-                self.items.push(Item::Assistant(format!(
-                    "{command}: {} all thinking.",
-                    if expanded { "expanded" } else { "folded" },
-                )));
+                self.items.push(Item::Assistant(if is_zh() {
+                    format!("{command}：已{}全部思考过程。", if expanded { "展开" } else { "折叠" })
+                } else {
+                    format!(
+                        "{command}: {} all thinking.",
+                        if expanded { "expanded" } else { "folded" },
+                    )
+                }));
                 cx.refresh_windows();
                 cx.notify();
                 return true;
             }
             if key == "steps_display" && value == "toggle" {
                 let expanded = self.toggle_all_steps(cx);
-                self.items.push(Item::Assistant(format!(
-                    "{command}: {} all steps.",
-                    if expanded { "expanded" } else { "folded" },
-                )));
+                self.items.push(Item::Assistant(if is_zh() {
+                    format!("{command}：已{}全部工具步骤。", if expanded { "展开" } else { "折叠" })
+                } else {
+                    format!(
+                        "{command}: {} all steps.",
+                        if expanded { "expanded" } else { "folded" },
+                    )
+                }));
                 cx.refresh_windows();
                 cx.notify();
                 return true;
@@ -83,16 +92,22 @@ impl Panel {
             };
             match result {
                 Ok(settings) => {
-                    self.items.push(Item::Assistant(format!(
-                        "{command}: `{}`. Use `{command} <{}>` to change it.",
-                        settings.value(key).unwrap_or_default(),
-                        setting_choices(key)
-                    )));
+                    let current = settings.value(key).unwrap_or_default();
+                    let choices = setting_choices(key);
+                    self.items.push(Item::Assistant(if is_zh() {
+                        format!("{command}：当前为 `{current}`。输入 `{command} <{choices}>` 可切换。")
+                    } else {
+                        format!("{command}: `{current}`. Use `{command} <{choices}>` to change it.")
+                    }));
                 }
-                Err(error) => self.items.push(Item::Error(format!(
-                    "{error} Usage: `{command} <{}>`.",
-                    setting_choices(key)
-                ))),
+                Err(error) => {
+                    let choices = setting_choices(key);
+                    self.items.push(Item::Error(if is_zh() {
+                        format!("{error} 用法：`{command} <{choices}>`。")
+                    } else {
+                        format!("{error} Usage: `{command} <{choices}>`.")
+                    }));
+                }
             }
             self.transcript_measurements.dirty = true;
             cx.refresh_windows();
@@ -100,20 +115,47 @@ impl Panel {
             return true;
         }
         match command {
-            "/version" if args.is_empty() => self.items.push(Item::Assistant(format!(
-                "Jcode Desktop {}\n\nRevision: `{}`\n\n{}\n\nPlatform: `{}/{}`",
-                crate::build_info::version(), crate::build_info::revision(), crate::build_info::age(),
-                std::env::consts::OS, std::env::consts::ARCH
-            ))),
+            "/version" if args.is_empty() => self.items.push(Item::Assistant(if is_zh() {
+                format!(
+                    "Jcode Desktop {}\n\n构建版本：`{}`\n\n{}\n\n运行平台：`{}/{}`",
+                    crate::build_info::version(),
+                    crate::build_info::revision(),
+                    crate::build_info::age(),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                )
+            } else {
+                format!(
+                    "Jcode Desktop {}\n\nRevision: `{}`\n\n{}\n\nPlatform: `{}/{}`",
+                    crate::build_info::version(),
+                    crate::build_info::revision(),
+                    crate::build_info::age(),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                )
+            })),
             "/git" | "/diff" => {
                 let diff = command == "/diff";
                 let staged = args == "--staged" || args == "--cached";
                 if !args.is_empty() && !(diff && staged) {
-                    self.items.push(Item::Error(format!("Usage: `{command}{}`.", if diff { " [--staged]" } else { "" })));
+                    let suffix = if diff { " [--staged]" } else { "" };
+                    self.items.push(Item::Error(if is_zh() {
+                        format!("用法：`{command}{suffix}`。")
+                    } else {
+                        format!("Usage: `{command}{suffix}`.")
+                    }));
                 } else if crate::harness::remote_host(&self.session_id).is_some() {
-                    self.items.push(Item::Error(format!("{command} cannot inspect the remote checkout from this Desktop. Open the session's remote terminal to run `git {}` there.", if diff { "diff" } else { "status" })));
+                    self.items.push(Item::Error(if is_zh() {
+                        format!("{command} 无法从本机直接读取远程主机工作区，请打开远程终端执行 `git {}`。", if diff { "diff" } else { "status" })
+                    } else {
+                        format!("{command} cannot inspect the remote checkout from this Desktop. Open the session's remote terminal to run `git {}` there.", if diff { "diff" } else { "status" })
+                    }));
                 } else if let Some(directory) = self.working_dir.clone().filter(|dir| !dir.trim().is_empty()) {
-                    self.items.push(Item::Assistant(format!("Reading {} in `{directory}`…", if diff { "git diff" } else { "git status" })));
+                    self.items.push(Item::Assistant(if is_zh() {
+                        format!("正在读取 `{directory}` 的 {}…", if diff { "git diff" } else { "git status" })
+                    } else {
+                        format!("Reading {} in `{directory}`…", if diff { "git diff" } else { "git status" })
+                    }));
                     cx.spawn(async move |this, cx| {
                         let result = cx.background_executor().spawn(async move { git_read(&directory, diff, staged) }).await;
                         let _ = this.update(cx, |panel, cx| {
@@ -126,72 +168,109 @@ impl Panel {
                         });
                     }).detach();
                 } else {
-                    self.items.push(Item::Error("This session has no working directory to inspect.".into()));
+                    self.items.push(Item::Error(tr(
+                        "This session has no working directory to inspect.",
+                        "当前会话尚未绑定可查看的工作目录。",
+                    ).into()));
                 }
             }
             "/transcript" if args.is_empty() => {
                 if crate::harness::remote_host(&self.session_id).is_some() {
-                    self.items.push(Item::Error("The session transcript lives on the remote host, not this Desktop. Use the remote terminal to access its Jcode sessions directory.".into()));
+                    self.items.push(Item::Error(tr(
+                        "The session transcript lives on the remote host, not this Desktop. Use the remote terminal to access its Jcode sessions directory.",
+                        "该会话记录保存在远程主机上，请通过远程终端查看其 sessions 目录。",
+                    ).into()));
                 } else if valid_session_filename(&self.session_id) {
                     if let Some(home) = crate::harness::jcode_home() {
-                        self.open_command_file(home.join("sessions").join(format!("{}.json", self.session_id)), "Session transcript", cx);
+                        self.open_command_file(home.join("sessions").join(format!("{}.json", self.session_id)), tr("Session transcript", "会话记录文件"), cx);
                     } else {
-                        self.items.push(Item::Error("Could not locate the Jcode sessions directory.".into()));
+                        self.items.push(Item::Error(tr("Could not locate the Jcode sessions directory.", "无法找到 Jcode 会话目录。").into()));
                     }
                 } else {
-                    self.items.push(Item::Error("The session has not received a persisted session ID yet.".into()));
+                    self.items.push(Item::Error(tr("The session has not received a persisted session ID yet.", "当前会话尚未生成持久化会话 ID。").into()));
                 }
             }
             "/config" if args.is_empty() || args == "show" => {
                 let mut config = crate::config::get().clone();
                 config.display = crate::config::display();
                 config.appearance.theme = crate::theme::Theme::active_preset().id().into();
-                self.items.push(Item::Assistant(format!("Desktop configuration: `{}`\n\n```toml\n{}\n```\n\nUse `/config open` to edit the file. Display commands apply live. Startup-only settings need a Desktop restart.", crate::config::path().display(), toml::to_string_pretty(&config).unwrap_or_default())));
+                let body = toml::to_string_pretty(&config).unwrap_or_default();
+                let cfg_path = crate::config::path();
+                self.items.push(Item::Assistant(if is_zh() {
+                    format!("桌面端配置：`{}`\n\n```toml\n{body}\n```\n\n输入 `/config open` 可直接打开编辑配置文件。显示类设置立即生效，仅启动时读取的设置重启桌面端后生效。", cfg_path.display())
+                } else {
+                    format!("Desktop configuration: `{}`\n\n```toml\n{body}\n```\n\nUse `/config open` to edit the file. Display commands apply live. Startup-only settings need a Desktop restart.", cfg_path.display())
+                }));
             }
-            "/config" if args == "open" => self.open_command_file(crate::config::path(), "Desktop configuration", cx),
+            "/config" if args == "open" => self.open_command_file(crate::config::path(), tr("Desktop configuration", "桌面端配置文件"), cx),
             "/log" if args.is_empty() => {
                 let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
                 eprintln!("[desktop /log marker] unix_ms={timestamp} session={} transcript_items={}", self.session_id, self.items.len());
                 let path = jcode_desktop_model::platform_dirs::state_dir()
                     .unwrap_or_else(|| std::env::temp_dir().join("jcode-desktop"))
                     .join("jcode-desktop.log");
-                self.items.push(Item::Assistant(format!("Marked the current location in the Desktop log. Marker: `{timestamp}`. Log: `{}`. Use `/log open` to open it.", path.display())));
+                self.items.push(Item::Assistant(if is_zh() {
+                    format!("已在桌面端日志中打入时间标记：`{timestamp}`。日志文件：`{}`。输入 `/log open` 可打开查看。", path.display())
+                } else {
+                    format!("Marked the current location in the Desktop log. Marker: `{timestamp}`. Log: `{}`. Use `/log open` to open it.", path.display())
+                }));
             }
-            "/log" if args == "open" => self.open_command_file(jcode_desktop_model::platform_dirs::state_dir().unwrap_or_else(|| std::env::temp_dir().join("jcode-desktop")).join("jcode-desktop.log"), "Desktop log", cx),
+            "/log" if args == "open" => self.open_command_file(jcode_desktop_model::platform_dirs::state_dir().unwrap_or_else(|| std::env::temp_dir().join("jcode-desktop")).join("jcode-desktop.log"), tr("Desktop log", "桌面端日志"), cx),
             "/hotkeys" | "/keys" | "/keybindings" if args.is_empty() || args == "refresh" => {
                 let keymap = cx.key_bindings();
                 let keymap = keymap.borrow();
                 let rows = keymap.bindings().map(|binding| {
                     let keys = binding.keystrokes().iter().map(|key| key.to_string()).collect::<Vec<_>>().join(" ");
-                    let context = binding.predicate().map(|predicate| predicate.to_string()).unwrap_or_else(|| "Global".into());
+                    let context = binding.predicate().map(|predicate| predicate.to_string()).unwrap_or_else(|| tr("Global", "全局").into());
                     format!("- `{keys}` → `{}` ({context})", binding.action().name())
                 }).collect::<Vec<_>>();
-                self.items.push(Item::Assistant(format!("## Desktop keybindings\n\nRegistered bindings in declaration order. Context determines availability, and later bindings take precedence. `/keys refresh` reads this live keymap again. Desktop uses GPUI rather than terminal key protocols. OS-reserved shortcuts may intercept a binding and are not detectable from this keymap.\n\n{}", rows.join("\n"))));
+                self.items.push(Item::Assistant(if is_zh() {
+                    format!("## 桌面端已注册快捷键\n\n按注册顺序列出，作用域决定生效范围，后注册项优先。输入 `/keys refresh` 可重新读取实时键位表。\n\n{}", rows.join("\n"))
+                } else {
+                    format!("## Desktop keybindings\n\nRegistered bindings in declaration order. Context determines availability, and later bindings take precedence. `/keys refresh` reads this live keymap again. Desktop uses GPUI rather than terminal key protocols. OS-reserved shortcuts may intercept a binding and are not detectable from this keymap.\n\n{}", rows.join("\n"))
+                }));
             }
             "/colors" | "/color" => {
                 use crate::theme::{Theme, ThemePreset};
                 if args.is_empty() || args == "list" {
                     let choices = ThemePreset::ALL.iter().map(|preset| format!("- `{}`: {}", preset.id(), preset.label())).collect::<Vec<_>>().join("\n");
-                    self.items.push(Item::Assistant(format!("Current Desktop theme: `{}`.\n\nUse `/colors <theme-id>` to apply and save a theme.\n\n{choices}", Theme::active_preset().id())));
+                    self.items.push(Item::Assistant(if is_zh() {
+                        format!("当前桌面端主题：`{}`。\n\n输入 `/colors <主题ID>` 可立即切换并保存：\n\n{choices}", Theme::active_preset().id())
+                    } else {
+                        format!("Current Desktop theme: `{}`.\n\nUse `/colors <theme-id>` to apply and save a theme.\n\n{choices}", Theme::active_preset().id())
+                    }));
                 } else if let Some(preset) = ThemePreset::ALL.iter().copied().find(|preset| preset.id() == args) {
                     match crate::config::persist_theme(preset.id()) {
                         Ok(()) => {
                             Theme::select(preset);
-                            self.items.push(Item::Assistant(format!("Desktop theme set to **{}**.", preset.label())));
+                            self.items.push(Item::Assistant(if is_zh() {
+                                format!("已将桌面端主题切换为 **{}**。", preset.label())
+                            } else {
+                                format!("Desktop theme set to **{}**.", preset.label())
+                            }));
                             cx.refresh_windows();
                         }
-                        Err(error) => self.items.push(Item::Error(format!("Could not save theme: {error}"))),
+                        Err(error) => self.items.push(Item::Error(if is_zh() {
+                            format!("无法保存主题设置：{error}")
+                        } else {
+                            format!("Could not save theme: {error}")
+                        })),
                     }
                 } else {
-                    self.items.push(Item::Error("Unknown Desktop theme. Use `/colors list` to see exact theme IDs.".into()));
+                    self.items.push(Item::Error(tr("Unknown Desktop theme. Use `/colors list` to see exact theme IDs.", "未知主题 ID，请输入 `/colors list` 查看可用主题列表。").into()));
                 }
             }
-            "/terminal-setup" if args.is_empty() => self.items.push(Item::Assistant(
-                "Desktop uses its built-in Handterm terminal engine, so terminal escape-sequence setup for the TUI is unnecessary. Open a terminal panel using Desktop's terminal shortcut. Scrollback is configured with `terminal.scrollback_lines` in `/config`. No shell configuration was changed.".into()
-            )),
+            "/terminal-setup" if args.is_empty() => self.items.push(Item::Assistant(tr(
+                "Desktop uses its built-in Handterm terminal engine, so terminal escape-sequence setup for the TUI is unnecessary. Open a terminal panel using Desktop's terminal shortcut. Scrollback is configured with `terminal.scrollback_lines` in `/config`. No shell configuration was changed.",
+                "桌面端使用内置 Handterm 终端引擎，无需额外配置 TUI 转义序列。可使用快捷键直接打开内置终端面板；回滚行数可在 `/config` 的 `terminal.scrollback_lines` 中调整。",
+            ).into())),
             "/screenshot" => self.export_debug_snapshot(args, cx),
             "/record" => self.record_debug_demo(args, cx),
-            "/version" | "/transcript" | "/config" | "/log" | "/hotkeys" | "/keys" | "/keybindings" | "/terminal-setup" => self.items.push(Item::Error(format!("Unexpected arguments for `{command}`."))),
+            "/version" | "/transcript" | "/config" | "/log" | "/hotkeys" | "/keys" | "/keybindings" | "/terminal-setup" => self.items.push(Item::Error(if is_zh() {
+                format!("`{command}` 不接受额外参数。")
+            } else {
+                format!("Unexpected arguments for `{command}`.")
+            })),
             _ => return false,
         }
         self.transcript_measurements.dirty = true;

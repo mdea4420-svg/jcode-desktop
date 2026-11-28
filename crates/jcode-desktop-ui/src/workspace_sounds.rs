@@ -10,14 +10,14 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .mt_2()
-            .child(div().text_color(Theme::global().TEXT_DIM).child("Sounds · all windows"))
+            .child(div().text_color(Theme::global().TEXT_DIM).child(crate::locale::tr("Sounds · all windows", "提示音 · 全部窗口")))
             .child(
                 div()
                     .id("settings-sounds")
                     .debug_selector(|| "settings-sounds".into())
-                    .px_2()
+                    .px_3()
                     .py_2()
-                    .rounded_sm()
+                    .rounded_full()
                     .flex()
                     .justify_between()
                     .gap_2()
@@ -37,24 +37,27 @@ impl Workspace {
                         }
                         cx.notify();
                     }))
-                    .child("Sound effects")
-                    .child(div().text_color(if enabled { Theme::global().ACCENT } else { Theme::global().TEXT_DIM }).child(if enabled { "On" } else { "Off" })),
+                    .child(crate::locale::tr("Sound effects", "界面提示音效"))
+                    .child(div().text_color(if enabled { Theme::global().ACCENT } else { Theme::global().TEXT_DIM }).child(if enabled { crate::locale::tr("On", "开启") } else { crate::locale::tr("Off", "关闭") })),
             )
-            .child(div().text_color(Theme::global().TEXT_DIM).child("Soft cues for messages, attention, errors, finished tasks, and opening or closing panels. Off by default."))
+            .child(div().text_color(Theme::global().TEXT_DIM).child(crate::locale::tr(
+                "Soft cues for messages, attention, errors, finished tasks, and opening or closing panels. Off by default.",
+                "为新消息、提醒、错误、任务完成及开关面板播放柔和提示音。默认关闭。",
+            )))
             .when(enabled, |el| el.child(
                 div()
                     .id("settings-sounds-preview")
                     .debug_selector(|| "settings-sounds-preview".into())
-                    .px_2()
+                    .px_3()
                     .py_2()
-                    .rounded_sm()
+                    .rounded_full()
                     .cursor_pointer()
                     .bg(Theme::global().PANEL_BG)
                     .hover(|el| el.bg(Theme::global().TOOL_BG))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, _, _, cx| {
                         sounds::play(Cue::Complete, cx);
                     }))
-                    .child("Play preview"),
+                    .child(crate::locale::tr("Play preview", "试听音效")),
             ))
             .into_any_element()
     }

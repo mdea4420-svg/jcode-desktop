@@ -613,4 +613,23 @@ fn plugins_tab_bounds_long_text_in_narrow_window_filters_and_trashes_safely(
         .collect();
     assert_eq!(trashed.len(), 1);
     assert!(vcx.debug_bounds("plugin-row-ultra-long-local-helper-plugin-name").is_none());
+
+    // Local folder import copies the plugin into ~/.jcode/plugins, enables it,
+    // and exposes its entry file via `plugin-inspect-<name>`.
+    let external = root.path().join("external-source-plugin");
+    std::fs::create_dir_all(external.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        external.join(".claude-plugin/plugin.json"),
+        r#"{"name":"imported-helper","version":"0.2.0","main":"index.mjs"}"#,
+    )
+    .unwrap();
+    std::fs::write(external.join("index.mjs"), "export default {};\n").unwrap();
+    click(vcx, "plugins-import");
+    assert!(vcx.debug_bounds("plugins-import-input").is_some());
+    vcx.simulate_input(&external.display().to_string());
+    vcx.run_until_parked();
+    click(vcx, "plugins-import-apply");
+    assert!(layout.plugins_dir.join("external-source-plugin/index.mjs").is_file());
+    assert!(vcx.debug_bounds("plugin-row-imported-helper").is_some());
+    assert!(vcx.debug_bounds("plugin-inspect-imported-helper").is_some());
 }

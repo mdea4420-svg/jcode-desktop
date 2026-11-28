@@ -1,7 +1,7 @@
 //! Extensions overlay — plugin browsing and management.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use super::extensions::{Confirm, PluginFilter, PluginForm, PluginRow, field_input, pill, soft_wrap_text};
@@ -36,6 +36,7 @@ impl PluginRow {
             code: plugin.main_script().is_some() || code.is_some(),
             source: plugin.source.label().into(),
             enabled: plugin.enabled,
+            entry_file: crate::plugins::primary_file_for_plugin(&plugin.root),
             root: plugin.root.clone(),
             description: plugin.description.clone(),
             commands,
@@ -128,6 +129,35 @@ impl Panel {
                         this.open_plugin_form(window, cx);
                     })),
             )
+            .child(
+                pill("plugins-import", "plugins-import".into(), tr("Import…", "导入…"), false)
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                        this.plugin_import_open(window, cx);
+                    })),
+            )
+            .when_some(state.plugin_import.clone(), |el, field| {
+                el.child(
+                    div()
+                        .id("plugins-import-input")
+                        .debug_selector(|| "plugins-import-input".into())
+                        .flex_1()
+                        .min_w(px(180.))
+                        .max_w(px(320.))
+                        .child(field),
+                )
+                .child(
+                    pill(
+                        "plugins-import-apply",
+                        "plugins-import-apply".into(),
+                        tr("Import", "导入"),
+                        true,
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.plugin_import_apply(cx)),
+                    ),
+                )
+            })
             .child(
                 pill("plugins-open-dir", "plugins-open-dir".into(), tr("Open plugins folder", "打开插件目录"), false)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
@@ -247,6 +277,7 @@ impl Panel {
         let delete_name = name.clone();
         let confirm_name = name.clone();
         let open_path = plugin.root.clone();
+        let inspect_file = plugin.entry_file.clone();
         let confirm_root = plugin.root.clone();
         let removable = plugin.source != "claude" && plugin.root.starts_with(plugins_dir);
         let confirming_delete = self.extensions.as_ref().is_some_and(|state| {
@@ -365,6 +396,34 @@ impl Panel {
                             .flex_wrap()
                             .items_center()
                             .gap_1p5()
+                            .when_some(inspect_file, |el, file| {
+                                let inspect_id = name.clone();
+                                let label = if plugin.code {
+                                    tr("Source", "查看源码")
+                                } else {
+                                    tr("Config", "查看配置")
+                                };
+                                el.child(
+                                    pill(
+                                        format!("plugin-inspect-{}", inspect_id.clone()),
+                                        format!("plugin-inspect-{inspect_id}"),
+                                        label,
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, window, cx| {
+                                            this.close_extensions(cx);
+                                            window.dispatch_action(
+                                                Box::new(crate::ui_actions::OpenCodeFilePanel {
+                                                    path: file.clone(),
+                                                }),
+                                                cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            })
                             .child(
                                 pill(
                                     format!("plugin-open-{name}"),
@@ -703,6 +762,91 @@ impl Panel {
                         cx.notify();
                     }
                 }
+            }
+        }
+    }
+
+    fn plugin_import_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.extensions.as_mut() {
+            if state.plugin_import.is_none() {
+                let weak = cx.weak_entity();
+                let field = field_input(
+                    cx,
+                    tr("or paste plugin folder path", "或粘贴本地插件目录路径"),
+                    "",
+                    move |app| {
+                        weak.update(app, |panel, cx| {
+                            if let Some(state) = panel.extensions.as_mut() {
+                                state.plugin_import = None;
+                                cx.notify();
+                            }
+                            true
+                        })
+                        .unwrap_or(false)
+                    },
+                );
+                let focus = field.read(cx).focus_handle.clone();
+                state.plugin_import = Some(field);
+                focus.focus(window, cx);
+            }
+        }
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(
+                tr(
+                    "Choose a plugin folder (plugin.json / index.mjs / commands)",
+                    "选择本地插件目录（包含 plugin.json、index.mjs 或 commands）",
+                )
+                .into(),
+            ),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await
+                && let Some(dir) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |panel, cx| panel.plugin_import_dir(dir, cx));
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn plugin_import_apply(&mut self, cx: &mut Context<Self>) {
+        let raw = self
+            .extensions
+            .as_ref()
+            .and_then(|state| state.plugin_import.as_ref())
+            .map(|field| field.read(cx).content.trim().trim_matches('"').trim().to_string())
+            .unwrap_or_default();
+        if raw.is_empty() {
+            return;
+        }
+        let expanded = if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+            self.extensions
+                .as_ref()
+                .map(|state| state.paths.user_home.join(rest))
+                .unwrap_or_else(|| PathBuf::from(&raw))
+        } else {
+            PathBuf::from(&raw)
+        };
+        self.plugin_import_dir(expanded, cx);
+    }
+
+    pub(super) fn plugin_import_dir(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
+        let Some(layout) = self.extensions.as_ref().map(|s| s.plugin_layout()) else {
+            return;
+        };
+        match crate::plugins::import_in(&layout, &dir) {
+            Ok(dest) => {
+                if let Some(state) = self.extensions.as_mut() {
+                    state.plugin_import = None;
+                }
+                self.extensions_apply(Ok(dest.display().to_string()), tr("Imported:", "已导入："), cx);
+            }
+            Err(error) => {
+                self.extensions_apply(Err(error), "", cx);
             }
         }
     }

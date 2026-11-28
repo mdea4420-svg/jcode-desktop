@@ -9,6 +9,8 @@ pub(super) struct State {
     loading: bool,
     reload_after_list: bool,
     error: Option<String>,
+    scroll: ScrollHandle,
+    search: Option<Entity<PromptInput>>,
 }
 
 impl State {
@@ -20,7 +22,7 @@ impl State {
 fn button(id: &'static str, text: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div().id(id).debug_selector(move || id.into())
-        .px_2().py_1().rounded_md().cursor_pointer().text_size(px(11.0))
+        .px_2p5().py_1().rounded_full().cursor_pointer().text_size(px(11.0))
         .hover(|el| el.bg(theme.TOOL_BG)).child(text)
 }
 
@@ -138,11 +140,31 @@ impl Workspace {
         button("sidebar-archive-toggle", label)
             .flex_none().mx_2().text_color(Theme::global().TEXT_DIM)
             .on_click(cx.listener(|this, _, _, cx| {
-                let state = &mut this.session_archive;
-                state.show = !state.show;
-                if state.show && !state.loading {
-                    state.loading = true;
-                    state.error = None;
+                let show = !this.session_archive.show;
+                this.session_archive.show = show;
+                this.session_archive.scroll.set_offset(gpui::point(px(0.), px(0.)));
+                if show && this.session_archive.search.is_none() {
+                    let weak = cx.weak_entity();
+                    let scroll = this.session_archive.scroll.clone();
+                    let field = cx.new(|cx| {
+                        let mut input = PromptInput::new(
+                            cx,
+                            tr("Search archived…", "搜索已归档会话…"),
+                            |_, _, _, _| {},
+                        )
+                        .without_command_completion()
+                        .with_on_change(move |_, app| {
+                            scroll.set_offset(gpui::point(px(0.), px(0.)));
+                            let _ = weak.update(app, |_, cx| cx.notify());
+                        });
+                        input.set_submission_enabled(false, cx);
+                        input
+                    });
+                    this.session_archive.search = Some(field);
+                }
+                if show && !this.session_archive.loading {
+                    this.session_archive.loading = true;
+                    this.session_archive.error = None;
                     this.bridge.send(Command::ListArchivedSessions);
                 }
                 cx.notify();
@@ -155,17 +177,50 @@ impl Workspace {
             return None;
         }
         let theme = Theme::global();
-        let mut list = div().id("sidebar-archive-list").flex_1().min_h_0().overflow_y_scroll().p_2();
+        let query = state
+            .search
+            .as_ref()
+            .map(|input| input.read(cx).content.trim().to_lowercase())
+            .unwrap_or_default();
+        let filtered: Vec<_> = state
+            .archived
+            .iter()
+            .filter(|session| {
+                query.is_empty()
+                    || session
+                        .title
+                        .as_deref()
+                        .unwrap_or(&session.session_id)
+                        .to_lowercase()
+                        .contains(&query)
+                    || session.session_id.to_lowercase().contains(&query)
+            })
+            .collect();
+        let mut list = div()
+            .id("sidebar-archive-list")
+            .debug_selector(|| "sidebar-archive-list".into())
+            .size_full()
+            .overflow_hidden()
+            .track_scroll(&state.scroll)
+            .p_2()
+            .pr(px(crate::scrollbar::GUTTER + 4.0))
+            .flex()
+            .flex_col()
+            .gap_1();
         if state.loading {
-            list = list.child(div().p_2().child(tr("Loading archived conversations…", "正在加载已归档会话…")));
-        } else if state.archived.is_empty() && state.error.is_none() {
-            list = list.child(div().p_2().child(tr("No archived conversations", "暂无已归档会话")));
+            list = list.child(div().p_2().text_color(theme.TEXT_DIM).child(tr("Loading archived conversations…", "正在加载已归档会话…")));
+        } else if filtered.is_empty() && state.error.is_none() {
+            list = list.child(div().p_2().text_color(theme.TEXT_DIM).child(if state.archived.is_empty() {
+                tr("No archived conversations", "暂无已归档会话")
+            } else {
+                tr("No matching archived conversations", "没有匹配的已归档会话")
+            }));
         }
-        for session in &state.archived {
+        for session in filtered {
             let id = session.session_id.clone();
             let pending = state.pending.contains(&id);
             list = list.child(div().id(gpui::SharedString::from(format!("archived-session-{id}")))
-                .flex().items_center().gap_1().py_1().border_b_1().border_color(theme.PANEL_BORDER)
+                .flex_none().flex().items_center().gap_1().px_2p5().py_1().rounded_full().bg(theme.PANEL_BG)
                 .child(div().flex_1().min_w_0().truncate().text_size(px(11.0))
                     .child(session.title.clone().unwrap_or_else(|| id.clone())))
                 .child(button("restore-archived-session", if pending { tr("Restoring…", "正在恢复…") } else { tr("Restore", "恢复") })
@@ -174,7 +229,52 @@ impl Workspace {
                         this.set_sidebar_session_archived(id.clone(), false, cx);
                     }))));
         }
-        Some(list.into_any_element())
+        let scroll = state.scroll.clone();
+        let scroll_wheel = scroll.clone();
+        Some(
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .when_some(state.search.clone(), |el, search| {
+                    el.child(
+                        div()
+                            .id("sidebar-archive-search")
+                            .debug_selector(|| "sidebar-archive-search".into())
+                            .flex_none()
+                            .px_2()
+                            .pt_1()
+                            .child(search),
+                    )
+                })
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .on_scroll_wheel(cx.listener(
+                            move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                if crate::scrollbar::advance_scroll_wheel(
+                                    &scroll_wheel,
+                                    event,
+                                    window,
+                                ) {
+                                    cx.notify();
+                                }
+                                cx.stop_propagation();
+                            },
+                        ))
+                        .child(list)
+                        .child(crate::scrollbar::interactive_vertical(
+                            &scroll,
+                            "sidebar-archive-scrollbar",
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn render_sidebar_archive_error(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {

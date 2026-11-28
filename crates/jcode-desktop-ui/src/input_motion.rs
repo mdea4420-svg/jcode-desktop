@@ -25,6 +25,21 @@ pub(super) const FALLBACK_PROMPTS: &[&str] = &[
     "Commit and push my changes",
 ];
 
+pub(super) const FALLBACK_PROMPTS_ZH: &[&str] = &[
+    "排查当前仓库中的潜在问题",
+    "梳理这个代码库的整体架构",
+    "为最脆弱的核心逻辑补齐测试",
+    "定位并修复当前失败的测试用例",
+    "审查我尚未提交的代码改动",
+    "重构这里结构最混乱的文件",
+    "整理并补充对外接口说明文档",
+    "分析并优化应用中最慢的路径",
+    "找出无用死代码并安全清理",
+    "让错误提示信息更清晰易读",
+    "总结这个项目本周的主要变更",
+    "整理当前改动并生成规范提交",
+];
+
 const TYPE_PER_CHAR: Duration = Duration::from_millis(42);
 const HOLD: Duration = Duration::from_millis(2300);
 const DELETE_PER_CHAR: Duration = Duration::from_millis(16);
@@ -49,11 +64,16 @@ pub(super) const TICK: Duration = Duration::from_nanos(33_333_334);
 /// The prompts one idle composer shows: personalized ones first, then the
 /// generic fallback catalog for any remaining slot. `seed` rotates both.
 pub(super) fn pick_prompts<S: AsRef<str>>(personal: &[S], seed: usize) -> [&str; SHOWN_PROMPTS] {
+    let catalog = if crate::locale::is_zh() {
+        FALLBACK_PROMPTS_ZH
+    } else {
+        FALLBACK_PROMPTS
+    };
     std::array::from_fn(|step| {
         if step < personal.len() {
             personal[(seed + step) % personal.len()].as_ref()
         } else {
-            FALLBACK_PROMPTS[(seed + step) % FALLBACK_PROMPTS.len()]
+            catalog[(seed + step) % catalog.len()]
         }
     })
 }
@@ -249,10 +269,13 @@ mod tests {
 
     #[test]
     fn fallback_prompts_are_single_line_and_short() {
-        for prompt in FALLBACK_PROMPTS {
+        for prompt in FALLBACK_PROMPTS.iter().chain(FALLBACK_PROMPTS_ZH) {
             assert!(!prompt.contains('\n'));
             assert!(prompt.chars().count() <= 48, "{prompt}");
         }
+        crate::locale::with_zh(|| {
+            assert_eq!(pick_prompts(NONE, 0), [FALLBACK_PROMPTS_ZH[0], FALLBACK_PROMPTS_ZH[1]]);
+        });
     }
 
     #[test]

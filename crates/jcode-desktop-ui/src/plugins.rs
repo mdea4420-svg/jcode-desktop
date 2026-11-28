@@ -347,6 +347,108 @@ pub(crate) fn trash_in(
     Ok(dest)
 }
 
+pub(crate) fn primary_file_for_plugin(root: &std::path::Path) -> Option<PathBuf> {
+    for rel in ["index.mjs", ".claude-plugin/plugin.json", "plugin.json", ".mcp.json"] {
+        let candidate = root.join(rel);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    std::fs::read_dir(root.join("commands"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.is_file())
+}
+
+fn copy_plugin_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_symlink() {
+            if path.is_dir() {
+                continue;
+            }
+            if let Ok(resolved) = std::fs::canonicalize(&path) {
+                std::fs::copy(resolved, &target)?;
+            }
+        } else if path.is_dir() {
+            copy_plugin_dir(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn import_in(target: &Layout, src: &std::path::Path) -> Result<PathBuf, String> {
+    if !src.is_dir() {
+        return Err(if is_zh() {
+            format!("目录不存在：`{}`", src.display())
+        } else {
+            format!("{} is not a directory", src.display())
+        });
+    }
+    let looks_like_plugin = src.join(".claude-plugin/plugin.json").is_file()
+        || src.join("plugin.json").is_file()
+        || src.join("index.mjs").is_file()
+        || src.join("commands").is_dir()
+        || src.join("skills").is_dir()
+        || src.join(".mcp.json").is_file()
+        || src.join("hooks/hooks.json").is_file()
+        || src.join("applets").is_dir();
+    if !looks_like_plugin {
+        return Err(if is_zh() {
+            format!(
+                "`{}` 中未找到插件内容（需要包含 plugin.json、index.mjs、commands/、skills/ 或 .mcp.json）。",
+                src.display()
+            )
+        } else {
+            format!(
+                "{} has no plugin manifest, index.mjs, commands/, skills/, or .mcp.json",
+                src.display()
+            )
+        });
+    }
+    let raw_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dir_name = jcode_plugins::manifest::sanitize_name(&raw_name);
+    if dir_name.is_empty() || dir_name.starts_with('.') {
+        return Err(tr(
+            "Invalid plugin folder name.",
+            "无效的插件目录名称。",
+        )
+        .into());
+    }
+    let dest = target.plugins_dir.join(&dir_name);
+    if dest.exists() {
+        return Err(if is_zh() {
+            format!("目标插件目录已存在：`{}`", dest.display())
+        } else {
+            format!("{} already exists", dest.display())
+        });
+    }
+    copy_plugin_dir(src, &dest).map_err(|error| {
+        if is_zh() {
+            format!("无法导入插件 `{}`：{error}", src.display())
+        } else {
+            format!("Could not import {}: {error}", src.display())
+        }
+    })?;
+    let mut state = State::load(target);
+    let (discovered, _) = jcode_plugins::discover(target, &state);
+    if let Some(plugin) = discovered.iter().find(|p| p.root == dest) {
+        state.set_enabled(&plugin.name, true);
+        let _ = state.save(target);
+    }
+    sync_in(target);
+    Ok(dest)
+}
+
 pub(crate) fn report_markdown(report: &SyncReport) -> String {
     let events = if report.hook_events.is_empty() {
         tr("no events", "无事件").to_string()

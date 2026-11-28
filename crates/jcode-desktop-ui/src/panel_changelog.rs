@@ -426,22 +426,33 @@ impl Panel {
                         ),
                 ),
             )
-            .child(
+            .child({
+                let (scroll_id, scroll) = match self.changelog_view {
+                    View::Latest => ("updates-scroll-latest", &self.changelog_scroll_latest),
+                    View::History => ("updates-scroll-history", &self.changelog_scroll_history),
+                };
                 div()
-                    // Separate scroll state per view avoids landing halfway down
-                    // the summary when returning from a long release history.
-                    .id(match self.changelog_view {
-                        View::Latest => "updates-scroll-latest",
-                        View::History => "updates-scroll-history",
-                    })
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px_5()
-                    .pt_4()
-                    .pb_10()
-                    .child(content),
-            )
+                    .child(
+                        div()
+                            // Separate scroll state per view avoids landing halfway down
+                            // the summary when returning from a long release history.
+                            .id(scroll_id)
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(scroll)
+                            .px_5()
+                            .pt_4()
+                            .pb_10()
+                            .child(content),
+                    )
+                    .child(crate::scrollbar::interactive_vertical(
+                        scroll,
+                        "changelog-scrollbar",
+                    ))
+            })
             .into_any_element()
     }
 }

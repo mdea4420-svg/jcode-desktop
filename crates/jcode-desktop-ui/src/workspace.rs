@@ -164,8 +164,8 @@ mod default_directory_tests;
 // Actions that panels dispatch to the workspace live in a leaf module so the
 // panel layer does not depend on this one.
 pub(crate) use crate::ui_actions::{
-    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenExtensions, OpenResume,
-    PublishDesktop, ToggleOnboardingSimulator,
+    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenCodeFilePanel, OpenExtensions,
+    OpenResume, PublishDesktop, ToggleOnboardingSimulator,
 };
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -3594,6 +3594,15 @@ impl Workspace {
         cx.notify();
     }
 
+    fn open_code_file_action(
+        &mut self,
+        action: &OpenCodeFilePanel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_code_file(action.path.clone(), window, cx);
+    }
+
     fn open_code_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let session_id = format!("file://{}", path.display());
         if let Some(index) = self
@@ -5529,7 +5538,7 @@ impl Workspace {
             .child(if sessions {
                 crate::scrollbar::vertical_list(&self.sidebar_sessions_list, "sidebar-scrollbar")
             } else {
-                crate::scrollbar::vertical_with_track(&self.sidebar_scroll, "sidebar-scrollbar")
+                crate::scrollbar::interactive_vertical(&self.sidebar_scroll, "sidebar-scrollbar")
             })
             .into_any_element()
     }
@@ -7476,7 +7485,7 @@ impl Workspace {
                     history = history.child(
                         div()
                             .debug_selector(|| "account-openai-history-unavailable".into())
-                            .child("No usage recorded yet"),
+                            .child(tr("No usage recorded yet", "暂无用量记录")),
                     );
                 }
                 let many = account.usage_reports.len() > 1;
@@ -7576,7 +7585,7 @@ impl Workspace {
                         .min_h_0()
                         .pr(px(crate::scrollbar::GUTTER))
                         .child(list)
-                        .child(crate::scrollbar::vertical_with_track(
+                        .child(crate::scrollbar::interactive_vertical(
                             &self.accounts_scroll,
                             "accounts-scrollbar",
                         )),
@@ -7654,8 +7663,8 @@ impl Workspace {
                     .debug_selector(move || format!("theme-preset-{index}"))
                     .flex_none()
                     .px_3()
-                    .py_2()
-                    .rounded_sm()
+                    .py_1p5()
+                    .rounded_full()
                     .cursor_pointer()
                     .text_color(if preset == active {
                         Theme::global().ACCENT
@@ -7663,6 +7672,7 @@ impl Workspace {
                         Theme::global().TEXT
                     })
                     .when(preset == active, |el| el.bg(Theme::global().ACCENT_DIM))
+                    .when(preset != active, |el| el.bg(Theme::global().PANEL_BG))
                     .hover(|el| el.bg(Theme::global().TOOL_BG))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -7715,7 +7725,57 @@ impl Workspace {
             })
     }
 
+    fn render_display_preference_group(
+        &self,
+        id_prefix: &'static str,
+        title: &'static str,
+        key: &'static str,
+        current: &str,
+        options: &[(&'static str, &'static str)],
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = Theme::global();
+        let pills = options.iter().copied().map(|(val, label)| {
+            let active = current == val;
+            div()
+                .id(gpui::SharedString::from(format!("{id_prefix}-{val}")))
+                .debug_selector(move || format!("{id_prefix}-{val}"))
+                .flex_none()
+                .px_2p5()
+                .py(px(3.))
+                .rounded_full()
+                .cursor_pointer()
+                .bg(if active { theme.ACCENT } else { theme.PANEL_BG })
+                .text_color(if active { theme.BG } else { theme.TEXT })
+                .when(!active, |el| el.hover(|s| s.bg(theme.TOOL_BG)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        if let Err(error) = crate::config::set_display(key, val) {
+                            this.status = error;
+                        }
+                        cx.refresh_windows();
+                        cx.notify();
+                    }),
+                )
+                .child(label)
+        });
+        div()
+            .debug_selector(move || id_prefix.into())
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_color(theme.TEXT_DIM).child(title))
+            .child(div().flex().flex_wrap().gap_1().children(pills))
+    }
+
     fn render_settings(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let display = crate::config::display();
+        let thinking_val = display.value("thinking_display").unwrap_or_else(|| "current".into());
+        let steps_val = display.value("steps_display").unwrap_or_else(|| "collapsed".into());
+        let diff_val = display.value("diff_display").unwrap_or_else(|| "inline".into());
+        let tool_details = display.tool_call_details;
         let mut settings = div()
             .id("workspace-settings")
             .debug_selector(|| "workspace-settings".into())
@@ -7745,9 +7805,9 @@ impl Workspace {
                     .id(id)
                     .debug_selector(move || id.into())
                     .flex_none()
-                    .px_2()
+                    .px_3()
                     .py_2()
-                    .rounded_sm()
+                    .rounded_full()
                     .flex()
                     .justify_between()
                     .gap_2()
@@ -7773,52 +7833,136 @@ impl Workspace {
                             } else {
                                 Theme::global().TEXT_DIM
                             })
-                            .child(if enabled { tr("On", "开") } else { tr("Off", "关") }),
+                            .child(if enabled { tr("On", "开启") } else { tr("Off", "关闭") }),
                     ),
             );
         }
         let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        settings = settings.child(
-            div()
-                .id("settings-folder-tabs")
-                .debug_selector(|| "settings-folder-tabs".into())
-                .flex_none()
-                .px_2()
-                .py_2()
-                .rounded_sm()
-                .flex()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(Theme::global().PANEL_BG)
-                .hover(|el| el.bg(Theme::global().TOOL_BG))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.layout_mode =
-                            if this.layout_mode == crate::config::LayoutMode::FolderTabs {
-                                crate::config::LayoutMode::Normal
+        settings = settings
+            .child(
+                div()
+                    .id("settings-folder-tabs")
+                    .debug_selector(|| "settings-folder-tabs".into())
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .rounded_full()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.layout_mode =
+                                if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                                    crate::config::LayoutMode::Normal
+                                } else {
+                                    crate::config::LayoutMode::FolderTabs
+                                };
+                            this.camera_dirty.fill(true);
+                            if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
+                                eprintln!("failed to persist workspace layout mode: {error}");
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(tr("Workspace layout", "工作区标签样式"))
+                    .child(
+                        div()
+                            .text_color(if folder_tabs {
+                                Theme::global().ACCENT
                             } else {
-                                crate::config::LayoutMode::FolderTabs
-                            };
-                        this.camera_dirty.fill(true);
-                        if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
-                            eprintln!("failed to persist workspace layout mode: {error}");
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child("Workspace layout")
-                .child(
-                    div()
-                        .text_color(if folder_tabs {
-                            Theme::global().ACCENT
-                        } else {
-                            Theme::global().TEXT_DIM
-                        })
-                        .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
-                ),
-        );
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if folder_tabs {
+                                tr("Folder tabs", "文件夹页签")
+                            } else {
+                                tr("Normal", "紧凑")
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .mt_2()
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child(tr("Conversation display · all windows", "对话与差异展示 · 全部窗口")),
+            )
+            .child(self.render_display_preference_group(
+                "settings-thinking-display",
+                tr("Thinking display", "模型思考展示"),
+                "thinking_display",
+                &thinking_val,
+                &[
+                    ("current", tr("Current turn", "仅当前轮")),
+                    ("full", tr("Expanded", "全部展开")),
+                    ("collapsed", tr("Collapsed", "默认折叠")),
+                    ("off", tr("Hidden", "隐藏")),
+                ],
+                cx,
+            ))
+            .child(self.render_display_preference_group(
+                "settings-steps-display",
+                tr("Turn work folding", "每轮工具步骤"),
+                "steps_display",
+                &steps_val,
+                &[
+                    ("collapsed", tr("Auto fold", "自动折叠")),
+                    ("expanded", tr("Expanded", "默认展开")),
+                ],
+                cx,
+            ))
+            .child(self.render_display_preference_group(
+                "settings-diff-display",
+                tr("Code diff mode", "代码差异 Diff"),
+                "diff_display",
+                &diff_val,
+                &[
+                    ("inline", tr("Inline", "行内")),
+                    ("full", tr("Full", "完整")),
+                    ("pinned", tr("Pinned", "侧栏固定")),
+                    ("file", tr("File", "按文件")),
+                    ("off", tr("Off", "关闭")),
+                ],
+                cx,
+            ))
+            .child(
+                div()
+                    .id("settings-tool-details")
+                    .debug_selector(|| "settings-tool-details".into())
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .rounded_full()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            if let Err(error) = crate::config::set_display("tool_call_details", "toggle") {
+                                this.status = error;
+                            }
+                            cx.refresh_windows();
+                            cx.notify();
+                        }),
+                    )
+                    .child(tr("Tool call technical details", "显示工具行参数细节"))
+                    .child(
+                        div()
+                            .text_color(if tool_details {
+                                Theme::global().ACCENT
+                            } else {
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if tool_details { tr("On", "开启") } else { tr("Off", "关闭") }),
+                    ),
+            );
         let applet_settings = self.render_applet_settings(cx);
         settings
             .child(self.render_account_settings(cx))
@@ -7829,9 +7973,9 @@ impl Workspace {
                 div()
                     .id("settings-machines")
                     .debug_selector(|| "settings-machines".into())
-                    .px_2()
+                    .px_3()
                     .py_2()
-                    .rounded_sm()
+                    .rounded_full()
                     .cursor_pointer()
                     .bg(Theme::global().PANEL_BG)
                     .hover(|el| el.bg(Theme::global().TOOL_BG))
@@ -7841,13 +7985,19 @@ impl Workspace {
                             this.open_machines(window, cx);
                         }),
                     )
-                    .child("Machines and default new-panel location →"),
+                    .child(tr(
+                        "Machines and default new-panel location →",
+                        "运行主机与默认新建目录 →",
+                    )),
             )
             .child(
                 div()
                     .mt_2()
                     .text_color(Theme::global().TEXT_DIM)
-                    .child("Color palettes are in the Theme tab."),
+                    .child(tr(
+                        "Color palettes are in the Theme tab.",
+                        "配色主题可在「主题」页签中切换。",
+                    )),
             )
             .into_any_element()
     }
@@ -9057,6 +9207,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::publish_desktop))
             .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_extensions))
+            .on_action(cx.listener(Self::open_code_file_action))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
             .on_action(cx.listener(Self::open_folder))

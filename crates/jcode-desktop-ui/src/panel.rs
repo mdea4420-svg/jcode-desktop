@@ -553,6 +553,8 @@ pub struct Panel {
     transcript_text_document: text_document::TranscriptTextDocument,
     transcript_dragging: bool,
     changelog_view: crate::update_notes::View,
+    changelog_scroll_latest: ScrollHandle,
+    changelog_scroll_history: ScrollHandle,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1047,6 +1049,8 @@ impl Panel {
             transcript_text_document: Default::default(),
             transcript_dragging: false,
             changelog_view: crate::update_notes::View::Latest,
+            changelog_scroll_latest: ScrollHandle::new(),
+            changelog_scroll_history: ScrollHandle::new(),
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,

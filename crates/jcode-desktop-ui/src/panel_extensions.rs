@@ -49,6 +49,8 @@ pub(super) struct ExtensionsState {
     pub plugin_form: Option<PluginForm>,
     /// Import-skill path field (folder picker fallback).
     pub skill_import: Option<Entity<PromptInput>>,
+    /// Import-plugin path field (folder picker fallback).
+    pub plugin_import: Option<Entity<PromptInput>>,
     /// Error line from the last failed mutation.
     pub error: Option<String>,
 }
@@ -135,6 +137,7 @@ pub(super) struct PluginRow {
     pub source: String,
     pub enabled: bool,
     pub root: PathBuf,
+    pub entry_file: Option<PathBuf>,
     pub description: Option<String>,
     pub commands: Vec<String>,
     pub skills: usize,
@@ -339,6 +342,7 @@ impl Panel {
             skill_form: None,
             plugin_form: None,
             skill_import: None,
+            plugin_import: None,
             error: None,
         };
         state.reload();
@@ -421,6 +425,8 @@ impl Panel {
             state.focus_pending = true;
         } else if state.skill_import.is_some() {
             state.skill_import = None;
+        } else if state.plugin_import.is_some() {
+            state.plugin_import = None;
         } else if state.confirm.is_some() {
             state.confirm = None;
         } else {
@@ -473,6 +479,7 @@ impl Panel {
                             state.focus_pending = true;
                         }
                         state.skill_import = None;
+                        state.plugin_import = None;
                         state.scroll.set_offset(point(px(0.), px(0.)));
                         LAST_TAB.with(|last| last.set(tab));
                     }

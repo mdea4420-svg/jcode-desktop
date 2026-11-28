@@ -84,6 +84,13 @@ pub(crate) struct CloseChangeReview {
     pub panel: gpui::EntityId,
 }
 
+/// Open a read-only syntax-highlighted file viewer panel next to the active panel.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenCodeFilePanel {
+    pub path: std::path::PathBuf,
+}
+
 gpui::actions!(
     workspace,
     [

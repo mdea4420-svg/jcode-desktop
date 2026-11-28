@@ -957,23 +957,26 @@ impl Workspace {
             .flex_col()
             .gap_2()
             .py_3()
-            .child(div().text_size(px(12.0)).child("Jcode account"))
+            .child(div().text_size(px(12.0)).child(crate::locale::tr("Jcode account", "Jcode 账户")))
             .child(
                 div()
                     .text_color(Theme::global().TEXT_DIM)
                     .child(if connected {
-                        "Account saved on this computer"
+                        crate::locale::tr("Account saved on this computer", "账户已保存在本机")
                     } else {
-                        "Optional · Separate from your AI providers"
+                        crate::locale::tr(
+                            "Optional · Separate from your AI providers",
+                            "可选 · 与你的 AI 服务提供商相互独立",
+                        )
                     }),
             )
             .child(
                 account_button(
                     "settings-account-sign-in",
                     if connected {
-                        "Manage account"
+                        crate::locale::tr("Manage account", "管理账户")
                     } else {
-                        "Sign in with email"
+                        crate::locale::tr("Sign in with email", "使用邮箱登录")
                     },
                     false,
                     false,

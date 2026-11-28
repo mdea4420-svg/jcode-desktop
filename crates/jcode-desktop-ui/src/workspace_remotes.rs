@@ -907,8 +907,12 @@ impl Workspace {
                             "machines-picker-button",
                             include_bytes!("../../../assets/icons/ssh.svg"),
                             match host.filter(|host| !managed_destination(host)) {
-                                Some(host) => format!("SSH · {host} · Choose a remote host"),
-                                None => "SSH · Choose a remote host".into(),
+                                Some(host) => if crate::locale::is_zh() {
+                                    format!("SSH · {host} · 选择远程主机")
+                                } else {
+                                    format!("SSH · {host} · Choose a remote host")
+                                },
+                                None => crate::locale::tr("SSH · Choose a remote host", "SSH · 选择远程主机").into(),
                             },
                             host.is_some_and(|host| !managed_destination(host)),
                         )
@@ -924,7 +928,7 @@ impl Workspace {
                         button(
                             "sidebar-extensions",
                             include_bytes!("../../../assets/icons/plug.svg"),
-                            "Extensions — MCP, skills, plugins".into(),
+                            crate::locale::tr("Extensions — MCP, skills, plugins", "扩展管理 — MCP、技能与插件").into(),
                             false,
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -952,7 +956,7 @@ impl Workspace {
                 el.child(
                     div()
                         .text_color(theme.ERROR)
-                        .child("Connection needs attention"),
+                        .child(crate::locale::tr("Connection needs attention", "连接需要注意")),
                 )
             })
             .children(
@@ -974,30 +978,34 @@ impl Workspace {
         let theme = Theme::global();
         let mut picker = div().id("machines-picker").debug_selector(|| "machines-picker".into())
             .size_full().p_3().flex().flex_col().gap_2().overflow_y_scroll().text_size(px(11.0))
-            .child(div().flex().justify_between()
-                .child(div().text_size(px(14.0)).child("Machines"))
+            .child(div().flex().justify_between().items_center()
+                .child(div().text_size(px(14.0)).child(crate::locale::tr("Machines", "运行主机")))
                 .child(div().id("machines-panel-close").debug_selector(|| "machines-panel-close".into())
-                    .cursor_pointer().child("close")
+                    .px_2p5().py_1().rounded_full().bg(theme.PANEL_BG).hover(|el| el.bg(theme.TOOL_BG))
+                    .cursor_pointer().child(crate::locale::tr("close", "关闭"))
                     .on_click(cx.listener(|this, _, _, cx| { cx.stop_propagation(); this.close_machines(cx); }))))
             .child(div().text_color(theme.TEXT_DIM)
-                .child("Connect opens a new panel. Default applies to new session panels, including after restart."))
+                .child(crate::locale::tr(
+                    "Connect opens a new panel. Default applies to new session panels, including after restart.",
+                    "点击「连接」打开新会话面板；设为默认后，新建会话与重启后均默认使用该主机。",
+                )))
             .child(div().debug_selector(|| "machine-connection-status".into())
                 .text_color(if self.remotes.failed { theme.ERROR } else { theme.ACCENT })
                 .child(self.remotes.status.clone().unwrap_or_default()))
             .children((self.remotes.startup_failed && self.slots.iter().any(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft())).then(|| {
                 div().id("machine-retry-startup").debug_selector(|| "machine-retry-startup".into())
-                    .px_2().py_2().cursor_pointer().bg(theme.ACCENT_DIM)
+                    .px_3().py_2().rounded_full().cursor_pointer().bg(theme.ACCENT_DIM)
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
                         if let Some(index) = this.slots.iter().position(|slot| !slot.closing && slot.panel.read(cx).is_startup_draft()) {
                             this.retry_pending_session(index, false, cx);
                         }
-                    })).child("Retry startup on default machine")
+                    })).child(crate::locale::tr("Retry startup on default machine", "在默认主机上重试启动"))
             }))
             .child(self.render_machine_row(None, 0, cx));
         for (index, host) in self.remotes.hosts.iter().enumerate() {
             picker = picker.child(self.render_machine_row(Some(host.clone()), index + 1, cx));
         }
-        picker = picker.child(div().mt_2().child("Connect another machine"));
+        picker = picker.child(div().mt_2().child(crate::locale::tr("Connect another machine", "连接其他远程主机")));
         if let Some(input) = &self.remotes.input {
             picker = picker
                 .child(
@@ -1024,9 +1032,9 @@ impl Workspace {
                     div()
                         .id("machine-connect-input")
                         .debug_selector(|| "machine-connect-input".into())
-                        .px_2()
+                        .px_3()
                         .py_2()
-                        .rounded_sm()
+                        .rounded_full()
                         .cursor_pointer()
                         .bg(theme.ACCENT_DIM)
                         .hover(|el| el.bg(theme.TOOL_BG))
@@ -1039,14 +1047,17 @@ impl Workspace {
                                 }
                             }),
                         )
-                        .child("Connect via SSH"),
+                        .child(crate::locale::tr("Connect via SSH", "通过 SSH 连接")),
                 );
         } else {
             picker = picker.child(
                 div()
                     .id("machine-add-host")
-                    .px_2()
+                    .px_3()
                     .py_2()
+                    .rounded_full()
+                    .bg(theme.PANEL_BG)
+                    .hover(|el| el.bg(theme.TOOL_BG))
                     .cursor_pointer()
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -1054,13 +1065,19 @@ impl Workspace {
                             this.open_machines(window, cx);
                         }),
                     )
-                    .child("Add SSH host…"),
+                    .child(crate::locale::tr("Add SSH host…", "添加 SSH 主机…")),
             );
         }
         picker.child(div().text_color(theme.TEXT_DIM)
-                .child("Uses your SSH config and keys. First connect in a terminal to trust the host and set up key access. Jcode must be installed on the remote machine."))
+                .child(crate::locale::tr(
+                    "Uses your SSH config and keys. First connect in a terminal to trust the host and set up key access. Jcode must be installed on the remote machine.",
+                    "使用系统的 SSH 配置与密钥。首次连接请先在终端信任主机指纹并配好免密登录，远端需已安装 Jcode。",
+                )))
             .child(div().text_color(theme.TEXT_DIM)
-                .child("Remote panels start in the remote home. Folder browsing and terminal panels stay local."))
+                .child(crate::locale::tr(
+                    "Remote panels start in the remote home. Folder browsing and terminal panels stay local.",
+                    "远程面板默认在远端主目录启动；本地文件夹浏览与本地终端仍在本机运行。",
+                )))
             .children(self.remotes.notice.as_ref().map(|notice| div()
                 .debug_selector(|| "machine-error".into()).text_color(theme.ERROR).child(notice.clone())))
             .into_any_element()
@@ -1075,19 +1092,29 @@ impl Workspace {
         let is_default = self.remotes.default_host == host;
         let label = match host.as_deref() {
             Some(MANAGED_CLOUD_HOST) => "Jcode Cloud".into(),
-            Some(cloud_alpha::HOST) => "Personal cloud alpha (existing sessions only)".into(),
+            Some(cloud_alpha::HOST) => crate::locale::tr(
+                "Personal cloud alpha (existing sessions only)",
+                "个人云端测试版（仅已有会话）",
+            )
+            .into(),
             Some(host) => host.to_owned(),
-            None => "This computer".into(),
+            None => crate::locale::tr("This computer", "本机").into(),
         };
         let default_host = host.clone();
         let cloud_status = host
             .as_deref()
             .is_some_and(managed_destination)
-            .then(|| "Your own machine, run by Jcode. Sleeps when idle.".to_owned());
+            .then(|| {
+                crate::locale::tr(
+                    "Your own machine, run by Jcode. Sleeps when idle.",
+                    "由 Jcode 托管的专属云主机，空闲时自动休眠。",
+                )
+                .to_owned()
+            });
         div()
-            .px_2()
+            .px_3()
             .py_2()
-            .rounded_sm()
+            .rounded_xl()
             .bg(Theme::global().PANEL_BG)
             .flex()
             .flex_col()
@@ -1115,9 +1142,9 @@ impl Workspace {
                         div()
                             .id(("machine-connect", index))
                             .debug_selector(move || format!("machine-connect-{index}").into())
-                            .px_2()
+                            .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .bg(Theme::global().ACCENT_DIM)
                             .hover(|el| el.bg(Theme::global().TOOL_BG))
@@ -1135,15 +1162,15 @@ impl Workspace {
                             .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
                                 cx.stop_propagation();
                             })
-                            .child("Connect"),
+                            .child(crate::locale::tr("Connect", "连接")),
                     )
                     .child(
                         div()
                             .id(("machine-default", index))
                             .debug_selector(move || format!("machine-default-{index}").into())
-                            .px_2()
+                            .px_3()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .text_color(if is_default {
                                 Theme::global().ACCENT
@@ -1158,9 +1185,9 @@ impl Workspace {
                                 }),
                             )
                             .child(if is_default {
-                                "✓ Default"
+                                crate::locale::tr("✓ Default", "✓ 默认")
                             } else {
-                                "Set default"
+                                crate::locale::tr("Set default", "设为默认")
                             }),
                     ),
             )
