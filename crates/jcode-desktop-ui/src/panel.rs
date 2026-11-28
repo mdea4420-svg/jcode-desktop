@@ -561,6 +561,7 @@ pub struct Panel {
     changelog_scroll_history: ScrollHandle,
     pub(super) plan_mode: bool,
     pub(super) git_status: git_status::GitStatusState,
+    pub(super) copied_prompt: Option<(usize, Instant)>,
     /// Remaining wheel travel. Precise touchpad input stays directly mapped
     /// so native gesture control never fights a second momentum animation.
     transcript_wheel_glide: WheelGlide,
@@ -1059,6 +1060,7 @@ impl Panel {
             changelog_scroll_history: ScrollHandle::new(),
             plan_mode: false,
             git_status: Default::default(),
+            copied_prompt: None,
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
@@ -2028,6 +2030,15 @@ impl Panel {
                             } else if this.model_browser.is_some() {
                                 this.model_browser = None;
                                 handled = true;
+                            } else if this.diff_review.is_some() && !this.is_change_review() {
+                                this.diff_review = None;
+                                handled = true;
+                            } else if this.extensions.is_some() {
+                                this.extensions_cancel(cx);
+                                handled = true;
+                            } else if this.image_preview.is_some() {
+                                this.image_preview = None;
+                                handled = true;
                             } else if !this.is_pending_session()
                                 && (this.status != "idle"
                                     || !this.connection_phase.is_empty()
@@ -2102,18 +2113,32 @@ impl Panel {
                 session_id: self.session_id.clone(),
             });
             self.record_stop(stop_reason::StopNotice::cancel_requested());
-            self.items.push(Item::Assistant("Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.".into()));
+            self.items.push(Item::Assistant(
+                crate::locale::tr(
+                    "Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.",
+                    "已停止当前工作流。排队中的提示词已保留并暂停，不会自动提交后续轮次。",
+                )
+                .into(),
+            ));
             cx.notify();
             return true;
         }
         if matches!(trimmed, "/improve status" | "/refactor status") {
             let payload = self.latest_todo_payload().unwrap_or_default();
             self.items.push(Item::Todos(payload));
-            self.items.push(Item::Assistant(format!(
-                "Session workflow status: {}. Use `{}` to continue existing work.",
-                self.status,
-                trimmed.replace("status", "resume")
-            )));
+            self.items.push(Item::Assistant(if crate::locale::is_zh() {
+                format!(
+                    "当前会话工作流状态：`{}`。可输入 `{}` 继续已有进度。",
+                    self.status,
+                    trimmed.replace("status", "resume")
+                )
+            } else {
+                format!(
+                    "Session workflow status: {}. Use `{}` to continue existing work.",
+                    self.status,
+                    trimmed.replace("status", "resume")
+                )
+            }));
             cx.notify();
             return true;
         }
@@ -2146,14 +2171,20 @@ impl Panel {
             if self.request_effort(&effort, cx) {
                 let input = self.input.clone();
                 cx.defer(move |cx| input.update(cx, |input, cx| input.close_effort_menu(cx)));
-                self.items.push(Item::Assistant(format!(
-                    "Reasoning effort set to `{effort}`."
-                )));
+                self.items.push(Item::Assistant(if crate::locale::is_zh() {
+                    format!("已将推理强度设为 `{effort}`。")
+                } else {
+                    format!("Reasoning effort set to `{effort}`.")
+                }));
             }
         } else if let Some(title) = trimmed.strip_prefix("/rename ").map(str::trim) {
             if title.is_empty() {
                 self.items.push(Item::Error(
-                    "Usage: `/rename <session name>` or `/rename --clear`.".into(),
+                    crate::locale::tr(
+                        "Usage: `/rename <session name>` or `/rename --clear`.",
+                        "用法：`/rename <会话名称>` 或 `/rename --clear`。",
+                    )
+                    .into(),
                 ));
             } else {
                 let title = (title != "--clear").then(|| title.to_string());
@@ -2170,8 +2201,13 @@ impl Panel {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
             } else if let Ok(index) = target.parse::<usize>() {
                 if index == 0 {
-                    self.items
-                        .push(Item::Error("Rewind numbering starts at 1.".into()));
+                    self.items.push(Item::Error(
+                        crate::locale::tr(
+                            "Rewind numbering starts at 1.",
+                            "回退序号从 1 开始计数。",
+                        )
+                        .into(),
+                    ));
                 } else {
                     self.run_session_operation(
                         SessionOperation::Rewind(index - 1),
@@ -2180,7 +2216,11 @@ impl Panel {
                 }
             } else {
                 self.items.push(Item::Error(
-                    "Usage: `/rewind <message number|undo>`.".into(),
+                    crate::locale::tr(
+                        "Usage: `/rewind <message number|undo>`.",
+                        "用法：`/rewind <消息序号|undo>`。",
+                    )
+                    .into(),
                 ));
             }
         } else {
@@ -2221,16 +2261,26 @@ impl Panel {
                 "/update" => {
                     let request = crate::updates::request_now();
                     let message = match request {
-                        crate::updates::UpdateRequest::Checking =>
+                        crate::updates::UpdateRequest::Checking => crate::locale::tr(
                             "Checking for Jcode Desktop updates…",
-                        crate::updates::UpdateRequest::AlreadyChecking =>
+                            "正在检查 Jcode Desktop 更新…",
+                        ),
+                        crate::updates::UpdateRequest::AlreadyChecking => crate::locale::tr(
                             "Jcode Desktop is already checking for updates.",
-                        crate::updates::UpdateRequest::Downloading =>
+                            "Jcode Desktop 正在检查更新中。",
+                        ),
+                        crate::updates::UpdateRequest::Downloading => crate::locale::tr(
                             "A Jcode Desktop update is downloading in the background.",
-                        crate::updates::UpdateRequest::Restarting =>
+                            "新版本正在后台下载中。",
+                        ),
+                        crate::updates::UpdateRequest::Restarting => crate::locale::tr(
                             "Installing the update and restarting Jcode Desktop…",
-                        crate::updates::UpdateRequest::Unavailable =>
+                            "正在安装更新并重启 Jcode Desktop…",
+                        ),
+                        crate::updates::UpdateRequest::Unavailable => crate::locale::tr(
                             "Automatic updates are unavailable in this build of Jcode Desktop.",
+                            "当前定制预览构建已禁用官方自动更新（以保护你的简中版环境）。",
+                        ),
                     };
                     self.items.push(Item::Assistant(message.into()));
                     #[cfg(not(target_os = "macos"))]
@@ -2267,12 +2317,20 @@ impl Panel {
                 "/effort" => {
                     let ladder = self.effort_ladder();
                     let current = self.reasoning_effort.as_deref().unwrap_or("default");
-                    let keys = crate::effort::bound_keys_label(cx)
-                        .map(|keys| format!(" or {keys}"))
-                        .unwrap_or_default();
                     let notice = if ladder.is_empty() {
                         self.effort_unavailable_message()
+                    } else if crate::locale::is_zh() {
+                        let keys = crate::effort::bound_keys_label(cx)
+                            .map(|keys| format!(" 或快捷键 {keys}"))
+                            .unwrap_or_default();
+                        format!(
+                            "当前推理强度：`{current}`。可使用 `/effort <{}>`{keys} 调整。",
+                            ladder.join("|")
+                        )
                     } else {
+                        let keys = crate::effort::bound_keys_label(cx)
+                            .map(|keys| format!(" or {keys}"))
+                            .unwrap_or_default();
                         format!(
                             "Effort: `{current}`. Use `/effort <{}>`{keys} to change it.",
                             ladder.join("|")
@@ -2494,7 +2552,11 @@ impl Panel {
             operation,
         });
         self.items.push(Item::Assistant(
-            "Requested the session change. The conversation will refresh after the runtime confirms it.".into(),
+            crate::locale::tr(
+                "Requested the session change. The conversation will refresh after the runtime confirms it.",
+                "已提交会话操作请求，服务端确认后将自动刷新对话。",
+            )
+            .into(),
         ));
     }
 
@@ -2978,6 +3040,8 @@ impl Panel {
                         error: error.clone(),
                     });
                 }
+                self.input.update(cx, |input, _| input.invalidate_at_mentions());
+                self.maybe_refresh_git_status(true, cx);
             }
             ApiEvent::BackgroundProgress {
                 task_id,
@@ -3018,6 +3082,8 @@ impl Panel {
             ApiEvent::TurnDone { .. } => {
                 self.reconcile_reconnect_response();
                 self.finish_response();
+                self.input.update(cx, |input, _| input.invalidate_at_mentions());
+                self.maybe_refresh_git_status(true, cx);
             }
             ApiEvent::TurnStopped {
                 reason,
@@ -3055,6 +3121,7 @@ impl Panel {
                 if matches!(status.as_str(), "idle" | "cancelled" | "canceled") {
                     self.reconcile_reconnect_response();
                     self.finish_response();
+                    self.maybe_refresh_git_status(true, cx);
                 }
             }
             ApiEvent::ConnectionPhase { phase, .. } => {
@@ -5325,6 +5392,8 @@ impl Render for Panel {
                     format!("SSH · {host}")
                 };
                 let label = match self.working_dir.as_deref().filter(|d| !d.is_empty()) {
+                    Some(dir) if crate::locale::is_zh() => format!("正在远程运行于 {machine} · {dir}"),
+                    None if crate::locale::is_zh() => format!("正在远程运行于 {machine}"),
                     Some(dir) => format!("Running on {machine} · {dir}"),
                     None => format!("Running on {machine}"),
                 };

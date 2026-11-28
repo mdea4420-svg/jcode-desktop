@@ -76,6 +76,15 @@ pub fn command_token(path: &Path) -> String {
     }
 }
 
+pub fn no_console_window(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

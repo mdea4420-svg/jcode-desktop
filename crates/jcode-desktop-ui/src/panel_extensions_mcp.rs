@@ -38,6 +38,23 @@ fn run_mcp_test(name: String, cwd: Option<PathBuf>) -> mcp::McpTestResult {
             };
         }
     };
+    use std::io::Read as _;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut out) = stdout_pipe {
+            let _ = out.read_to_string(&mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut err) = stderr_pipe {
+            let _ = err.read_to_string(&mut buf);
+        }
+        buf
+    });
     let deadline = std::time::Instant::now() + TEST_TIMEOUT;
     let status = loop {
         match child.try_wait() {
@@ -56,6 +73,8 @@ fn run_mcp_test(name: String, cwd: Option<PathBuf>) -> mcp::McpTestResult {
                 };
             }
             Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
                 return mcp::McpTestResult {
                     ok: false,
                     server: None,
@@ -65,15 +84,8 @@ fn run_mcp_test(name: String, cwd: Option<PathBuf>) -> mcp::McpTestResult {
             }
         }
     };
-    use std::io::Read as _;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr);
-    }
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
     mcp::parse_mcp_test_output(&stdout, &stderr, status.success())
 }
 

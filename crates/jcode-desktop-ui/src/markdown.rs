@@ -1322,7 +1322,15 @@ fn code_block_with_selection(
     // the fence carried no language.
     let show_header = !lang.is_empty() || line_count > 1;
     let copy_body = body.to_string();
-    let copy_id: SharedString = format!("md-copy-{:x}", hash(body)).into();
+    let body_hash = hash(body);
+    let copy_id: SharedString = format!("md-copy-{body_hash:x}").into();
+    static LAST_COPIED_CODE: LazyLock<Mutex<Option<(u64, std::time::Instant)>>> =
+        LazyLock::new(|| Mutex::new(None));
+    let just_copied = LAST_COPIED_CODE
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .is_some_and(|(h, at)| h == body_hash && at.elapsed() < std::time::Duration::from_secs(2));
 
     div()
         .flex()
@@ -1360,26 +1368,49 @@ fn code_block_with_selection(
                             .flex_row()
                             .items_center()
                             .gap_2()
-                            .child(format!(
-                                "{line_count} line{}",
-                                if line_count == 1 { "" } else { "s" }
-                            ))
+                            .child(if crate::locale::is_zh() {
+                                format!("{line_count} 行")
+                            } else {
+                                format!(
+                                    "{line_count} line{}",
+                                    if line_count == 1 { "" } else { "s" }
+                                )
+                            })
                             .child(
                                 div()
                                     .id(copy_id)
                                     .debug_selector(|| "code-copy".into())
+                                    .px_2()
+                                    .py(px(1.))
+                                    .rounded_full()
                                     .cursor_pointer()
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .hover(|el| el.text_color(Theme::global().TEXT))
+                                    .text_color(if just_copied {
+                                        Theme::global().OK
+                                    } else {
+                                        Theme::global().TEXT_FAINT
+                                    })
+                                    .hover(|el| {
+                                        el.bg(Theme::global().ACCENT_DIM)
+                                            .text_color(Theme::global().TEXT)
+                                    })
                                     .on_mouse_down(
                                         gpui::MouseButton::Left,
-                                        move |_event, _window, cx| {
+                                        move |_event, window, cx| {
                                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                                 copy_body.clone(),
                                             ));
+                                            if let Ok(mut guard) = LAST_COPIED_CODE.lock() {
+                                                *guard =
+                                                    Some((body_hash, std::time::Instant::now()));
+                                            }
+                                            window.refresh();
                                         },
                                     )
-                                    .child("copy"),
+                                    .child(if just_copied {
+                                        crate::locale::tr("copied ✓", "已复制 ✓")
+                                    } else {
+                                        crate::locale::tr("copy", "复制")
+                                    }),
                             ),
                     ),
             )

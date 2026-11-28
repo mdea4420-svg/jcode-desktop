@@ -413,6 +413,45 @@ impl Workspace {
         };
         let mut actions = Vec::new();
         if can_rename {
+            let can_export = self
+                .slots
+                .get(index)
+                .is_some_and(|slot| !slot.panel.read(cx).items.is_empty());
+            if can_export {
+                actions.push(
+                    pill(div().id("export-session-button"))
+                        .debug_selector(|| "export-session-button".into())
+                        .text_size(px(11.5))
+                        .hover(|style| {
+                            style
+                                .bg(Theme::global().PANEL_BG)
+                                .text_color(Theme::global().TEXT)
+                        })
+                        .tooltip(|_, cx| {
+                            cx.new(|_| {
+                                TabTooltip(
+                                    crate::locale::tr(
+                                        "Export conversation as Markdown (/export)",
+                                        "导出对话为 Markdown（/export）",
+                                    )
+                                    .into(),
+                                )
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(slot) = this.slots.get(index) {
+                                let panel = slot.panel.clone();
+                                panel.update(cx, |panel, cx| {
+                                    panel.export_conversation("", Some(window), cx);
+                                });
+                            }
+                        }))
+                        .child("↓")
+                        .into_any_element(),
+                );
+            }
             actions.push(
                 pill(div().id("rename-session-button"))
                     .debug_selector(|| "rename-session-button".into())

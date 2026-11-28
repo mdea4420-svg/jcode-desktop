@@ -47,6 +47,37 @@ pub(super) fn render_transcript_markdown(panel: &Panel) -> String {
                     text.trim()
                 ));
             }
+            Item::Reasoning(text) if !text.trim().is_empty() => {
+                out.push_str(&format!(
+                    "<details>\n<summary>{}</summary>\n\n{}\n\n</details>\n\n",
+                    tr("Reasoning", "思考过程"),
+                    text.trim()
+                ));
+            }
+            Item::Todos(payload) if !payload.todos.is_empty() => {
+                out.push_str(&format!("### {}\n\n", tr("Task Plan", "任务清单")));
+                for todo in &payload.todos {
+                    let mark = match todo.status.as_str() {
+                        "completed" => "x",
+                        "in_progress" => "~",
+                        _ => " ",
+                    };
+                    out.push_str(&format!("- [{mark}] {}\n", todo.content.trim()));
+                }
+                out.push('\n');
+            }
+            Item::Image(img) => {
+                let label = img.label.as_deref().unwrap_or_default().trim();
+                if label.is_empty() {
+                    out.push_str(&format!("*[{}]*\n\n", tr("Image attachment", "图片附件")));
+                } else {
+                    out.push_str(&format!(
+                        "*[{}: {}]*\n\n",
+                        tr("Image attachment", "图片附件"),
+                        label
+                    ));
+                }
+            }
             Item::Tool {
                 name,
                 input,
@@ -73,6 +104,17 @@ pub(super) fn render_transcript_markdown(panel: &Panel) -> String {
             Item::Error(err) => {
                 out.push_str(&format!("> **{}**: {err}\n\n", tr("Error", "错误")));
             }
+            Item::Stopped(notice) => {
+                let summary = if notice.detail.trim().is_empty() {
+                    notice.title.clone()
+                } else {
+                    format!("{} — {}", notice.title, notice.detail.trim())
+                };
+                out.push_str(&format!(
+                    "> **{}**: {summary}\n\n",
+                    tr("Stopped", "已停止")
+                ));
+            }
             _ => {}
         }
     }
@@ -80,7 +122,7 @@ pub(super) fn render_transcript_markdown(panel: &Panel) -> String {
 }
 
 impl Panel {
-    pub(super) fn export_conversation(&mut self, args: &str, window: Option<&mut Window>, cx: &mut Context<Self>) {
+    pub(crate) fn export_conversation(&mut self, args: &str, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.items.is_empty() {
             self.items.push(Item::Error(
                 tr(
@@ -109,16 +151,22 @@ impl Panel {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let slug: String = self
-            .title
-            .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-            .collect::<String>()
-            .trim_matches('-')
-            .chars()
-            .take(32)
-            .collect();
-        let slug = if slug.is_empty() { "session" } else { slug.as_str() };
+        let mut slug = String::new();
+        let mut prev_dash = false;
+        for c in self.title.chars() {
+            if c.is_alphanumeric() || c == '_' {
+                slug.push(c);
+                prev_dash = false;
+            } else if !prev_dash && !slug.is_empty() {
+                slug.push('-');
+                prev_dash = true;
+            }
+            if slug.chars().count() >= 32 {
+                break;
+            }
+        }
+        let slug = slug.trim_matches('-');
+        let slug = if slug.is_empty() { "session" } else { slug };
         let path: PathBuf = if !args.trim().is_empty() {
             let req = PathBuf::from(args.trim().trim_matches('"'));
             if req.is_absolute() {
@@ -155,6 +203,15 @@ impl Panel {
                         Box::new(crate::ui_actions::OpenCodeFilePanel { path }),
                         cx,
                     );
+                } else if let Some(handle) =
+                    cx.active_window().or_else(|| cx.windows().first().copied())
+                {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        window.dispatch_action(
+                            Box::new(crate::ui_actions::OpenCodeFilePanel { path }),
+                            cx,
+                        );
+                    });
                 }
             }
             Err(error) => {

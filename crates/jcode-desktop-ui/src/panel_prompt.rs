@@ -298,6 +298,10 @@ impl Panel {
             })
             .when(!pinned && !self.is_side_document(), |card| {
                 let prompt_copy = super::voice::tag::strip(text).0.into_owned();
+                let copy_only = prompt_copy.clone();
+                let just_copied = self
+                    .copied_prompt
+                    .is_some_and(|(i, at)| i == index && at.elapsed() < Duration::from_secs(2));
                 let turn_number = number;
                 let can_rewind = turn_number.is_some() && self.preview_state.is_none();
                 let hover_group: gpui::SharedString = format!("prompt-hover-{index}").into();
@@ -307,8 +311,36 @@ impl Panel {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .opacity(0.)
+                        .opacity(if just_copied { 1. } else { 0. })
                         .group_hover(hover_group, |s| s.opacity(1.))
+                        .child(
+                            div()
+                                .id(("prompt-copy", index))
+                                .debug_selector(move || format!("prompt-copy-{index}").into())
+                                .px_2()
+                                .py(px(1.))
+                                .rounded_full()
+                                .bg(Theme::global().INLINE_CODE_BG)
+                                .text_size(px(10.))
+                                .text_color(if just_copied {
+                                    Theme::global().OK
+                                } else {
+                                    Theme::global().TEXT_DIM
+                                })
+                                .cursor_pointer()
+                                .hover(|s| s.bg(Theme::global().ACCENT_DIM).text_color(Theme::global().TEXT))
+                                .child(if just_copied {
+                                    crate::locale::tr("Copied ✓", "已复制 ✓")
+                                } else {
+                                    crate::locale::tr("Copy", "复制")
+                                })
+                                .on_click(cx.listener(move |panel, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_only.clone()));
+                                    panel.copied_prompt = Some((index, Instant::now()));
+                                    cx.notify();
+                                })),
+                        )
                         .child(
                             div()
                                 .id(("prompt-reuse", index))

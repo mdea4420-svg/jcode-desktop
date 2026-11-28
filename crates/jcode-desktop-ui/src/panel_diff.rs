@@ -14,6 +14,8 @@ pub(super) struct DiffReview {
     collapsed: HashSet<String>,
     rows: Vec<DiffRow>,
     scroll: ListState,
+    tree_scroll: gpui::ScrollHandle,
+    copied_at: Option<(usize, Instant)>,
     rich: Option<crate::diff_review_content::ReviewContent>,
 }
 
@@ -97,6 +99,8 @@ impl DiffReview {
             collapsed: HashSet::new(),
             rows,
             scroll,
+            tree_scroll: gpui::ScrollHandle::new(),
+            copied_at: None,
             rich: None,
         }
     }
@@ -527,11 +531,15 @@ impl Panel {
         let theme = Theme::global();
         let (root_label, rows) = tree_rows(&review.files, &review.collapsed);
         let mono = theme.FONT_MONO.clone();
+        let tree_scroll = review.tree_scroll.clone();
+        let tree_wheel = tree_scroll.clone();
         let mut tree = div()
             .id("diff-tree-scroll")
-            .flex_1()
+            .size_full()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_hidden()
+            .track_scroll(&tree_scroll)
+            .pr(px(crate::scrollbar::GUTTER))
             .py_1()
             .font_family(mono.clone())
             .text_size(px(12.))
@@ -676,6 +684,27 @@ impl Panel {
         })
         .size_full();
         let copy = format!("{}\n{}", file.path, file.lines.join("\n"));
+        let selected_index = review.selected;
+        let just_copied = review
+            .copied_at
+            .is_some_and(|(idx, at)| idx == selected_index && at.elapsed() < Duration::from_secs(2));
+        let kind_label = if crate::locale::is_zh() {
+            match file.kind.as_str() {
+                "Added" => "新增".to_string(),
+                "Modified" | "Updated" => "修改".to_string(),
+                "Deleted" | "Removed" => "删除".to_string(),
+                "Renamed" => "重命名".to_string(),
+                other => other.to_string(),
+            }
+        } else {
+            file.kind.clone()
+        };
+        let openable_path = self
+            .working_dir
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .map(|d| std::path::Path::new(d).join(&file.path))
+            .filter(|p| p.is_file());
         Some(div().id("diff-review").debug_selector(|| "diff-review".into())
             .absolute().inset_0().size_full().flex().flex_col().bg(theme.PANEL_BG).occlude()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -767,21 +796,93 @@ impl Panel {
                         .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.TEXT)
                             .child(crate::locale::tr("Files", "文件")))
                         .child(div().text_size(px(11.)).text_color(theme.TEXT_FAINT).child(review.files.len().to_string())))
-                    .child(tree)
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .on_scroll_wheel(cx.listener(
+                                move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    if crate::scrollbar::advance_scroll_wheel(&tree_wheel, event, window) {
+                                        cx.notify();
+                                    }
+                                    cx.stop_propagation();
+                                },
+                            ))
+                            .child(tree)
+                            .child(crate::scrollbar::interactive_vertical(
+                                &tree_scroll,
+                                "diff-tree-scrollbar",
+                            )),
+                    )
                     .child(div().flex_none().flex().justify_end().px_3().py_1p5().font_family(mono)
                         .text_size(px(11.)).text_color(theme.TEXT_FAINT).child(position)))
                 .child(div().min_w_0().flex_1().flex().flex_col()
                     .when(review.rich.is_none(), |el| el.child(div().flex_none().p_3().flex().flex_col().gap_2().border_b_1().border_color(theme.CODE_BORDER)
                         .child(div().debug_selector(|| "diff-selected-path".into()).text_size(px(12.)).font_family(theme.FONT_MONO).text_color(theme.TEXT).child(file.path.clone()))
                         .when_some(file.previous_path.clone(), |el, path| el.child(div().text_size(px(10.)).text_color(theme.TEXT_DIM).child(format!("{} {path}", crate::locale::tr("Previously", "原路径")))))
-                        .child(div().flex().items_center().gap_3().text_size(px(11.))
-                            .child(div().text_color(theme.TEXT_DIM).child(file.kind.clone())).child(counts(file))
-                            .child(div().id("diff-copy")
-                                        .debug_selector(|| "diff-copy".into()).ml_auto().cursor_pointer().text_color(theme.ACCENT)
-                                        .child(crate::locale::tr("Copy diff", "复制差异"))
-                                .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())); cx.stop_propagation();
-                                })))))
+                        .child(div().flex().flex_wrap().items_center().gap_2().text_size(px(11.))
+                            .child(div().text_color(theme.TEXT_DIM).child(kind_label)).child(counts(file))
+                            .child(
+                                div()
+                                    .ml_auto()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .when_some(openable_path, |bar, full_path| {
+                                        bar.child(
+                                            div()
+                                                .id("diff-open-file")
+                                                .debug_selector(|| "diff-open-file".into())
+                                                .px_2p5()
+                                                .py_0p5()
+                                                .rounded_full()
+                                                .border_1()
+                                                .border_color(theme.CODE_BORDER)
+                                                .bg(theme.HEADER_BG)
+                                                .cursor_pointer()
+                                                .text_color(theme.TEXT)
+                                                .hover(|s| s.bg(theme.ACCENT_DIM))
+                                                .child(crate::locale::tr("Open file", "打开文件"))
+                                                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |_, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    window.dispatch_action(
+                                                        Box::new(crate::ui_actions::OpenCodeFilePanel {
+                                                            path: full_path.clone(),
+                                                        }),
+                                                        cx,
+                                                    );
+                                                })),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id("diff-copy")
+                                            .debug_selector(|| "diff-copy".into())
+                                            .px_2p5()
+                                            .py_0p5()
+                                            .rounded_full()
+                                            .border_1()
+                                            .border_color(theme.CODE_BORDER)
+                                            .bg(theme.HEADER_BG)
+                                            .cursor_pointer()
+                                            .text_color(if just_copied { theme.OK } else { theme.ACCENT })
+                                            .hover(|s| s.bg(theme.ACCENT_DIM))
+                                            .child(if just_copied {
+                                                crate::locale::tr("Copied ✓", "已复制 ✓")
+                                            } else {
+                                                crate::locale::tr("Copy diff", "复制差异")
+                                            })
+                                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                                                if let Some(review) = &mut this.diff_review {
+                                                    review.copied_at = Some((selected_index, Instant::now()));
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ))))
                     .child(div().flex_1().min_h_0().relative().bg(theme.CODE_BG)
                         .when(review.rich.is_none(), |el| el
                             .when(review.rows.is_empty(), |el| el.child(div().p_4().text_size(px(12.)).text_color(theme.TEXT_DIM)

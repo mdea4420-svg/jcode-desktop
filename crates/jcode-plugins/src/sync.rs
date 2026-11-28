@@ -70,7 +70,9 @@ fn create_link(target: &Path, link: &Path) -> anyhow::Result<()> {
             return Ok(());
         }
         // Symlinks need Developer Mode; junctions work for every user.
-        let status = std::process::Command::new("cmd")
+        let mut command = std::process::Command::new("cmd");
+        crate::paths::no_console_window(&mut command);
+        let status = command
             .args(["/D", "/C", "mklink", "/J"])
             .arg(link)
             .arg(target)

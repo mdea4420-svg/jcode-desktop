@@ -739,6 +739,10 @@ impl PromptInput {
         }
     }
 
+    pub(crate) fn invalidate_at_mentions(&mut self) {
+        self.at_mention.invalidate();
+    }
+
     fn active_at_mentions(&self) -> Option<(Range<usize>, Vec<at_mention::MentionEntry>)> {
         if !self.command_completion
             || !self.command_menu_active
@@ -768,7 +772,10 @@ impl PromptInput {
         let Some(entry) = matches.get(index.min(matches.len() - 1)) else {
             return false;
         };
-        let replacement = at_mention::replacement_text(entry);
+        let raw_query = self.content[range.clone()]
+            .strip_prefix('@')
+            .unwrap_or_default();
+        let replacement = at_mention::replacement_text_for_query(entry, raw_query);
         self.undo.push(self.content.to_string());
         self.redo.clear();
         let next = format!(
@@ -1158,7 +1165,7 @@ impl PromptInput {
         if !self.submission_enabled {
             return;
         }
-        if !queued && self.accept_at_mention(self.at_mention.selection, cx) {
+        if !queued && self.marked_range.is_none() && self.accept_at_mention(self.at_mention.selection, cx) {
             return;
         }
         if self.pending_session
@@ -1431,6 +1438,7 @@ impl PromptInput {
         if let Some((_, matches)) = self.active_at_mentions() {
             let max = matches.len().saturating_sub(1);
             self.at_mention.selection = self.at_mention.selection.min(max).saturating_sub(1);
+            self.at_mention.scroll.scroll_to_item(self.at_mention.selection);
             cx.notify();
             return;
         }
@@ -1459,6 +1467,7 @@ impl PromptInput {
         if let Some((_, matches)) = self.active_at_mentions() {
             let max = matches.len().saturating_sub(1);
             self.at_mention.selection = (self.at_mention.selection + 1).min(max);
+            self.at_mention.scroll.scroll_to_item(self.at_mention.selection);
             cx.notify();
             return;
         }
@@ -2134,6 +2143,7 @@ impl EntityInputHandler for PromptInput {
         self.command_selection = 0;
         self.at_mention.selection = 0;
         self.at_mention.dismissed_token = None;
+        self.at_mention.scroll.set_offset(point(px(0.), px(0.)));
         self.reveal_command(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
@@ -2181,6 +2191,9 @@ impl EntityInputHandler for PromptInput {
         self.selection_reversed = false;
 
         self.command_selection = 0;
+        self.at_mention.selection = 0;
+        self.at_mention.dismissed_token = None;
+        self.at_mention.scroll.set_offset(point(px(0.), px(0.)));
         self.reveal_command(0);
         if let Some(on_change) = &self.on_change {
             on_change(&self.content, cx);
@@ -2641,6 +2654,9 @@ impl Render for PromptInput {
         let _render_scope = crate::render_stats::scope("PromptInput");
         #[cfg(test)]
         crate::render_stats::test_renders::record(cx.entity_id());
+        if self.command_completion && self.content.contains('@') {
+            self.at_mention.warm_for(self.working_dir.as_deref(), cx);
+        }
         let focused = self.focus_handle.is_focused(window);
         let text_scale = crate::config::text_scale();
         let editor_height = (f32::from(window.viewport_size().height) * 0.25)

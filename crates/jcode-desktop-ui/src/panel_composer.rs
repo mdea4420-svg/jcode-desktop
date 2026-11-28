@@ -867,11 +867,56 @@ mod tests {
         }
         assert!(sent_plan, "Plan mode should expand prompt via /plan workflow");
 
-        // 3. /export clip copies conversation Markdown to clipboard
+        // 3. /export clip copies conversation Markdown (including Reasoning & Todos) to clipboard
         panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Reasoning("Analyzing edge cases.".into()));
+            panel.items.push(Item::Todos(TodoCardPayload {
+                todos: vec![TodoCardItem {
+                    content: "Verify Escape preserves draft".into(),
+                    status: "completed".into(),
+                    group: None,
+                    blocked_by: Vec::new(),
+                    confidence: None,
+                    completion_confidence: None,
+                }],
+                plan: Default::default(),
+                goals: Vec::new(),
+            }));
             assert!(panel.handle_slash_command_for_test("/export clip", cx));
         });
         let clip = vcx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text());
-        assert!(clip.as_deref().is_some_and(|md| md.contains("# Feature Session") && md.contains("widget_helper.rs")));
+        let md = clip.as_deref().unwrap_or_default();
+        assert!(md.contains("# Feature Session") && md.contains("widget_helper.rs"));
+        assert!(md.contains("Analyzing edge cases."));
+        assert!(md.contains("- [x] Verify Escape preserves draft"));
+
+        // 4. Pressing Escape while DiffReview is open closes the overlay WITHOUT clearing composer draft
+        panel.update_in(vcx, |panel, window, cx| {
+            panel.input.update(cx, |input, cx| input.set_content("important unsent draft".into(), cx));
+            panel.open_working_tree_diff_files(
+                std::sync::Arc::new(vec![crate::diff::FileDiff {
+                    path: "src/widget_helper.rs".into(),
+                    previous_path: None,
+                    kind: "Modified".into(),
+                    lines: vec!["@@ -1,1 +1,1 @@".into(), "-pub fn run() {}".into(), "+pub fn run() { /* ok */ }".into()],
+                }]),
+                "Live Git".into(),
+                cx,
+            );
+            panel.focus_input(window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("diff-review").is_some());
+        assert!(vcx.debug_bounds("diff-open-file").is_some());
+        vcx.simulate_keystrokes("escape");
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, cx| {
+            assert!(panel.diff_review.is_none(), "Escape must close DiffReview");
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                "important unsent draft",
+                "Escape closing DiffReview must never wipe composer draft"
+            );
+        });
     }
 }

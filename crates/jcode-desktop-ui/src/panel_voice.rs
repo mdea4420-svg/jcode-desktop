@@ -865,7 +865,7 @@ impl Panel {
                         .debug_selector(|| "voice-pending-status".into())
                         .flex_none()
                         .text_color(theme.ACCENT)
-                        .child("Jev routing…"),
+                        .child(crate::locale::tr("Jev routing…", "语音意图识别中…")),
                     "voice-pending-pulse",
                     pulse,
                     |el, opacity| el.opacity(opacity),
@@ -889,6 +889,21 @@ impl Panel {
         if self.activity_active() || status == "Ready" {
             return None;
         }
+        let shown = if crate::locale::is_zh() {
+            match status.as_str() {
+                "Starting session · you can type now" => "正在启动会话 · 可直接输入".to_string(),
+                "Authenticating" => "正在验证身份".to_string(),
+                "Connecting" => "正在连接".to_string(),
+                "Sending request" => "正在发送请求".to_string(),
+                "Waiting for model" => "等待模型响应".to_string(),
+                "Compacting context" => "正在压缩上下文".to_string(),
+                "Working" => "处理中".to_string(),
+                other if other.starts_with("Retrying") => other.replacen("Retrying", "正在重试", 1),
+                other => other.to_string(),
+            }
+        } else {
+            status
+        };
         Some(
             div()
                 .debug_selector(|| "panel-status-badge".into())
@@ -903,7 +918,7 @@ impl Panel {
                         .min_w_0()
                         .flex_shrink_1()
                         .truncate()
-                        .child(status),
+                        .child(shown),
                 )
                 .into_any_element(),
         )
@@ -915,12 +930,29 @@ impl Panel {
         let phase = self.voice.phase;
         let active = phase != Phase::Idle;
         let label = match phase {
-            Phase::Idle => "Start voice",
-            Phase::Checking => "Cancel microphone connection",
-            Phase::Recording => "Stop voice",
-            Phase::Transcribing | Phase::Routing => "Cancel voice request",
+            Phase::Idle => crate::locale::tr("Start voice", "开始语音输入"),
+            Phase::Checking => crate::locale::tr("Cancel microphone connection", "取消麦克风连接"),
+            Phase::Recording => crate::locale::tr("Stop voice", "停止录音"),
+            Phase::Transcribing | Phase::Routing => {
+                crate::locale::tr("Cancel voice request", "取消语音请求")
+            }
         };
-        let tooltip_status = voice_tooltip(label, &self.status_line());
+        let raw_status = self.status_line();
+        let status_for_tip = if crate::locale::is_zh() {
+            match raw_status.as_str() {
+                "Ready" => "就绪",
+                "Thinking" => "思考中",
+                "Responding" => "回复中",
+                "Running tools" => "执行工具中",
+                "Working" => "运行中",
+                "Compacting context" => "压缩上下文中",
+                "Starting session · you can type now" => "正在启动会话",
+                other => other,
+            }
+        } else {
+            raw_status.as_str()
+        };
+        let tooltip_status = voice_tooltip(label, status_for_tip);
         let icon_color = if active { theme.BG } else { theme.TEXT_DIM };
         let size = VOICE_BUTTON_SIZE;
         div()

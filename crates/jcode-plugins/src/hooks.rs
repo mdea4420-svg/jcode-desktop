@@ -341,6 +341,7 @@ pub fn run(entry: &HookEntry, invocation: &Invocation, stdin: &[u8], default_tim
         (program, args)
     };
     let mut process = Command::new(&program);
+    crate::paths::no_console_window(&mut process);
     process
         .args(&args)
         .env("CLAUDE_PLUGIN_ROOT", &entry.root)

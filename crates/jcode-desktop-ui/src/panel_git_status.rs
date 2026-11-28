@@ -31,7 +31,15 @@ pub(super) struct GitStatusState {
 
 fn run_git(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = std::process::Command::new("git");
-    cmd.arg("-C")
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "--no-optional-locks",
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+        ])
         .arg(dir)
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -426,5 +434,27 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "# Rules\n").unwrap();
         let found = detect_rules_file(dir.path()).unwrap();
         assert_eq!(found.0, "AGENTS.md");
+    }
+
+    #[test]
+    fn git_status_preserves_utf8_chinese_paths_and_avoids_index_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(init.success());
+        std::fs::write(dir.path().join("说明文档.md"), "第一行\n第二行\n").unwrap();
+        let summary = inspect_workspace_sync(dir.path());
+        assert!(summary.is_git_repo);
+        assert_eq!(summary.changed_files, 1);
+        assert_eq!(summary.added, 2);
+        assert!(!dir.path().join(".git/index.lock").exists());
+
+        let diffs = collect_working_tree_diffs(dir.path()).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "说明文档.md");
+        assert!(diffs[0].lines.iter().any(|l| l == "+第一行"));
     }
 }

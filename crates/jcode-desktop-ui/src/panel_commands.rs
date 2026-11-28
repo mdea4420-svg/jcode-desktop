@@ -531,19 +531,30 @@ fn git_read(directory: &str, diff: bool, staged: bool) -> Result<String, String>
     jcode_desktop_harness::platform::no_console_window(&mut command);
     let output = command
         .output()
-        .map_err(|error| format!("Could not run git: {error}"))?;
+        .map_err(|error| {
+            if is_zh() {
+                format!("无法执行 git：{error}")
+            } else {
+                format!("Could not run git: {error}")
+            }
+        })?;
     if !output.status.success() {
-        return Err(format!(
-            "Git failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(if is_zh() {
+            format!("Git 执行失败：{}", stderr.trim())
+        } else {
+            format!("Git failed: {}", stderr.trim())
+        });
     }
     let output = String::from_utf8_lossy(&output.stdout);
     if output.trim().is_empty() {
         return Ok(if diff {
-            "No tracked-file changes in this diff. Untracked files appear in `/git`."
+            tr(
+                "No tracked-file changes in this diff. Untracked files appear in `/git`.",
+                "当前无已跟踪文件改动（未跟踪新文件可通过 `/git` 或 `/git-review` 查看）。",
+            )
         } else {
-            "Working tree is clean."
+            tr("Working tree is clean.", "当前工作区干净，暂无未提交改动。")
         }
         .into());
     }
@@ -558,9 +569,16 @@ fn git_read(directory: &str, diff: bool, staged: bool) -> Result<String, String>
         .join("\n");
     Ok(format!(
         "## {}\n\n{code}{}",
-        if diff { "Git diff" } else { "Git status" },
+        if diff {
+            tr("Git diff", "Git 代码差异")
+        } else {
+            tr("Git status", "Git 工作区状态")
+        },
         if truncated {
-            "\n\nOutput truncated to 64,000 characters."
+            tr(
+                "\n\nOutput truncated to 64,000 characters.",
+                "\n\n输出已截断至前 64,000 个字符。",
+            )
         } else {
             ""
         }

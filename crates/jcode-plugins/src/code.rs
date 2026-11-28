@@ -109,6 +109,7 @@ pub fn argv(node: &Path, layout: &Layout, plugin: &Plugin, mode: &str, extra: &[
 /// Run a host mode and collect stdout, killing it after `timeout`.
 pub fn run(argv: &[String], cwd: Option<&Path>, timeout: Duration) -> anyhow::Result<String> {
     let mut command = Command::new(&argv[0]);
+    crate::paths::no_console_window(&mut command);
     command
         .args(&argv[1..])
         .stdin(Stdio::null())

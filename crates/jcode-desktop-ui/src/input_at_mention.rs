@@ -1,8 +1,8 @@
 //! `@file` and `@folder` workspace path completion for `PromptInput`.
 
-use std::cell::RefCell;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CACHE_TTL: Duration = Duration::from_secs(15);
@@ -41,7 +41,8 @@ pub(crate) struct AtMentionState {
     pub selection: usize,
     pub dismissed_token: Option<(Range<usize>, String)>,
     pub scroll: gpui::ScrollHandle,
-    cache: RefCell<Option<CachedEntries>>,
+    cache: Arc<Mutex<Option<CachedEntries>>>,
+    scanning: Arc<Mutex<Option<String>>>,
 }
 
 impl AtMentionState {
@@ -49,24 +50,90 @@ impl AtMentionState {
         let Some(dir) = working_dir.map(str::trim).filter(|d| !d.is_empty()) else {
             return Vec::new();
         };
+        if let Ok(guard) = self.cache.lock()
+            && let Some(cached) = guard.as_ref()
+            && cached.root == dir
+        {
+            #[cfg(not(test))]
+            return cached.entries.clone();
+            #[cfg(test)]
+            if Instant::now().saturating_duration_since(cached.scanned_at) < CACHE_TTL {
+                return cached.entries.clone();
+            }
+        }
+        #[cfg(test)]
+        {
+            let entries = scan_workspace(Path::new(dir));
+            if let Ok(mut guard) = self.cache.lock() {
+                *guard = Some(CachedEntries {
+                    root: dir.to_owned(),
+                    scanned_at: Instant::now(),
+                    entries: entries.clone(),
+                });
+            }
+            entries
+        }
+        #[cfg(not(test))]
+        {
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn warm_for(
+        &self,
+        working_dir: Option<&str>,
+        cx: &mut gpui::Context<super::PromptInput>,
+    ) {
+        let Some(dir) = working_dir.map(str::trim).filter(|d| !d.is_empty()) else {
+            return;
+        };
         let now = Instant::now();
-        if let Some(cached) = self.cache.borrow().as_ref()
+        if let Ok(guard) = self.cache.lock()
+            && let Some(cached) = guard.as_ref()
             && cached.root == dir
             && now.saturating_duration_since(cached.scanned_at) < CACHE_TTL
         {
-            return cached.entries.clone();
+            return;
         }
-        let entries = scan_workspace(Path::new(dir));
-        *self.cache.borrow_mut() = Some(CachedEntries {
-            root: dir.to_owned(),
-            scanned_at: now,
-            entries: entries.clone(),
-        });
-        entries
+        {
+            let Ok(mut inflight) = self.scanning.lock() else {
+                return;
+            };
+            if inflight.as_deref() == Some(dir) {
+                return;
+            }
+            *inflight = Some(dir.to_owned());
+        }
+        let dir_owned = dir.to_owned();
+        let scan_dir = dir_owned.clone();
+        let cache = self.cache.clone();
+        let scanning = self.scanning.clone();
+        let work = cx
+            .background_executor()
+            .spawn(async move { scan_workspace(Path::new(&scan_dir)) });
+        cx.spawn(async move |input, cx| {
+            let entries = work.await;
+            if let Ok(mut guard) = cache.lock() {
+                *guard = Some(CachedEntries {
+                    root: dir_owned.clone(),
+                    scanned_at: Instant::now(),
+                    entries,
+                });
+            }
+            if let Ok(mut inflight) = scanning.lock()
+                && inflight.as_deref() == Some(dir_owned.as_str())
+            {
+                *inflight = None;
+            }
+            let _ = input.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
     }
 
     pub(crate) fn invalidate(&self) {
-        *self.cache.borrow_mut() = None;
+        if let Ok(mut guard) = self.cache.lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -171,11 +238,28 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<i32> {
     Some(250 - (cand_lower.len() as i32) - depth_penalty)
 }
 
-pub(crate) fn match_entries(entries: &[MentionEntry], query: &str) -> Vec<MentionEntry> {
-    let query = query.trim_end_matches('/').to_lowercase();
+pub(crate) fn match_entries(entries: &[MentionEntry], raw_query: &str) -> Vec<MentionEntry> {
+    let dir_drill = raw_query
+        .ends_with('/')
+        .then(|| raw_query.trim_end_matches('/').to_lowercase())
+        .filter(|p| !p.is_empty());
+    let query = raw_query.trim_end_matches('/').to_lowercase();
     let mut scored: Vec<(i32, &MentionEntry)> = entries
         .iter()
-        .filter_map(|entry| fuzzy_score(&entry.rel_path, &query).map(|score| (score, entry)))
+        .filter_map(|entry| {
+            if let Some(prefix) = &dir_drill {
+                let cand_lower = entry.rel_path.to_lowercase();
+                let slash_prefix = format!("{prefix}/");
+                if let Some(rest) = cand_lower.strip_prefix(&slash_prefix) {
+                    let sub_depth = rest.matches('/').count() as i32;
+                    return Some((1200 - sub_depth * 25, entry));
+                }
+                if cand_lower == *prefix {
+                    return Some((80, entry));
+                }
+            }
+            fuzzy_score(&entry.rel_path, &query).map(|score| (score, entry))
+        })
         .collect();
     scored.sort_by(|(sa, ea), (sb, eb)| {
         sb.cmp(sa)
@@ -190,14 +274,23 @@ pub(crate) fn match_entries(entries: &[MentionEntry], query: &str) -> Vec<Mentio
 }
 
 pub(crate) fn replacement_text(entry: &MentionEntry) -> String {
+    replacement_text_for_query(entry, "")
+}
+
+pub(crate) fn replacement_text_for_query(entry: &MentionEntry, raw_query: &str) -> String {
     let raw = if entry.is_dir {
         format!("{}/", entry.rel_path)
     } else {
         entry.rel_path.clone()
     };
+    let already_drilled = entry.is_dir
+        && raw_query.ends_with('/')
+        && raw_query
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(&entry.rel_path);
     if raw.chars().any(char::is_whitespace) {
         format!("\"{raw}\" ")
-    } else if entry.is_dir {
+    } else if entry.is_dir && !already_drilled {
         format!("@{raw}")
     } else {
         format!("{raw} ")
@@ -239,5 +332,11 @@ mod tests {
         assert_eq!(hits[0].rel_path, "crates/deep/module/panel_extensions.rs");
         assert_eq!(replacement_text(&hits[0]), "crates/deep/module/panel_extensions.rs ");
         assert_eq!(replacement_text(&entries[2]), "@src/");
+
+        // Drilling into `@src/` ranks children inside `src/` above `src/` itself,
+        // and selecting `src/` again finalizes `src/ ` instead of looping.
+        let drilled = match_entries(&entries, "src/");
+        assert_eq!(drilled[0].rel_path, "src/panel.rs");
+        assert_eq!(replacement_text_for_query(&entries[2], "src/"), "src/ ");
     }
 }

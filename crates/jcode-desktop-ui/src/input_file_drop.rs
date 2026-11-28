@@ -78,7 +78,22 @@ impl PromptInput {
             }
         }
         // Unreadable images still reach the agent as paths.
-        let referenced: Vec<PathBuf> = plan.paths.into_iter().chain(failed).collect();
+        let root = self.working_dir.as_deref().map(Path::new);
+        let referenced: Vec<PathBuf> = plan
+            .paths
+            .into_iter()
+            .chain(failed)
+            .map(|path| {
+                if let Some(root) = root
+                    && let Ok(rel) = path.strip_prefix(root)
+                    && !rel.as_os_str().is_empty()
+                {
+                    PathBuf::from(rel.to_string_lossy().replace('\\', "/"))
+                } else {
+                    path
+                }
+            })
+            .collect();
         if !referenced.is_empty() {
             let mut text = path_text(&referenced);
             let before = self.content[..self.cursor_offset()].chars().next_back();
@@ -89,8 +104,12 @@ impl PromptInput {
             self.replace_text_in_range(None, &text, window, cx);
             if plan.images.is_empty() {
                 self.attachment_notice = Some(match referenced.len() {
-                    1 => "file path added".into(),
-                    count => format!("{count} file paths added").into(),
+                    1 => crate::locale::tr("file path added", "已插入文件路径").into(),
+                    count => if crate::locale::is_zh() {
+                        format!("已插入 {count} 个文件路径").into()
+                    } else {
+                        format!("{count} file paths added").into()
+                    },
                 });
             }
         }
