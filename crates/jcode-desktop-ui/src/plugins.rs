@@ -304,6 +304,49 @@ pub(crate) fn create_in(target: &Layout, name: &str, code: bool) -> Result<PathB
     Ok(root)
 }
 
+pub(crate) fn trash_in(
+    target: &Layout,
+    name: &str,
+    root: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if !root.starts_with(&target.plugins_dir) {
+        return Err(tr(
+            "Only plugins inside ~/.jcode/plugins can be moved to trash.",
+            "仅支持移除 ~/.jcode/plugins 目录下的本地插件。",
+        )
+        .into());
+    }
+    let trash = target.jcode_home.join("trash").join("plugins");
+    std::fs::create_dir_all(&trash).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let dir_name = root
+        .file_name()
+        .map(|part| part.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_owned());
+    let mut dest = trash.join(format!("{dir_name}-{stamp}"));
+    for attempt in 1.. {
+        if !dest.exists() {
+            break;
+        }
+        dest = trash.join(format!("{dir_name}-{stamp}-{attempt}"));
+    }
+    std::fs::rename(root, &dest).map_err(|error| {
+        if is_zh() {
+            format!("无法将 `{}` 移入回收站：{error}", root.display())
+        } else {
+            format!("Could not move {} to trash: {error}", root.display())
+        }
+    })?;
+    let mut state = State::load(target);
+    state.enabled.remove(name);
+    let _ = state.save(target);
+    sync_in(target);
+    Ok(dest)
+}
+
 pub(crate) fn report_markdown(report: &SyncReport) -> String {
     let events = if report.hook_events.is_empty() {
         tr("no events", "无事件").to_string()

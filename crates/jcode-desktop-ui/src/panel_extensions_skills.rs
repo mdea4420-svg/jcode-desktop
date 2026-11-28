@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use super::extensions::{Confirm, SkillForm, field_input, pill};
+use super::extensions::{Confirm, SkillForm, field_input, pill, soft_wrap_text};
 use crate::extensions::skills;
 use crate::locale::{is_zh, tr};
 
@@ -49,11 +49,15 @@ impl Panel {
         groups.push(
             div()
                 .flex_none()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap_2()
                 .child(
-                    pill("skill-new", "skill-new".into(), tr("New skill", "新建技能"), false)
+                    pill("skill-new", "skill-new".into(), tr("+ New skill", "+ 新建技能"), true)
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, _, cx| this.skill_form_open(cx)),
@@ -67,7 +71,7 @@ impl Panel {
                         ),
                 )
                 .when_some(state.skill_import.clone(), |el, field| {
-                    el.child(div().w(px(260.)).child(field)).child(
+                    el.child(div().flex_1().min_w(px(180.)).max_w(px(320.)).child(field)).child(
                         pill(
                             "skill-import-apply",
                             "skill-import-apply".into(),
@@ -103,6 +107,10 @@ impl Panel {
             groups.push(
                 div()
                     .flex_none()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .truncate()
                     .mt_1()
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -185,10 +193,19 @@ impl Panel {
         let open_dir = dir.clone();
         let key = dir.to_string_lossy().to_string();
 
+        let desc_text = if skill.description.trim().is_empty() {
+            crate::platform_dirs::tilde(&skill.dir.to_string_lossy())
+        } else {
+            skill.description.trim().to_owned()
+        };
+
         div()
             .id(format!("skill-row-{}", key.clone()))
             .debug_selector(move || format!("skill-row-{key}").into())
             .flex_none()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .gap_1()
@@ -198,136 +215,174 @@ impl Panel {
             .bg(theme.HEADER_BG)
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
+                    .flex_wrap()
                     .items_center()
+                    .justify_between()
                     .gap_2()
                     .child(
                         div()
-                            .flex_none()
-                            .max_w(px(180.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .when(!enabled, |el| el.text_color(theme.TEXT_DIM))
-                            .child(name),
+                            .flex_1()
+                            .min_w(px(160.))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .max_w(px(240.))
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .when(!enabled, |el| el.text_color(theme.TEXT_DIM))
+                                    .child(name),
+                            )
+                            .when(shared, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .px_2()
+                                        .py(px(1.))
+                                        .rounded_full()
+                                        .bg(theme.TOOL_BG)
+                                        .text_size(px(10.))
+                                        .text_color(theme.TEXT_DIM)
+                                        .whitespace_nowrap()
+                                        .child(tr("Shared", "共享")),
+                                )
+                            })
+                            .when_some(readonly_label, |el, label| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(220.))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .truncate()
+                                        .px_2()
+                                        .py(px(1.))
+                                        .rounded_full()
+                                        .bg(theme.TOOL_BG)
+                                        .text_size(px(10.))
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(label),
+                                )
+                            }),
                     )
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(11.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(if skill.description.is_empty() {
-                                skill.dir.to_string_lossy().to_string()
-                            } else {
-                                skill.description.clone()
-                            }),
-                    )
-                    .when(shared, |el| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(theme.TEXT_FAINT)
-                                .child(tr("Shared with other tools", "与其他工具共享")),
-                        )
-                    })
-                    .when_some(readonly_label, |el, label| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(theme.TEXT_FAINT)
-                                .child(label),
-                        )
-                    })
-                    .when(editable, |el| {
-                        el.child(
-                            pill(
-                                format!("skill-toggle-{}", toggle_dir.to_string_lossy().to_string()),
-                                format!(
-                                    "skill-toggle-{}",
-                                    toggle_dir.file_name().unwrap().to_string_lossy()
+                            .flex_none()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_1p5()
+                            .when(editable, |el| {
+                                el.child(
+                                    pill(
+                                        format!("skill-toggle-{}", toggle_dir.to_string_lossy().to_string()),
+                                        format!(
+                                            "skill-toggle-{}",
+                                            toggle_dir.file_name().unwrap().to_string_lossy()
+                                        ),
+                                        if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
+                                        enabled,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.skill_toggle(toggle_dir.clone(), !enabled, cx)
+                                        }),
+                                    ),
+                                )
+                            })
+                            .child(
+                                pill(
+                                    format!("skill-open-{}", open_dir.to_string_lossy().to_string()),
+                                    format!(
+                                        "skill-open-{}",
+                                        open_dir.file_name().unwrap().to_string_lossy()
+                                    ),
+                                    tr("Open folder", "打开目录"),
+                                    false,
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(&format!(
+                                            "file://{}",
+                                            percent_encode_path(&open_dir)
+                                        ));
+                                    }),
                                 ),
-                                if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
-                                enabled,
                             )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.skill_toggle(toggle_dir.clone(), !enabled, cx)
-                                }),
-                            ),
-                        )
-                    })
-                    .child(
-                        pill(
-                            format!("skill-open-{}", open_dir.to_string_lossy().to_string()),
-                            format!(
-                                "skill-open-{}",
-                                open_dir.file_name().unwrap().to_string_lossy()
-                            ),
-                            tr("Open folder", "打开目录"),
-                            false,
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |_, _, _, cx| {
-                                cx.open_url(&format!(
-                                    "file://{}",
-                                    percent_encode_path(&open_dir)
-                                ));
+                            .when(editable, |el| {
+                                el.child(
+                                    pill(
+                                        format!("skill-delete-{}", delete_dir.to_string_lossy().to_string()),
+                                        format!(
+                                            "skill-delete-{}",
+                                            delete_dir.file_name().unwrap().to_string_lossy()
+                                        ),
+                                        tr("Delete", "删除"),
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if let Some(state) = this.extensions.as_mut() {
+                                                state.confirm = Some(Confirm::SkillDelete {
+                                                    dir: delete_dir.clone(),
+                                                });
+                                            }
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
                             }),
-                        ),
-                    )
-                    .when(editable, |el| {
-                        el.child(
-                            pill(
-                                format!("skill-delete-{}", delete_dir.to_string_lossy().to_string()),
-                                format!(
-                                    "skill-delete-{}",
-                                    delete_dir.file_name().unwrap().to_string_lossy()
-                                ),
-                                tr("Delete", "删除"),
-                                false,
-                            )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    if let Some(state) = this.extensions.as_mut() {
-                                        state.confirm = Some(Confirm::SkillDelete {
-                                            dir: delete_dir.clone(),
-                                        });
-                                    }
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    }),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_size(px(11.))
+                    .text_color(theme.TEXT_DIM)
+                    .child(soft_wrap_text(&desc_text)),
             )
             .when(confirming_delete, |el| {
                 let confirm_dir = dir.clone();
                 let cancel_dir = cancel_dir.clone();
                 el.child(
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .debug_selector(move || "skill-confirm-delete".into())
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(160.))
+                                .overflow_hidden()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
                                 .child({
                                     let name = dir.file_name().unwrap_or_default().to_string_lossy();
-                                    if is_zh() {
+                                    soft_wrap_text(&if is_zh() {
                                         format!("将 `{name}` 移入 `~/.jcode/trash/skills` 回收站？")
                                     } else {
                                         format!("Move `{name}` to `~/.jcode/trash/skills`?")
-                                    }
+                                    })
                                 }),
                         )
                         .child(
@@ -368,14 +423,19 @@ impl Panel {
                 let confirm_enabled = !enabled;
                 el.child(
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .debug_selector(move || "skill-confirm-shared".into())
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(160.))
+                                .overflow_hidden()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
                                 .child(

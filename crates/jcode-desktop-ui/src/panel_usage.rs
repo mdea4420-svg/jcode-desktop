@@ -7,6 +7,24 @@ pub(crate) struct StatusAccounts(pub Vec<Account>);
 impl gpui::Global for StatusAccounts {}
 
 pub(crate) struct MeterTooltip(pub(crate) String);
+
+fn wrap_long_unbroken(text: &str) -> String {
+    if !text
+        .split_whitespace()
+        .any(|word| word.chars().count() > 36)
+    {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    for ch in text.chars() {
+        out.push(ch);
+        if matches!(ch, '/' | '\\' | ':' | '_') {
+            out.push('\u{200B}');
+        }
+    }
+    out
+}
+
 impl Render for MeterTooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("MeterTooltip");
@@ -15,13 +33,14 @@ impl Render for MeterTooltip {
             .px_3()
             .py_2()
             .max_w(px(380.))
-            .rounded_md()
+            .overflow_hidden()
+            .rounded_xl()
             .bg(theme.HEADER_BG)
             .border_1()
             .border_color(theme.PANEL_BORDER)
             .text_size(px(11.))
             .text_color(theme.TEXT_DIM)
-            .child(self.0.clone())
+            .child(wrap_long_unbroken(&self.0))
     }
 }
 

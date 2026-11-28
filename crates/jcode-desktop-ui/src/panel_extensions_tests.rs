@@ -511,3 +511,106 @@ fn chinese_extensions_keep_stable_tab_selectors_and_localize_plugin_reports(
         assert!(markdown.contains("会在新会话中生效"));
     });
 }
+
+#[gpui::test]
+fn plugins_tab_bounds_long_text_in_narrow_window_filters_and_trashes_safely(
+    cx: &mut gpui::TestAppContext,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let paths = fixture_paths(root.path());
+    let layout = crate::plugins::layout_for_paths(&paths);
+    let local_dir = layout.plugins_dir.join("ultra-long-local-helper-plugin-name");
+    std::fs::create_dir_all(local_dir.join(".claude-plugin")).unwrap();
+    std::fs::create_dir_all(local_dir.join("commands")).unwrap();
+    std::fs::write(
+        local_dir.join(".claude-plugin/plugin.json"),
+        format!(
+            r#"{{"name":"ultra-long-local-helper-plugin-name","version":"1.2.3","description":"C:\\Users\\Administrator\\.claude\\plugins\\cache\\marketplace\\very_long_unbroken_identifier_{}"}}"#,
+            "x".repeat(90)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        local_dir.join("commands/very-long-command-identifier-for-overflow-test.md"),
+        "Run helper",
+    )
+    .unwrap();
+
+    let claude_root = paths.user_home.join(".claude/plugins");
+    let claude_pkg = claude_root.join("cache/memorax-adapter/0.1.23");
+    std::fs::create_dir_all(claude_pkg.join(".claude-plugin")).unwrap();
+    std::fs::write(
+        claude_pkg.join(".claude-plugin/plugin.json"),
+        r#"{"name":"memorax-adapter","version":"0.1.23","description":"Claude adapter plugin"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        claude_root.join("installed_plugins.json"),
+        serde_json::json!({
+            "plugins": {
+                "memorax-adapter@store": [{
+                    "installPath": claude_pkg,
+                    "version": "0.1.23"
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let (panel, vcx, _commands) = setup(cx);
+    let window = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(window, gpui::size(gpui::px(480.), gpui::px(640.)));
+
+    panel.update(vcx, |panel, cx| {
+        assert!(panel.handle_slash_command_for_test("/plugins", cx));
+        panel.open_extensions_with_paths(paths.clone(), None, ExtensionTab::Plugins, cx);
+    });
+    vcx.run_until_parked();
+
+    let dialog = vcx.debug_bounds("extensions").expect("extensions dialog");
+    for selector in [
+        "plugin-row-ultra-long-local-helper-plugin-name",
+        "plugin-open-ultra-long-local-helper-plugin-name",
+        "plugin-delete-ultra-long-local-helper-plugin-name",
+        "plugin-toggle-ultra-long-local-helper-plugin-name",
+        "plugin-row-memorax-adapter",
+        "plugin-open-memorax-adapter",
+        "plugin-toggle-memorax-adapter",
+    ] {
+        let bounds = vcx.debug_bounds(selector).expect(selector);
+        assert!(
+            bounds.origin.x >= dialog.origin.x && bounds.bottom_right().x <= dialog.bottom_right().x + gpui::px(1.),
+            "{selector} overflowed dialog horizontally: {bounds:?} vs {dialog:?}"
+        );
+    }
+    assert!(
+        vcx.debug_bounds("plugin-delete-memorax-adapter").is_none(),
+        "external Claude plugins must not expose trash removal"
+    );
+
+    let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = vcx.debug_bounds(selector).unwrap_or_else(|| panic!("missing {selector}"));
+        vcx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+    };
+    click(vcx, "plugins-filter-claude");
+    assert!(vcx.debug_bounds("plugin-row-memorax-adapter").is_some());
+    assert!(vcx.debug_bounds("plugin-row-ultra-long-local-helper-plugin-name").is_none());
+    click(vcx, "plugins-filter-local");
+    assert!(vcx.debug_bounds("plugin-row-ultra-long-local-helper-plugin-name").is_some());
+    assert!(vcx.debug_bounds("plugin-row-memorax-adapter").is_none());
+    click(vcx, "plugins-filter-all");
+
+    click(vcx, "plugin-delete-ultra-long-local-helper-plugin-name");
+    assert!(vcx.debug_bounds("plugin-confirm-ultra-long-local-helper-plugin-name").is_some());
+    assert!(local_dir.is_dir());
+    click(vcx, "plugin-confirm-delete-ultra-long-local-helper-plugin-name");
+    assert!(!local_dir.exists());
+    let trashed: Vec<_> = std::fs::read_dir(paths.jcode_home.join("trash/plugins"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(trashed.len(), 1);
+    assert!(vcx.debug_bounds("plugin-row-ultra-long-local-helper-plugin-name").is_none());
+}

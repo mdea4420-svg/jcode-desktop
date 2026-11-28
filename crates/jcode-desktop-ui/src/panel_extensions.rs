@@ -33,6 +33,8 @@ pub(super) struct ExtensionsState {
     pub mcp: mcp::McpList,
     pub skills: Vec<skills::SkillEntry>,
     pub plugins: Vec<PluginRow>,
+    pub plugin_errors: Vec<String>,
+    pub plugin_filter: PluginFilter,
     /// Inline test results by server name.
     pub tests: HashMap<String, mcp::McpTestResult>,
     pub testing: HashSet<String>,
@@ -59,6 +61,17 @@ pub(super) enum Confirm {
     SkillDelete { dir: PathBuf },
     /// Toggle a skill living in a shared (`~/.agents`) location.
     SkillToggleShared { dir: PathBuf },
+    /// Move a local `~/.jcode/plugins/<name>` dir to `~/.jcode/trash/plugins`.
+    PluginDelete { name: String },
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum PluginFilter {
+    #[default]
+    All,
+    Enabled,
+    Local,
+    Claude,
 }
 
 /// Which file a new/edited MCP server goes into.
@@ -142,9 +155,7 @@ impl ExtensionsState {
         self.skills = skills::list_skills(&self.paths);
         let (plugins, errors) = crate::plugins::plugins_in(&self.plugin_layout());
         self.plugins = plugins.iter().map(PluginRow::from_plugin).collect();
-        self.mcp.notices.extend(errors.into_iter().map(|error| {
-            format!("{}{error}", tr("plugins: ", "插件："))
-        }));
+        self.plugin_errors = errors;
     }
 
     pub(super) fn plugin_layout(&self) -> jcode_plugins::Layout {
@@ -154,6 +165,25 @@ impl ExtensionsState {
     pub(super) fn query(&self, cx: &App) -> String {
         self.search.read(cx).content.trim().to_lowercase()
     }
+}
+
+/// Insert zero-width break opportunities inside long unbroken paths or tokens
+/// so GPUI text shaping wraps inside cards instead of overflowing horizontally.
+pub(super) fn soft_wrap_text(text: &str) -> String {
+    if !text
+        .split_whitespace()
+        .any(|word| word.chars().count() > 32)
+    {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    for ch in text.chars() {
+        out.push(ch);
+        if matches!(ch, '/' | '\\' | ':' | '_' | '-') {
+            out.push('\u{200B}');
+        }
+    }
+    out
 }
 
 /// A small pill button used for row actions and header pills.
@@ -170,14 +200,21 @@ pub(super) fn pill(
         .flex_none()
         .flex()
         .items_center()
-        .px_3()
+        .px_2p5()
         .h(px(24.))
         .rounded_full()
+        .border_1()
+        .border_color(if active {
+            theme.ACCENT
+        } else {
+            theme.PANEL_BORDER
+        })
         .text_size(px(11.))
+        .whitespace_nowrap()
         .cursor_pointer()
-        .bg(if active { theme.ACCENT } else { theme.HEADER_BG })
-        .text_color(if active { theme.BG } else { theme.TEXT_DIM })
-        .when(!active, |el| el.hover(|style| style.bg(theme.INPUT_BG)))
+        .bg(if active { theme.ACCENT } else { theme.PANEL_BG })
+        .text_color(if active { theme.BG } else { theme.TEXT })
+        .when(!active, |el| el.hover(|style| style.bg(theme.ACCENT_DIM)))
         .child(label.into())
 }
 
@@ -292,6 +329,8 @@ impl Panel {
             mcp: mcp::McpList::default(),
             skills: Vec::new(),
             plugins: Vec::new(),
+            plugin_errors: Vec::new(),
+            plugin_filter: PluginFilter::All,
             tests: HashMap::new(),
             testing: HashSet::new(),
             notice: None,
@@ -325,8 +364,8 @@ impl Panel {
         }
     }
 
-    /// `/mcp` → MCP tab, `/skills` (bare) → Skills tab, `/extensions` →
-    /// last tab. `/skills <args>` falls through to the runtime command.
+    /// `/mcp` → MCP tab, `/skills` (bare) → Skills tab, `/plugins` (bare) →
+    /// Plugins tab, `/extensions` → last tab. Commands with args fall through.
     pub(super) fn handle_extensions_command(
         &mut self,
         content: &str,
@@ -336,6 +375,7 @@ impl Panel {
             "/mcp" | "/mcp-servers" => ExtensionTab::Mcp,
             "/extensions" => ExtensionTab::Last,
             "/skills" => ExtensionTab::Skills,
+            "/plugins" | "/plugin" => ExtensionTab::Plugins,
             _ => return false,
         };
         self.open_extensions(tab, cx);
@@ -411,7 +451,7 @@ impl Panel {
             .panel_bounds
             .get()
             .map_or_else(|| window.viewport_size().width, |bounds| bounds.size.width)
-            < px(592.);
+            < px(660.);
 
         let mcp_count = state.mcp.entries.len();
         let skill_count = state.skills.len();
@@ -503,6 +543,9 @@ impl Panel {
                                 .h_full()
                                 .max_w(px(820.))
                                 .max_h(px(600.))
+                                .min_w_0()
+                                .min_h_0()
+                                .overflow_hidden()
                                 .rounded_xl()
                                 .bg(theme.PANEL_BG)
                                 .border_1()
@@ -532,6 +575,8 @@ impl Panel {
                                         .id("extensions-header")
                                         .debug_selector(|| "extensions-header".into())
                                         .flex_none()
+                                        .min_w_0()
+                                        .overflow_hidden()
                                         .flex()
                                         .items_center()
                                         .gap_2()
@@ -564,14 +609,8 @@ impl Panel {
                                         ))
                                         .child(
                                             div()
-                                                .flex_none()
-                                                .w(px(160.))
-                                                .min_w_0()
-                                                .rounded_full()
-                                                .bg(theme.INPUT_BG)
-                                                .border_1()
-                                                .border_color(theme.INPUT_BORDER)
-                                                .px_2()
+                                                .when(!narrow, |el| el.flex_none().w(px(180.)))
+                                                .when(narrow, |el| el.flex_1().min_w(px(140.)))
                                                 .child(search),
                                         )
                                         .child(
@@ -594,18 +633,22 @@ impl Panel {
                                     el.child(
                                         div()
                                             .flex_none()
+                                            .min_w_0()
+                                            .overflow_hidden()
                                             .text_size(px(11.))
                                             .text_color(theme.TEXT_DIM)
-                                            .child(notice),
+                                            .child(soft_wrap_text(&notice)),
                                     )
                                 })
                                 .when_some(error, |el, error| {
                                     el.child(
                                         div()
                                             .flex_none()
+                                            .min_w_0()
+                                            .overflow_hidden()
                                             .text_size(px(11.))
                                             .text_color(theme.ERROR)
-                                            .child(error),
+                                            .child(soft_wrap_text(&error)),
                                     )
                                 })
                                 .child(
@@ -616,6 +659,7 @@ impl Panel {
                                         .flex_1()
                                         .min_h_0()
                                         .min_w_0()
+                                        .overflow_hidden()
                                         .flex()
                                         .flex_col()
                                         .on_scroll_wheel(cx.listener(

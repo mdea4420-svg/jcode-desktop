@@ -142,7 +142,10 @@ impl Panel {
             div()
                 .p_6()
                 .text_color(theme.TEXT_DIM)
-                .child("This applet is no longer running.")
+                .child(crate::locale::tr(
+                    "This applet is no longer running.",
+                    "该插件面板已停止运行。",
+                ))
                 .into_any_element()
         });
         let error = mounted
@@ -153,6 +156,9 @@ impl Panel {
         div()
             .debug_selector(|| "applet-panel".into())
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
@@ -161,6 +167,8 @@ impl Panel {
                     .flex_none()
                     .h(px(52.))
                     .px_4()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .gap_3()
@@ -175,17 +183,19 @@ impl Panel {
                     .when(busy, |el| {
                         el.child(
                             div()
+                                .flex_none()
                                 .px_2()
                                 .rounded_full()
                                 .bg(theme.ACCENT_DIM)
                                 .text_size(px(11.))
-                                .child("Working…"),
+                                .child(crate::locale::tr("Working…", "运行中…")),
                         )
                     })
                     .child(
                         div()
                             .id("applet-close")
                             .debug_selector(|| "applet-close".into())
+                            .flex_none()
                             .cursor_pointer()
                             .rounded_full()
                             .px_3()
@@ -198,7 +208,7 @@ impl Panel {
                                 crate::applet_runtime::get(cx).close(&close_id);
                                 cx.emit(AppletPanelClosed);
                             }))
-                            .child("Close"),
+                            .child(crate::locale::tr("Close", "关闭")),
                     ),
             )
             .when_some(error, |el, error| {
@@ -207,25 +217,39 @@ impl Panel {
                         .mx_4()
                         .mb_2()
                         .px_3()
-                        .py_1()
-                        .rounded_full()
+                        .py_1p5()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .rounded_xl()
                         .bg(theme.ERROR_BG)
                         .text_size(px(12.))
                         .text_color(theme.ERROR)
-                        .child(error),
+                        .child(super::extensions::soft_wrap_text(&error)),
                 )
             })
             .child(
                 div()
-                    .id("applet-body")
-                    .debug_selector(|| "applet-body".into())
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .px_4()
-                    .pb_4()
-                    .child(body),
+                    .min_w_0()
+                    .child(
+                        div()
+                            .id("applet-body")
+                            .debug_selector(|| "applet-body".into())
+                            .size_full()
+                            .min_h_0()
+                            .min_w_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .px_4()
+                            .pb_4()
+                            .child(body),
+                    )
+                    .child(crate::scrollbar::interactive_vertical(
+                        &scroll,
+                        "applet-scrollbar",
+                    )),
             )
             .into_any_element()
     }

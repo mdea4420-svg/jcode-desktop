@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use super::*;
 use super::extensions::{
-    Confirm, McpForm, McpTarget, PairRow, field_input, pill,
+    Confirm, McpForm, McpTarget, PairRow, field_input, pill, soft_wrap_text,
 };
 use crate::extensions::mcp;
 use crate::locale::{is_zh, tr};
@@ -146,15 +146,19 @@ impl Panel {
         groups.push(
             div()
                 .flex_none()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap_2()
                 .child(
                     pill(
                         "mcp-add",
                         "mcp-add".into(),
-                        tr("Add server", "添加服务器"),
-                        false,
+                        tr("+ Add server", "+ 添加服务器"),
+                        true,
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -167,9 +171,12 @@ impl Panel {
             groups.push(
                 div()
                     .flex_none()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .text_size(px(11.))
                     .text_color(theme.TEXT_FAINT)
-                    .child(format!("{notice} {}", tr("— skipped", "— 已跳过")))
+                    .child(soft_wrap_text(&format!("{notice} {}", tr("— skipped", "— 已跳过"))))
                     .into_any_element(),
             );
         }
@@ -186,6 +193,10 @@ impl Panel {
             groups.push(
                 div()
                     .flex_none()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .truncate()
                     .mt_1()
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -306,6 +317,9 @@ impl Panel {
                 move || format!("mcp-row-{name}").into()
             })
             .flex_none()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .gap_1()
@@ -315,125 +329,162 @@ impl Panel {
             .bg(theme.HEADER_BG)
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
+                    .flex_wrap()
                     .items_center()
+                    .justify_between()
                     .gap_2()
                     .child(
                         div()
-                            .flex_none()
-                            .max_w(px(200.))
-                            .truncate()
-                            .text_size(px(12.))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .when(!enabled, |el| el.text_color(theme.TEXT_DIM))
-                            .child(name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .px_2()
-                            .h(px(18.))
-                            .rounded_full()
-                            .bg(theme.TOOL_BG)
-                            .text_size(px(10.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(entry.transport.as_str()),
-                    )
-                    .child(
-                        div()
                             .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(11.))
-                            .text_color(theme.TEXT_DIM)
-                            .child(detail),
-                    )
-                    .when_some(readonly_label, |el, label| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(theme.TEXT_FAINT)
-                                .child(label),
-                        )
-                    })
-                    .when(editable, |el| {
-                        el.child(
-                            pill(
-                                format!("mcp-toggle-{}", toggle_name.clone()),
-                                format!("mcp-toggle-{toggle_name}"),
-                                if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
-                                enabled,
+                            .min_w(px(160.))
+                            .overflow_hidden()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .max_w(px(220.))
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .when(!enabled, |el| el.text_color(theme.TEXT_DIM))
+                                    .child(name.clone()),
                             )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    let result = mcp::set_mcp_enabled(
-                                        &toggle_path,
-                                        &toggle_name,
-                                        !enabled,
-                                    )
-                                    .map(|_| format!("`{toggle_name}`."));
-                                    this.extensions_apply(
-                                        result,
-                                        if enabled { tr("Disabled", "已关闭") } else { tr("Enabled", "已开启") },
-                                        cx,
-                                    );
-                                }),
-                            ),
-                        )
-                    })
-                    .child(
-                        pill(
-                            format!("mcp-test-{}", test_name.clone()),
-                            format!("mcp-test-{test_name}"),
-                            if testing { tr("Testing…", "测试中…") } else { tr("Test", "测试") },
-                            false,
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.mcp_test(test_name.clone(), cx);
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .px_2()
+                                    .py(px(1.))
+                                    .rounded_full()
+                                    .bg(theme.TOOL_BG)
+                                    .text_size(px(10.))
+                                    .text_color(theme.TEXT_DIM)
+                                    .whitespace_nowrap()
+                                    .child(entry.transport.as_str()),
+                            )
+                            .when_some(readonly_label, |el, label| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(220.))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .truncate()
+                                        .px_2()
+                                        .py(px(1.))
+                                        .rounded_full()
+                                        .bg(theme.TOOL_BG)
+                                        .text_size(px(10.))
+                                        .text_color(theme.TEXT_DIM)
+                                        .child(label),
+                                )
                             }),
-                        ),
                     )
-                    .when(editable, |el| {
-                        el.child(
-                            pill(
-                                format!("mcp-edit-{}", edit_name.clone()),
-                                format!("mcp-edit-{edit_name}"),
-                                tr("Edit", "编辑"),
-                                false,
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_1p5()
+                            .when(editable, |el| {
+                                el.child(
+                                    pill(
+                                        format!("mcp-toggle-{}", toggle_name.clone()),
+                                        format!("mcp-toggle-{toggle_name}"),
+                                        if enabled { tr("On", "开启") } else { tr("Off", "关闭") },
+                                        enabled,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            let result = mcp::set_mcp_enabled(
+                                                &toggle_path,
+                                                &toggle_name,
+                                                !enabled,
+                                            )
+                                            .map(|_| format!("`{toggle_name}`."));
+                                            this.extensions_apply(
+                                                result,
+                                                if enabled { tr("Disabled", "已关闭") } else { tr("Enabled", "已开启") },
+                                                cx,
+                                            );
+                                        }),
+                                    ),
+                                )
+                            })
+                            .child(
+                                pill(
+                                    format!("mcp-test-{}", test_name.clone()),
+                                    format!("mcp-test-{test_name}"),
+                                    if testing { tr("Testing…", "测试中…") } else { tr("Test", "测试") },
+                                    false,
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.mcp_test(test_name.clone(), cx);
+                                    }),
+                                ),
                             )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.mcp_form_open(Some(&edit_name), cx)
-                                }),
-                            ),
-                        )
-                        .child(
-                            pill(
-                                format!("mcp-delete-{}", delete_name.clone()),
-                                format!("mcp-delete-{delete_name}"),
-                                tr("Delete", "删除"),
-                                false,
-                            )
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    if let Some(state) = this.extensions.as_mut() {
-                                        state.confirm = Some(Confirm::McpDelete {
-                                            name: delete_name.clone(),
-                                            path: delete_path.clone(),
-                                        });
-                                    }
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    }),
+                            .when(editable, |el| {
+                                el.child(
+                                    pill(
+                                        format!("mcp-edit-{}", edit_name.clone()),
+                                        format!("mcp-edit-{edit_name}"),
+                                        tr("Edit", "编辑"),
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.mcp_form_open(Some(&edit_name), cx)
+                                        }),
+                                    ),
+                                )
+                                .child(
+                                    pill(
+                                        format!("mcp-delete-{}", delete_name.clone()),
+                                        format!("mcp-delete-{delete_name}"),
+                                        tr("Delete", "删除"),
+                                        false,
+                                    )
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            if let Some(state) = this.extensions.as_mut() {
+                                                state.confirm = Some(Confirm::McpDelete {
+                                                    name: delete_name.clone(),
+                                                    path: delete_path.clone(),
+                                                });
+                                            }
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
+                            }),
+                    ),
             )
+            .when(!detail.is_empty(), |el| {
+                el.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_size(px(10.5))
+                        .font_family(theme.FONT_MONO)
+                        .text_color(theme.TEXT_DIM)
+                        .child(detail),
+                )
+            })
             .when(confirming, |el| {
                 let confirm_dbg = confirm_name.clone();
                 let confirm_label = confirm_name.clone();
@@ -442,17 +493,22 @@ impl Panel {
                 let confirm_del_path = confirm_path.clone();
                 el.child(
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap_2()
                         .debug_selector(move || format!("mcp-confirm-{confirm_dbg}").into())
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(160.))
+                                .overflow_hidden()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
-                                .child(if is_zh() { format!("从配置中删除 `{confirm_label}`？") } else { format!("Delete `{confirm_label}` from its config?") }),
+                                .child(soft_wrap_text(&if is_zh() { format!("从配置中删除 `{confirm_label}`？") } else { format!("Delete `{confirm_label}` from its config?") })),
                         )
                         .child(
                             pill(
@@ -496,6 +552,9 @@ impl Panel {
             .when_some(test, |el, result| {
                 el.child(if result.ok {
                     let mut row = div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .items_center()
                         .flex_wrap()
@@ -505,6 +564,10 @@ impl Panel {
                         row = row.child(
                             div()
                                 .flex_none()
+                                .max_w(px(220.))
+                                .min_w_0()
+                                .overflow_hidden()
+                                .truncate()
                                 .text_size(px(11.))
                                 .text_color(theme.TEXT_DIM)
                                 .child(format!("{server} ·")),
@@ -520,8 +583,12 @@ impl Panel {
                     .children(result.tools.iter().map(|tool| {
                         div()
                             .flex_none()
+                            .max_w(px(220.))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .truncate()
                             .px_2()
-                            .h(px(18.))
+                            .py(px(1.))
                             .rounded_full()
                             .bg(theme.TOOL_BG)
                             .text_size(px(10.))
@@ -530,17 +597,20 @@ impl Panel {
                     }))
                 } else {
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .debug_selector(move || format!("mcp-test-result-{name}").into())
                         .text_size(px(11.))
                         .text_color(theme.ERROR)
-                        .child(
-                            result
+                        .child(soft_wrap_text(
+                            &result
                                 .error
                                 .as_deref()
                                 .map(mcp_test_error)
                                 .unwrap_or_else(|| tr("Test failed.", "测试失败。").into()),
-                        )
+                        ))
                 })
             })
             .into_any_element()
