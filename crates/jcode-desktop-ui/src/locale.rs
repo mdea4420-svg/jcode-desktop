@@ -20,6 +20,14 @@ pub(crate) fn tr(english: &'static str, chinese: &'static str) -> &'static str {
     if is_zh() { chinese } else { english }
 }
 
+pub(crate) const fn super_key() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Win"
+    } else {
+        "Super"
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_CHINESE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

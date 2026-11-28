@@ -6,6 +6,7 @@ use gpui::{Context, FontWeight, ScrollHandle, Task, Window, div, prelude::*, px}
 
 use super::{Panel, SessionOpener};
 use crate::harness::{LiveSession, UnfinishedTodo};
+use crate::locale::{is_zh, tr};
 use crate::theme::Theme;
 
 pub(crate) const SESSION_ID: &str = "orchestration://sessions";
@@ -40,7 +41,7 @@ impl Panel {
     ) -> Self {
         let mut panel = Self::new(
             SESSION_ID.into(),
-            Some("orchestration".into()),
+            Some(tr("orchestration", "多代理编排").into()),
             None,
             bridge,
             cx,
@@ -116,9 +117,9 @@ impl Panel {
                     .text_size(px(12.))
                     .text_color(Theme::global().TEXT_DIM)
                     .child(if state.loaded {
-                        "No live sessions."
+                        tr("No live sessions.", "暂无活跃会话。")
                     } else {
-                        "Looking for live sessions…"
+                        tr("Looking for live sessions…", "正在查找活跃会话…")
                     }),
             );
         }
@@ -145,18 +146,22 @@ impl Panel {
                         div()
                             .text_size(px(18.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Orchestration"),
+                            .child(tr("Orchestration", "多代理编排")),
                     )
                     .child(
                         div()
                             .debug_selector(|| "orchestration-summary".into())
                             .text_size(px(11.))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child(format!("{} live · {running} running", state.sessions.len())),
+                            .child(if is_zh() {
+                                format!("{} 个活跃 · {running} 个运行中", state.sessions.len())
+                            } else {
+                                format!("{} live · {running} running", state.sessions.len())
+                            }),
                     ),
             )
             .child(div().flex_1().min_h_0().relative().child(list).child(
-                crate::scrollbar::vertical(&state.scroll, "orchestration-scrollbar"),
+                crate::scrollbar::interactive_vertical(&state.scroll, "orchestration-scrollbar"),
             ))
             .into_any_element()
     }
@@ -234,7 +239,7 @@ fn render_session(
             div()
                 .text_size(px(11.))
                 .text_color(theme.TEXT_FAINT)
-                .child("No todos"),
+                .child(tr("No todos", "暂无待办")),
         );
     }
     let mut todos = div().pt_1().flex().flex_col().gap(px(3.));
@@ -273,7 +278,11 @@ fn status_pill(index: usize, running: bool) -> impl IntoElement {
         .text_size(px(10.))
         .text_color(color)
         .child(div().size(px(6.)).rounded_full().bg(color))
-        .child(if running { "running" } else { "idle" })
+        .child(if running {
+            tr("running", "运行中")
+        } else {
+            tr("idle", "空闲")
+        })
 }
 
 fn render_todo(todo: &UnfinishedTodo) -> impl IntoElement {

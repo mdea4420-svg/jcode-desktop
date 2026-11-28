@@ -267,6 +267,8 @@ impl Workspace {
 pub(super) fn spawn_shortcut() -> &'static str {
     if cfg!(target_os = "macos") {
         "Cmd+Enter"
+    } else if cfg!(target_os = "windows") {
+        "Win+Enter"
     } else {
         "Super+Enter"
     }

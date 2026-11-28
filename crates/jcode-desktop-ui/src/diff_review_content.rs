@@ -76,7 +76,7 @@ impl ReviewContent {
                     .p_2()
                     .child(view.clone()),
             )
-            .child(crate::scrollbar::vertical(scroll, "rich-review-scrollbar"))
+            .child(crate::scrollbar::interactive_vertical(scroll, "rich-review-scrollbar"))
             .into_any_element()
     }
 }

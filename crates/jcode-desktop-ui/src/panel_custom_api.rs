@@ -208,6 +208,9 @@ impl Panel {
         if self.login_is_remote() {
             return;
         }
+        if self.is_accounts_panel() {
+            self.title = tr("AI Services", "AI 服务").into();
+        }
         let state = self.login.as_mut().unwrap();
         if !state.services_only {
             state.services_only = true;
@@ -239,6 +242,9 @@ impl Panel {
             state.custom_api_reload = None;
             state.focus_pending = true;
             state.scroll.set_offset(point(px(0.), px(0.)));
+            if self.is_accounts_panel() {
+                self.title = tr("accounts", "账户").into();
+            }
             cx.notify();
         } else {
             self.close_login_picker(cx);
@@ -255,6 +261,23 @@ impl Panel {
         existing: Option<CustomProviderSummary>,
         cx: &mut Context<Self>,
     ) {
+        self.open_custom_api_editor_with_source(existing, None, cx);
+    }
+
+    fn duplicate_custom_api_service(
+        &mut self,
+        source: CustomProviderSummary,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_custom_api_editor_with_source(None, Some(source), cx);
+    }
+
+    fn open_custom_api_editor_with_source(
+        &mut self,
+        existing: Option<CustomProviderSummary>,
+        cloned_from: Option<CustomProviderSummary>,
+        cx: &mut Context<Self>,
+    ) {
         self.open_custom_api_services(true, cx);
         if self.login_is_remote()
             || self
@@ -265,25 +288,48 @@ impl Panel {
             return;
         }
         let offline = self.custom_api_offline();
-        let profile = existing.as_ref().map_or("", |item| item.name.as_str());
-        let address = existing.as_ref().map_or("", |item| item.base_url.as_str());
-        let format = existing
-            .as_ref()
-            .map_or_else(CustomApiFormat::default, |item| item.format);
-        let catalog = if profile.is_empty() {
+        let template = existing.as_ref().or(cloned_from.as_ref());
+        let source_profile = template.map_or("", |item| item.name.as_str());
+        let initial_name = if let Some(item) = existing.as_ref() {
+            item.name.clone()
+        } else if let Some(source) = cloned_from.as_ref() {
+            let names: HashSet<&str> = self
+                .login
+                .as_ref()
+                .map(|state| {
+                    state
+                        .accounts
+                        .custom
+                        .iter()
+                        .map(|item| item.name.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let base = format!("{}-copy", source.name);
+            if !names.contains(base.as_str()) {
+                base
+            } else {
+                (2..)
+                    .map(|n| format!("{}-copy-{n}", source.name))
+                    .find(|candidate| !names.contains(candidate.as_str()))
+                    .unwrap_or(base)
+            }
+        } else {
+            String::new()
+        };
+        let address = template.map_or("", |item| item.base_url.as_str());
+        let format = template.map_or_else(CustomApiFormat::default, |item| item.format);
+        let catalog = if source_profile.is_empty() {
             Vec::new()
         } else if offline {
-            custom_providers::offline_catalog_models(profile)
+            custom_providers::offline_catalog_models(source_profile)
         } else {
-            custom_providers::cached_catalog(profile)
+            custom_providers::cached_catalog(source_profile)
         };
-        let default_model = existing
-            .as_ref()
+        let default_model = template
             .and_then(CustomProviderSummary::active_model)
             .map(str::to_owned);
-        let mut selected_models = existing
-            .as_ref()
-            .map_or_else(Vec::new, |item| item.models.clone());
+        let mut selected_models = template.map_or_else(Vec::new, |item| item.models.clone());
         if let Some(id) = default_model
             .as_ref()
             .filter(|id| !selected_models.contains(id))
@@ -295,12 +341,12 @@ impl Panel {
         } else {
             tr("Optional for local services", "本地服务可留空")
         };
-        let supports_reasoning_effort = if offline || profile.is_empty() {
+        let supports_reasoning_effort = if offline || source_profile.is_empty() {
             None
         } else {
             jcode_base::config::Config::load()
                 .providers
-                .get(profile)
+                .get(source_profile)
                 .and_then(|provider| provider.supports_reasoning_effort)
         };
         let catalog_scroll = ScrollHandle::new();
@@ -320,10 +366,17 @@ impl Panel {
             )
             .without_command_completion()
         });
+        let api_key = cx.new(|cx| LoginInput::new(cx, key_placeholder));
+        cx.observe(&api_key, |_, _, cx| cx.notify()).detach();
+        let model_settings = if cloned_from.is_some() {
+            ModelSettingsEditor::cloned_from(source_profile, offline, cx)
+        } else {
+            ModelSettingsEditor::new(source_profile, offline, cx)
+        };
         let editor = CustomApiEditor {
             base_url: plain_field("https://api.example.com/v1", address, cx),
-            api_key: cx.new(|cx| LoginInput::new(cx, key_placeholder)),
-            name: plain_field(tr("Auto-filled from URL", "根据地址自动填写"), profile, cx),
+            api_key,
+            name: plain_field(tr("Auto-filled from URL", "根据地址自动填写"), &initial_name, cx),
             format,
             selected_models,
             default_model,
@@ -345,15 +398,31 @@ impl Panel {
             catalog_scroll,
             settings_scroll,
             editor_scroll: ScrollHandle::new(),
-            model_settings: ModelSettingsEditor::new(profile, offline, cx),
-            set_default: existing.as_ref().is_none_or(|item| item.is_default),
-            model_catalog: existing.as_ref().is_some_and(|item| item.model_catalog),
+            model_settings,
+            set_default: if cloned_from.is_some() {
+                false
+            } else {
+                existing.as_ref().is_none_or(|item| item.is_default)
+            },
+            model_catalog: template.is_some_and(|item| item.model_catalog),
             supports_reasoning_effort,
             original: existing,
             advanced: false,
             request: None,
             saving: false,
-            notice: None,
+            notice: cloned_from.map(|source| {
+                (
+                    if is_zh() {
+                        format!("已从「{}」复制模型与参数，请确认名称与 API 密钥后保存。", source.name)
+                    } else {
+                        format!(
+                            "Copied models and settings from \"{}\". Review the name and API key before saving.",
+                            source.name
+                        )
+                    },
+                    false,
+                )
+            }),
             task: None,
         };
         let state = self.login.as_mut().unwrap();
@@ -761,6 +830,9 @@ impl Panel {
                             state.custom_api = None;
                             state.focus_pending = true;
                         }
+                        state
+                            .services_test_results
+                            .retain(|name, _| state.accounts.custom.iter().any(|item| &item.name == name));
                         panel.reload_custom_api_session(route, cx);
                     }
                     Err(error) => {
@@ -933,6 +1005,52 @@ impl Panel {
             .into_any_element()
     }
 
+    fn test_custom_api_service_row(
+        &mut self,
+        item: CustomProviderSummary,
+        cx: &mut Context<Self>,
+    ) {
+        let offline = self.custom_api_offline();
+        let Some(state) = self.login.as_mut() else {
+            return;
+        };
+        if state.services_busy || state.services_testing.contains(&item.name) {
+            return;
+        }
+        if offline {
+            state.services_test_results.insert(
+                item.name,
+                Err(tr(
+                    "Network requests are disabled in offline preview.",
+                    "离线预览无法发起网络请求。",
+                )
+                .into()),
+            );
+            cx.notify();
+            return;
+        }
+        let name = item.name.clone();
+        let task_name = name.clone();
+        let address = item.base_url.clone();
+        let format = item.format;
+        state.services_testing.insert(name.clone());
+        state.services_test_results.remove(&name);
+        let work = cx.background_executor().spawn(async move {
+            custom_providers::test_connection(&address, None, Some(&task_name), format)
+        });
+        state.live_tasks.push(cx.spawn(async move |panel, cx| {
+            let result = work.await;
+            let _ = panel.update(cx, |panel, cx| {
+                if let Some(state) = panel.login.as_mut() {
+                    state.services_testing.remove(&name);
+                    state.services_test_results.insert(name, result);
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
     fn render_custom_api_row(
         &self,
         item: &CustomProviderSummary,
@@ -951,7 +1069,12 @@ impl Panel {
                 if count == 1 { "model" } else { "models" }
             )
         };
+        let state = self.login.as_ref();
+        let testing = state.is_some_and(|s| s.services_testing.contains(name));
+        let test_result = state.and_then(|s| s.services_test_results.get(name));
         let edit = item.clone();
+        let duplicate = item.clone();
+        let test_item = item.clone();
         let row = item.clone();
         let use_name = name.clone();
         let toggle_name = name.clone();
@@ -983,6 +1106,31 @@ impl Panel {
                     })),
                 )
             })
+            .child(
+                action_pill(
+                    format!("custom-api-test-{name}"),
+                    if testing {
+                        tr("Testing…", "测速中…")
+                    } else {
+                        tr("Test", "测速")
+                    },
+                )
+                .when(testing, |el| el.opacity(0.6))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.test_custom_api_service_row(test_item.clone(), cx);
+                })),
+            )
+            .child(
+                action_pill(
+                    format!("custom-api-duplicate-{name}"),
+                    tr("Duplicate", "复制"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.duplicate_custom_api_service(duplicate.clone(), cx);
+                })),
+            )
             .child(
                 action_pill(format!("custom-api-edit-{name}"), tr("Edit", "编辑")).on_click(
                     cx.listener(move |this, _, _, cx| {
@@ -1068,9 +1216,41 @@ impl Panel {
                             })
                             .when(item.format != CustomApiFormat::OpenAiCompatible, |el| {
                                 el.child(badge(short_format(item.format), theme.TEXT_DIM))
+                            })
+                            .when_some(test_result, |el, result| match result {
+                                Ok(report) => el.child(badge(
+                                    if is_zh() {
+                                        format!(
+                                            "{} ms · {} 个模型",
+                                            report.latency_ms, report.model_count
+                                        )
+                                    } else {
+                                        format!(
+                                            "{} ms · {} models",
+                                            report.latency_ms, report.model_count
+                                        )
+                                    },
+                                    theme.OK,
+                                )),
+                                Err(_) => el.child(badge(
+                                    tr("Connection failed", "连接失败"),
+                                    theme.ERROR,
+                                )),
                             }),
                     )
-                    .child(secondary_text(subtitle).truncate()),
+                    .child(secondary_text(subtitle).truncate())
+                    .when_some(
+                        test_result.and_then(|res| res.as_ref().err()),
+                        |el, err| {
+                            el.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme.ERROR)
+                                    .truncate()
+                                    .child(err.clone()),
+                            )
+                        },
+                    ),
             )
             .child(actions)
             .on_click(
@@ -1149,11 +1329,30 @@ impl Panel {
         let wide = size.width >= px(680.);
         let pinned = wide && size.height >= px(560.);
         let key = editor.api_key.clone();
+        let key_reveal = editor.api_key.clone();
+        let key_has_text = !editor.api_key.read(cx).content_empty();
+        let key_revealed = editor.api_key.read(cx).is_revealed();
         let key_field = div()
             .flex()
             .items_center()
             .gap_1p5()
             .child(div().flex_1().min_w_0().child(editor.api_key.clone()))
+            .when(key_has_text, |el| {
+                el.child(toggle_pill(
+                    "custom-api-reveal-key",
+                    if key_revealed {
+                        tr("Hide", "隐藏")
+                    } else {
+                        tr("Show", "显示")
+                    },
+                    key_revealed,
+                    cx.listener(move |this, _, _, cx| {
+                        if this.custom_api_editor_mut().is_some() {
+                            key_reveal.update(cx, |input, cx| input.toggle_revealed(cx));
+                        }
+                    }),
+                ))
+            })
             .child(
                 action_pill("custom-api-paste-key", tr("Paste", "粘贴")).on_click(cx.listener(
                     move |this, _, window, cx| {
@@ -1586,7 +1785,17 @@ impl Panel {
                     .child(input_selector(
                         "custom-api-settings-filter",
                         editor.settings_filter.clone(),
-                    )),
+                    ))
+                    .when(!editor.selected_models.is_empty(), |el| {
+                        el.child(
+                            action_pill(
+                                "custom-api-clear-selected",
+                                tr("Clear all", "清空已选"),
+                            )
+                            .text_color(theme.TEXT_DIM)
+                            .on_click(edit_action(cx, |editor| editor.remove_models(|_| true))),
+                        )
+                    }),
             )
             .child(scroll_region(
                 "custom-api-selected-scroll",
@@ -1700,16 +1909,9 @@ pub(super) fn scroll_region(
         .flex_1()
         .min_h_0()
         .on_scroll_wheel(cx.listener(move |_, event: &gpui::ScrollWheelEvent, window, cx| {
-            let delta = event.delta.pixel_delta(window.line_height());
-            let dy = if delta.y == px(0.) { delta.x } else { delta.y };
-            let min = -scroll.max_offset().y.max(px(0.));
-            let current = scroll.offset().y.clamp(min, px(0.));
-            let next = (current + dy).clamp(min, px(0.));
-            if (next - current).abs() > px(0.01) {
-                scroll.set_offset(point(px(0.), next));
+            if crate::scrollbar::advance_scroll_wheel(&scroll, event, window) {
                 cx.stop_propagation();
                 cx.notify();
-                window.refresh();
             } else if !nested {
                 cx.stop_propagation();
             }
@@ -2302,5 +2504,69 @@ mod tests {
         let selected = vcx.debug_bounds("custom-api-selected-pane").unwrap();
         assert_eq!(catalog.origin.x, selected.origin.x);
         assert!(catalog.origin.y < selected.origin.y);
+    }
+
+    #[gpui::test]
+    fn duplicate_clear_selected_reveal_key_and_services_tab_title_work(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new_accounts(
+                "session-1",
+                Some(PreviewState::Empty),
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let window = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(window, gpui::size(px(1200.), px(960.)));
+        vcx.run_until_parked();
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.title.as_ref(), "accounts");
+        });
+        click(vcx, "custom-api-manage");
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.title.as_ref(), "AI Services");
+        });
+        click(vcx, "custom-api-duplicate-local-gateway");
+        panel.read_with(vcx, |panel, cx| {
+            let editor = panel.login.as_ref().unwrap().custom_api.as_ref().unwrap();
+            assert!(editor.original.is_none());
+            assert!(!editor.set_default);
+            assert_eq!(editor.name.read(cx).content.as_str(), "local-gateway-copy");
+            assert!(!editor.selected_models.is_empty());
+        });
+        assert!(vcx.debug_bounds("custom-api-reveal-key").is_none());
+        panel.update(vcx, |panel, cx| {
+            let key = panel
+                .login
+                .as_ref()
+                .unwrap()
+                .custom_api
+                .as_ref()
+                .unwrap()
+                .api_key
+                .clone();
+            key.update(cx, |input, cx| input.set_secret("sk-copy-test".into(), cx));
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("custom-api-reveal-key").is_some());
+        click(vcx, "custom-api-reveal-key");
+        panel.read_with(vcx, |panel, cx| {
+            let editor = panel.login.as_ref().unwrap().custom_api.as_ref().unwrap();
+            assert!(editor.api_key.read(cx).is_revealed());
+        });
+        click(vcx, "custom-api-clear-selected");
+        panel.read_with(vcx, |panel, _| {
+            let editor = panel.login.as_ref().unwrap().custom_api.as_ref().unwrap();
+            assert!(editor.selected_models.is_empty());
+            assert!(editor.default_model.is_none());
+        });
+        click(vcx, "custom-api-back");
+        click(vcx, "login-close");
+        panel.read_with(vcx, |panel, _| {
+            assert_eq!(panel.title.as_ref(), "accounts");
+        });
     }
 }

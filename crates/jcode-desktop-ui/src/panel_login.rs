@@ -64,6 +64,8 @@ pub(super) struct LoginState {
     services_loading: bool,
     services_busy: bool,
     services_task: Option<Task<()>>,
+    services_testing: std::collections::HashSet<String>,
+    services_test_results: HashMap<String, Result<crate::custom_providers::ConnectionTestReport, String>>,
     services_bounds: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
@@ -218,6 +220,8 @@ impl Panel {
             services_loading: false,
             services_busy: false,
             services_task: None,
+            services_testing: Default::default(),
+            services_test_results: HashMap::new(),
             services_bounds: Default::default(),
         });
         // Local credentials cannot authenticate an SSH-hosted session.

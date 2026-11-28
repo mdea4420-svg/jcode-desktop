@@ -443,6 +443,8 @@ impl Panel {
         };
 
         let search = state.search.clone();
+        let scroll = state.scroll.clone();
+        let scroll_wheel = scroll.clone();
         let panel_bounds = state.panel_bounds.clone();
         let notice = state.notice.clone();
         let error = state.error.clone();
@@ -513,6 +515,7 @@ impl Panel {
                                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation()
                                 })
+                                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                                 .capture_action(cx.listener(
                                     |this, _: &crate::input::Clear, window, cx| {
                                         if !this.extensions_cancel(cx) {
@@ -609,12 +612,29 @@ impl Panel {
                                     div()
                                         .id("extensions-body")
                                         .debug_selector(|| "extensions-body".into())
+                                        .relative()
                                         .flex_1()
                                         .min_h_0()
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .child(body),
+                                        .on_scroll_wheel(cx.listener(
+                                            move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                                if crate::scrollbar::advance_scroll_wheel(
+                                                    &scroll_wheel,
+                                                    event,
+                                                    window,
+                                                ) {
+                                                    cx.notify();
+                                                }
+                                                cx.stop_propagation();
+                                            },
+                                        ))
+                                        .child(body)
+                                        .child(crate::scrollbar::interactive_vertical(
+                                            &scroll,
+                                            "extensions-scrollbar",
+                                        )),
                                 )
                                 .child(
                                     div()

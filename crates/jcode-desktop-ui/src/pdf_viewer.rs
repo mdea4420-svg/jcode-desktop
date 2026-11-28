@@ -369,7 +369,7 @@ impl Render for PdfViewer {
                     .flex_1()
                     .min_h_0()
                     .child(contents)
-                    .child(crate::scrollbar::vertical(&self.scroll, "pdf-scrollbar")),
+                    .child(crate::scrollbar::interactive_vertical(&self.scroll, "pdf-scrollbar")),
             )
     }
 }

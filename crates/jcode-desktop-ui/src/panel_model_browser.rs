@@ -40,6 +40,7 @@ pub(super) struct ModelBrowserState {
     pub filter: ModelFilter,
     pub selection: usize,
     pub scroll: ScrollHandle,
+    pub filter_scroll: ScrollHandle,
     /// Focus the search field on the first frame after opening.
     pub focus_pending: bool,
     /// Last measured panel bounds (canvas prepaint); decides the narrow
@@ -244,6 +245,7 @@ impl Panel {
             filter: ModelFilter::All,
             selection: 0,
             scroll: ScrollHandle::new(),
+            filter_scroll: ScrollHandle::new(),
             focus_pending: true,
             panel_bounds: Default::default(),
             manage: Manage::Off,
@@ -611,6 +613,7 @@ impl Panel {
         let selection = state.selection.min(row_count.saturating_sub(1));
         let search = state.search.clone();
         let scroll = state.scroll.clone();
+        let filter_scroll = state.filter_scroll.clone();
         let active_filter = state.filter.clone();
         let favorites_empty = rows.is_empty() && active_filter == ModelFilter::Favorites;
         let narrow = state
@@ -1046,10 +1049,11 @@ impl Panel {
         let base_list = div()
             .id("model-browser-list")
             .track_scroll(&scroll)
-            .flex_1()
+            .size_full()
             .min_h_0()
             .min_w_0()
-            .overflow_y_scroll()
+            .overflow_hidden()
+            .pr(px(crate::scrollbar::GUTTER))
             .flex()
             .flex_col()
             .gap_1();
@@ -1148,6 +1152,24 @@ impl Panel {
                 })
         };
 
+        let list_wheel = scroll.clone();
+        let body_scroll = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .on_scroll_wheel(cx.listener(move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                if crate::scrollbar::advance_scroll_wheel(&list_wheel, event, window) {
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .child(body_list)
+            .child(crate::scrollbar::interactive_vertical(
+                &scroll,
+                "model-browser-scrollbar",
+            ));
+
         let body = if narrow {
             div()
                 .flex_1()
@@ -1165,9 +1187,10 @@ impl Panel {
                         .overflow_x_scroll()
                         .children(filter_pills),
                 )
-                .child(body_list)
+                .child(body_scroll)
                 .into_any_element()
         } else {
+            let filter_wheel = filter_scroll.clone();
             div()
                 .flex_1()
                 .min_h_0()
@@ -1175,17 +1198,42 @@ impl Panel {
                 .gap_3()
                 .child(
                     div()
-                        .id("model-browser-filter-col")
-                        .debug_selector(|| "model-browser-filter-col".into())
+                        .relative()
                         .w(px(200.))
+                        .h_full()
+                        .min_h_0()
                         .flex_none()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .overflow_y_scroll()
-                        .children(filter_pills),
+                        .on_scroll_wheel(cx.listener(
+                            move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                if crate::scrollbar::advance_scroll_wheel(
+                                    &filter_wheel,
+                                    event,
+                                    window,
+                                ) {
+                                    cx.notify();
+                                }
+                                cx.stop_propagation();
+                            },
+                        ))
+                        .child(
+                            div()
+                                .id("model-browser-filter-col")
+                                .debug_selector(|| "model-browser-filter-col".into())
+                                .size_full()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .overflow_hidden()
+                                .track_scroll(&filter_scroll)
+                                .pr(px(crate::scrollbar::GUTTER))
+                                .children(filter_pills),
+                        )
+                        .child(crate::scrollbar::interactive_vertical(
+                            &filter_scroll,
+                            "model-browser-filter-scrollbar",
+                        )),
                 )
-                .child(body_list)
+                .child(body_scroll)
                 .into_any_element()
         };
 
@@ -1251,6 +1299,7 @@ impl Panel {
                                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation()
                                 })
+                                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                                 .capture_action(cx.listener(
                                     |this, _: &crate::input::Clear, window, cx| {
                                         if let Some(focus) = this.dismiss_model_browser(cx) {

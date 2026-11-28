@@ -310,7 +310,7 @@ impl Panel {
                                 cx,
                             )),
                     )
-                    .child(crate::scrollbar::vertical(
+                    .child(crate::scrollbar::interactive_vertical(
                         &document.scroll,
                         "side-document-scrollbar",
                     ))

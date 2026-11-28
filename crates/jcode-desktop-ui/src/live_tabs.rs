@@ -446,11 +446,17 @@ impl Workspace {
                 })
                 .tooltip(|_, cx| {
                     cx.new(|_| {
-                        TabTooltip(if cfg!(target_os = "macos") {
-                            "Close tab (⌘Q)".into()
+                        let text = if cfg!(target_os = "macos") {
+                            crate::locale::tr("Close tab (⌘Q)", "关闭标签页（⌘Q）").to_string()
                         } else {
-                            "Close tab (Super+Q)".into()
-                        })
+                            let key = crate::locale::super_key();
+                            if crate::locale::is_zh() {
+                                format!("关闭标签页（{key}+Q）")
+                            } else {
+                                format!("Close tab ({key}+Q)")
+                            }
+                        };
+                        TabTooltip(text.into())
                     })
                     .into()
                 })
@@ -469,12 +475,16 @@ impl Workspace {
         let target = self.next_workspace_row();
         let accent = Theme::global().workspace_accent(target);
         let shortcut = if cfg!(target_os = "macos") {
-            "⌘J / ⌘K"
+            "⌘J / ⌘K".to_string()
         } else {
-            "Super+J / Super+K"
+            let key = crate::locale::super_key();
+            format!("{key}+J / {key}+K")
         };
-        let tooltip: gpui::SharedString =
-            format!("Go to workspace {} ({shortcut})", target + 1).into();
+        let tooltip: gpui::SharedString = if crate::locale::is_zh() {
+            format!("前往工作区 {}（{shortcut}）", target + 1).into()
+        } else {
+            format!("Go to workspace {} ({shortcut})", target + 1).into()
+        };
         div()
             .debug_selector(|| "tab-next-workspace-slot".into())
             .absolute()
@@ -998,11 +1008,17 @@ impl Workspace {
                     })
                     .tooltip(|_, cx| {
                         cx.new(|_| {
-                            TabTooltip(if cfg!(target_os = "macos") {
-                                crate::locale::tr("New session (⌘N)", "新建会话（⌘N）").into()
+                            let text = if cfg!(target_os = "macos") {
+                                crate::locale::tr("New session (⌘N)", "新建会话（⌘N）").to_string()
                             } else {
-                                crate::locale::tr("New session (Super+N)", "新建会话（Super+N）").into()
-                            })
+                                let key = crate::locale::super_key();
+                                if crate::locale::is_zh() {
+                                    format!("新建会话（{key}+N）")
+                                } else {
+                                    format!("New session ({key}+N)")
+                                }
+                            };
+                            TabTooltip(text.into())
                         })
                         .into()
                     })

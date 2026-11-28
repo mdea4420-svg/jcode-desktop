@@ -2,7 +2,7 @@
 
 use gpui::{
     AnyElement, App, IntoElement, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, RenderOnce,
-    ScrollHandle, Window, canvas, div, point, prelude::*, px,
+    ScrollHandle, ScrollWheelEvent, Window, canvas, div, point, prelude::*, px,
 };
 use std::{cell::Cell, rc::Rc};
 
@@ -281,6 +281,24 @@ pub fn interactive_vertical(handle: &ScrollHandle, selector: &'static str) -> An
         selector,
     }
     .into_any_element()
+}
+
+pub fn advance_scroll_wheel(
+    handle: &ScrollHandle,
+    event: &ScrollWheelEvent,
+    window: &mut Window,
+) -> bool {
+    let delta = event.delta.pixel_delta(window.line_height());
+    let dy = if delta.y == px(0.) { delta.x } else { delta.y };
+    let min = -handle.max_offset().y.max(px(0.));
+    let current = handle.offset().y.clamp(min, px(0.));
+    let next = (current + dy).clamp(min, px(0.));
+    let moved = (next - current).abs() > px(0.01);
+    if moved {
+        handle.set_offset(point(px(0.), next));
+        window.refresh();
+    }
+    moved
 }
 
 fn handle_geometry(handle: &ScrollHandle) -> Option<ListGeometry> {

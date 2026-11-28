@@ -47,6 +47,7 @@ type Request = (RuntimeCommand, Vec<String>);
 #[derive(Default)]
 pub(super) struct State {
     pub(super) focus: Option<gpui::FocusHandle>,
+    scroll: ScrollHandle,
     pill_bounds: PillBounds,
     enabled: Option<bool>,
     scope: Scope,
@@ -319,39 +320,64 @@ impl Panel {
                     .when(live, |button| button.on_click(cx.listener(|this, _, _, cx| {
                         this.handle_special_command("/swarm-prompt", cx);
                     })))));
+        let scroll = self.swarm.scroll.clone();
+        let scroll_wheel = scroll.clone();
         Some(div()
             .id("swarm-picker")
             .debug_selector(|| "swarm-picker".into())
+            .relative()
             .track_focus(focus)
             .max_h(super::composer::composer_picker_max_height(window))
-            .overflow_y_scroll()
-            .flex().flex_col().gap_1().mb_2().p_2()
+            .overflow_hidden()
+            .flex().flex_col().mb_2().p_2()
             .rounded_xl().bg(theme.HEADER_BG).text_color(theme.TEXT).text_size(px(12.))
-            .child(div().flex().flex_wrap().items_center().gap_1()
-                .child(tr("Swarm tool permission", "协作工具权限"))
-                .children(feature.map(|(id, label, enabled)| {
-                    let available = live && !self.swarm.feature_pending;
-                    swarm_button(id, label, self.swarm.enabled == Some(enabled), available)
-                        .when(available, |button| button.on_click(cx.listener(move |this, _, _, cx| {
-                            let action = if enabled { "on" } else { "off" };
-                            this.request_swarm(RuntimeCommand::Swarm, vec![action.into()], cx);
+            .on_scroll_wheel(cx.listener(move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                if crate::scrollbar::advance_scroll_wheel(&scroll_wheel, event, window) {
+                    cx.notify();
+                }
+                cx.stop_propagation();
+            }))
+            .child(
+                div()
+                    .id("swarm-picker-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .track_scroll(&scroll)
+                    .pr(px(crate::scrollbar::GUTTER))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(div().flex().flex_wrap().items_center().gap_1()
+                        .child(tr("Swarm tool permission", "协作工具权限"))
+                        .children(feature.map(|(id, label, enabled)| {
+                            let available = live && !self.swarm.feature_pending;
+                            swarm_button(id, label, self.swarm.enabled == Some(enabled), available)
+                                .when(available, |button| button.on_click(cx.listener(move |this, _, _, cx| {
+                                    let action = if enabled { "on" } else { "off" };
+                                    this.request_swarm(RuntimeCommand::Swarm, vec![action.into()], cx);
+                                })))
                         })))
-                })))
-            .child(div().flex().flex_wrap().items_center().gap_1()
-                .child(tr("Orchestration mode", "编排模式"))
-                .children(modes.map(|(id, label, mode)| {
-                    swarm_button(id, label, current == mode, live)
-                        .when(live, |button| button.on_click(cx.listener(move |this, _, _, cx| {
-                            let current = this.reasoning_effort.as_deref().filter(|level| is_swarm_effort(level));
-                            if current != mode {
-                                let effort = mode.or(this.last_standard_effort.as_deref()).unwrap_or("high").to_owned();
-                                this.send_effort(&effort, cx);
-                            }
+                    .child(div().flex().flex_wrap().items_center().gap_1()
+                        .child(tr("Orchestration mode", "编排模式"))
+                        .children(modes.map(|(id, label, mode)| {
+                            swarm_button(id, label, current == mode, live)
+                                .when(live, |button| button.on_click(cx.listener(move |this, _, _, cx| {
+                                    let current = this.reasoning_effort.as_deref().filter(|level| is_swarm_effort(level));
+                                    if current != mode {
+                                        let effort = mode.or(this.last_standard_effort.as_deref()).unwrap_or("high").to_owned();
+                                        this.send_effort(&effort, cx);
+                                    }
+                                })))
                         })))
-                })))
-            .child(header)
-            .children(AgentRole::ALL.map(|role| self.render_agent_role(role, live, cx)))
-            .when_some(self.swarm.notice.clone(), |menu, notice| menu.child(div().text_color(theme.WARN).child(notice)))
+                    .child(header)
+                    .children(AgentRole::ALL.map(|role| self.render_agent_role(role, live, cx)))
+                    .when_some(self.swarm.notice.clone(), |menu, notice| menu.child(div().text_color(theme.WARN).child(notice))),
+            )
+            .child(crate::scrollbar::interactive_vertical(
+                &scroll,
+                "swarm-picker-scrollbar",
+            ))
             // Keep the panel's MouseDown handler from moving focus back to the composer.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {

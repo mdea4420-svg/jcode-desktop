@@ -4420,12 +4420,23 @@ impl Workspace {
                     div()
                         .debug_selector(|| "empty-strip-hint".into())
                         .text_color(Theme::global().TEXT)
-                        .child(format!("Workspace {} is empty", row + 1)),
+                        .child(if crate::locale::is_zh() {
+                            format!("工作区 {} 为空", row + 1)
+                        } else {
+                            format!("Workspace {} is empty", row + 1)
+                        }),
                 )
                 .child(
                     div()
                         .debug_selector(|| "empty-strip-shortcut".into())
-                        .child("Press Super+Enter to start a new session here"),
+                        .child({
+                            let key = crate::locale::super_key();
+                            if crate::locale::is_zh() {
+                                format!("按 {key}+Enter 在此新建会话")
+                            } else {
+                                format!("Press {key}+Enter to start a new session here")
+                            }
+                        }),
                 )
                 .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
@@ -8233,12 +8244,23 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_size(px(18.0)).child("Your workspace fluency"))
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .child(crate::locale::tr("Your workspace fluency", "工作区快捷键熟练度")),
+                    )
                     .child(
                         div()
                             .text_color(Theme::global().TEXT_DIM)
                             .text_size(px(11.0))
-                            .child("Super+/ or F1 to close"),
+                            .child({
+                                let key = crate::locale::super_key();
+                                if crate::locale::is_zh() {
+                                    format!("{key}+/ 或 F1 关闭")
+                                } else {
+                                    format!("{key}+/ or F1 to close")
+                                }
+                            }),
                     ),
             )
             .child(
@@ -8248,9 +8270,21 @@ impl Workspace {
                     .gap_4()
                     .text_size(px(11.0))
                     .text_color(Theme::global().TEXT_DIM)
-                    .child(format!("{}% learned", (overall * 100.0).round() as u32))
-                    .child(format!("{} keystrokes saved", self.coach.effort_saved))
-                    .child(format!("{} spent the long way", self.coach.effort_wasted)),
+                    .child(if crate::locale::is_zh() {
+                        format!("已掌握 {}%", (overall * 100.0).round() as u32)
+                    } else {
+                        format!("{}% learned", (overall * 100.0).round() as u32)
+                    })
+                    .child(if crate::locale::is_zh() {
+                        format!("已节省 {} 次按键", self.coach.effort_saved)
+                    } else {
+                        format!("{} keystrokes saved", self.coach.effort_saved)
+                    })
+                    .child(if crate::locale::is_zh() {
+                        format!("可优化操作 {} 次", self.coach.effort_wasted)
+                    } else {
+                        format!("{} spent the long way", self.coach.effort_wasted)
+                    }),
             );
 
         if let Some(next) = next {
@@ -8268,7 +8302,7 @@ impl Workspace {
                         div()
                             .text_size(px(11.0))
                             .text_color(Theme::global().TEXT_DIM)
-                            .child("learn next"),
+                            .child(crate::locale::tr("learn next", "推荐学习")),
                     )
                     .child(
                         div()
@@ -8294,7 +8328,10 @@ impl Workspace {
                 .bg(Theme::global().HEADER_BG)
                 .text_size(px(11.0))
                 .text_color(Theme::global().TEXT_DIM)
-                .child("F2 rename session · Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear"),
+                .child(crate::locale::tr(
+                    "F2 rename session · Composer: ↑/↓ history · Ctrl+K/J prompts · Ctrl+W word delete · Alt+B/F word move · Ctrl+U delete to start · Ctrl/Cmd+Z undo · Esc clear",
+                    "F2 重命名会话 · 输入框：↑/↓ 历史记录 · Ctrl+K/J 提示词切换 · Ctrl+W 按词删除 · Alt+B/F 按词移动 · Ctrl+U 删至行首 · Ctrl+Z 撤销 · Esc 清空",
+                )),
         );
 
         for (area, rows) in self.coach.report(now) {

@@ -76,6 +76,7 @@ fn byte_offset(text: &str, offset: usize) -> usize {
 pub struct LoginInput {
     pub focus_handle: FocusHandle,
     secret: Secret,
+    revealed: bool,
     placeholder: SharedString,
     last_layout: Option<WrappedLine>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -85,6 +86,7 @@ impl LoginInput {
         Self {
             focus_handle: cx.focus_handle(),
             secret: Secret::default(),
+            revealed: false,
             placeholder: placeholder.into().into(),
             last_layout: None,
             last_bounds: None,
@@ -93,8 +95,17 @@ impl LoginInput {
     pub fn content_empty(&self) -> bool {
         self.secret.text.is_empty()
     }
+    pub fn is_revealed(&self) -> bool {
+        self.revealed
+    }
+    pub fn toggle_revealed(&mut self, cx: &mut Context<Self>) {
+        self.revealed = !self.revealed;
+        self.last_layout = None;
+        cx.notify();
+    }
     pub fn take(&mut self, cx: &mut Context<Self>) -> String {
         let text = self.secret.take();
+        self.revealed = false;
         self.last_layout = None;
         cx.notify();
         text
@@ -107,6 +118,7 @@ impl LoginInput {
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.secret.clear();
+        self.revealed = false;
         self.last_layout = None;
         cx.notify();
     }
@@ -281,14 +293,16 @@ impl EntityInputHandler for LoginInput {
     ) -> Option<Bounds<Pixels>> {
         let line = self.last_layout.as_ref()?;
         let range = self.secret.range(range);
-        let start = line.position_for_index(
-            self.secret.utf16(range.start) * "•".len(),
-            window.line_height(),
-        )?;
-        let end = line.position_for_index(
-            self.secret.utf16(range.end) * "•".len(),
-            window.line_height(),
-        )?;
+        let (start_idx, end_idx) = if self.revealed {
+            (range.start, range.end)
+        } else {
+            (
+                self.secret.utf16(range.start) * "•".len(),
+                self.secret.utf16(range.end) * "•".len(),
+            )
+        };
+        let start = line.position_for_index(start_idx, window.line_height())?;
+        let end = line.position_for_index(end_idx, window.line_height())?;
         Some(Bounds::from_corners(
             bounds.origin + start,
             point(
@@ -309,7 +323,13 @@ impl EntityInputHandler for LoginInput {
             .as_ref()?
             .closest_index_for_position(local, window.line_height())
             .unwrap_or_else(|i| i);
-        Some((index / "•".len()).min(self.secret.text.encode_utf16().count()))
+        if self.revealed {
+            let clamped = index.min(self.secret.text.len());
+            let boundary = self.secret.text.floor_char_boundary(clamped);
+            Some(self.secret.utf16(boundary))
+        } else {
+            Some((index / "•".len()).min(self.secret.text.encode_utf16().count()))
+        }
     }
 }
 
@@ -400,10 +420,21 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content: SharedString = input.secret.masked().into();
-        let selected_range = input.secret.utf16(input.secret.selection.start) * "•".len()
-            ..input.secret.utf16(input.secret.selection.end) * "•".len();
-        let cursor = input.secret.utf16(input.secret.cursor()) * "•".len();
+        let (content, selected_range, cursor): (SharedString, Range<usize>, usize) =
+            if input.revealed {
+                (
+                    input.secret.text.clone().into(),
+                    input.secret.selection.clone(),
+                    input.secret.cursor(),
+                )
+            } else {
+                (
+                    input.secret.masked().into(),
+                    input.secret.utf16(input.secret.selection.start) * "•".len()
+                        ..input.secret.utf16(input.secret.selection.end) * "•".len(),
+                    input.secret.utf16(input.secret.cursor()) * "•".len(),
+                )
+            };
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
@@ -505,18 +536,26 @@ impl Element for TextElement {
 }
 
 impl Render for LoginInput {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("LoginInput");
+        let focused = self.focus_handle.is_focused(window);
         div()
             .id("login-input")
             .key_context("LoginInput")
             .track_focus(&self.focus_handle)
             .w_full()
             .px_3()
-            .py_2()
+            .py_1p5()
+            .rounded_full()
+            .border_1()
+            .border_color(to_hsla(if focused {
+                Theme::global().PANEL_BORDER_FOCUS
+            } else {
+                Theme::global().INPUT_BORDER
+            }))
             .overflow_hidden()
             .cursor_text()
-            .bg(to_hsla(Theme::global().BG))
+            .bg(to_hsla(Theme::global().INPUT_BG))
             .text_color(to_hsla(Theme::global().TEXT))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(
@@ -648,5 +687,42 @@ mod tests {
         assert_eq!(secret.range(2..999), 1..7);
         secret.replace(secret.range(1..3), "x");
         assert_eq!(secret.text, "axé");
+    }
+
+    #[gpui::test]
+    fn reveal_toggle_displays_plaintext_and_resets_on_take_or_clear(cx: &mut gpui::TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| LoginInput::new(cx, "API key"))
+            })
+            .unwrap()
+        });
+        window
+            .update(cx, |input, window, cx| window.focus(&input.focus_handle, cx))
+            .unwrap();
+        cx.simulate_input(*window, "sk-live-42");
+        cx.run_until_parked();
+        window
+            .update(cx, |input, _, cx| {
+                assert!(!input.is_revealed());
+                assert_eq!(
+                    input.last_layout.as_ref().unwrap().text.as_ref(),
+                    "•".repeat(10)
+                );
+                input.toggle_revealed(cx);
+                assert!(input.is_revealed());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |input, _, cx| {
+                assert_eq!(
+                    input.last_layout.as_ref().unwrap().text.as_ref(),
+                    "sk-live-42"
+                );
+                assert_eq!(input.take(cx), "sk-live-42");
+                assert!(!input.is_revealed());
+            })
+            .unwrap();
     }
 }

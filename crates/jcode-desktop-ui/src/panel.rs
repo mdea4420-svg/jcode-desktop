@@ -1692,7 +1692,7 @@ impl Panel {
                     .flex()
                     .flex_col()
                     .child(list)
-                    .child(crate::scrollbar::vertical(
+                    .child(crate::scrollbar::interactive_vertical(
                         &state.scroll,
                         "todoist-scrollbar",
                     )),
@@ -5729,7 +5729,7 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
         (Some(provider), Some(method)) => format!("{provider} · {method}"),
         (Some(provider), None) => provider,
         (None, Some(method)) => method,
-        (None, None) => "Accounts".into(),
+        (None, None) => crate::locale::tr("Accounts", "账户").into(),
     }
 }
 
@@ -5783,10 +5783,19 @@ impl Panel {
 pub(crate) use crate::accounts::pretty_provider_name;
 
 fn pretty_auth_method(method: &str) -> String {
-    match method.to_ascii_lowercase().as_str() {
+    let lower = method.to_ascii_lowercase();
+    match lower.as_str() {
         "oauth" => "OAuth".into(),
-        "api key" | "api-key" | "api_key" => "API key".into(),
-        other => other.to_string(),
+        "api key" | "api-key" | "api_key" => crate::locale::tr("API key", "API 密钥").into(),
+        _ if lower == "openai-compatible"
+            || lower.starts_with("openai-compatible:")
+            || lower == "anthropic-compatible"
+            || lower.starts_with("anthropic-compatible:")
+            || lower.starts_with("openrouter:") =>
+        {
+            crate::locale::tr("API key", "API 密钥").into()
+        }
+        _ => method.to_string(),
     }
 }
 
@@ -7918,6 +7927,23 @@ mod tests {
             account_method_label(Some("My Local Router"), Some("custom-acp")),
             "My Local Router · custom-acp"
         );
+        assert_eq!(
+            account_method_label(
+                Some("fixture-gateway"),
+                Some("openai-compatible:fixture-gateway")
+            ),
+            "fixture-gateway · API key"
+        );
+        crate::locale::with_zh(|| {
+            assert_eq!(
+                account_method_label(
+                    Some("fixture-gateway"),
+                    Some("openai-compatible:fixture-gateway")
+                ),
+                "fixture-gateway · API 密钥"
+            );
+            assert_eq!(account_method_label(None, None), "账户");
+        });
         assert_eq!(account_method_label(None, Some("oauth")), "OAuth");
         assert_eq!(account_method_label(Some("openai"), None), "OpenAI");
         assert_eq!(account_method_label(None, None), "Accounts");

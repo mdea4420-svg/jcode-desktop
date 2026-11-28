@@ -122,7 +122,8 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_1()
-            .overflow_y_scroll()
+            .overflow_hidden()
+            .pr(px(crate::scrollbar::GUTTER))
             .track_scroll(&state.scroll)
             .child(toolbar)
             .when(matches.is_empty(), |el| {

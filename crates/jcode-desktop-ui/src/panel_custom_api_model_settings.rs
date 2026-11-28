@@ -31,6 +31,39 @@ impl ModelSettingsEditor {
         }
     }
 
+    pub(super) fn cloned_from(profile: &str, offline: bool, cx: &mut Context<Panel>) -> Self {
+        let source = if profile.is_empty() {
+            HashMap::new()
+        } else if offline {
+            custom_providers::offline_model_settings(profile)
+        } else {
+            custom_providers::provider_model_settings(profile)
+        };
+        let forms = source
+            .into_iter()
+            .map(|(id, settings)| {
+                (
+                    id,
+                    ModelSettingsForm {
+                        alias: plain_field(
+                            tr("e.g. fast", "例如 fast"),
+                            settings.alias.as_deref().unwrap_or(""),
+                            cx,
+                        ),
+                        context: token_input(settings.context_window, cx),
+                        output: token_input(settings.max_output_tokens, cx),
+                        settings,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            target: None,
+            original: HashMap::new(),
+            forms,
+        }
+    }
+
     pub(super) fn toggle(&mut self, id: &str, cx: &mut Context<Panel>) {
         if self.target.as_deref() == Some(id) {
             self.target = None;

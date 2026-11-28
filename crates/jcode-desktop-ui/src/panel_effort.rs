@@ -40,6 +40,7 @@ pub(super) struct PendingEffort {
 
 pub(super) struct EffortPicker {
     focus: gpui::FocusHandle,
+    scroll: ScrollHandle,
     selected: Option<&'static str>,
     pill_bounds: PillBounds,
 }
@@ -74,6 +75,7 @@ impl Panel {
         focus.focus(window, cx);
         self.effort_picker = Some(EffortPicker {
             focus,
+            scroll: ScrollHandle::new(),
             selected,
             pill_bounds: Default::default(),
         });
@@ -134,26 +136,50 @@ impl Panel {
                     cx.stop_propagation();
                 }))
         });
+        let scroll = picker.scroll.clone();
+        let scroll_wheel = scroll.clone();
         Some(
             div()
                 .id("effort-picker")
                 .debug_selector(|| "effort-picker".into())
+                .relative()
                 .track_focus(&picker.focus)
                 .max_h(super::composer::composer_picker_max_height(window))
-                .overflow_y_scroll()
+                .overflow_hidden()
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(cx.listener(move |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                    if crate::scrollbar::advance_scroll_wheel(&scroll_wheel, event, window) {
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                }))
                 .flex()
                 .flex_col()
-                .gap_1()
                 .mb_2()
                 .p_2()
                 .rounded_xl()
                 .bg(theme.HEADER_BG)
                 .text_color(theme.TEXT)
                 .text_size(px(12.))
-                .child(tr("Reasoning effort", "推理强度"))
-                .children(rows)
-                .when(levels.is_empty(), |menu| menu.child(self.effort_unavailable_message()))
+                .child(
+                    div()
+                        .id("effort-picker-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .track_scroll(&scroll)
+                        .pr(px(crate::scrollbar::GUTTER))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(tr("Reasoning effort", "推理强度"))
+                        .children(rows)
+                        .when(levels.is_empty(), |menu| menu.child(self.effort_unavailable_message())),
+                )
+                .child(crate::scrollbar::interactive_vertical(
+                    &scroll,
+                    "effort-picker-scrollbar",
+                ))
                 .on_mouse_down_out(cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
                     // Let the pill's MouseUp toggle close an already-open picker.
                     if this.effort_pill_label().is_some()
