@@ -66,8 +66,8 @@ jobs:
         run: |
           cargo test --release --target $env:TARGET -p jcode-plugins
           if ($LASTEXITCODE) { throw 'jcode-plugins tests failed' }
-          cargo check --tests --target $env:TARGET -p jcode-desktop-ui --message-format short
-          if ($LASTEXITCODE) { throw 'jcode-desktop-ui --tests typecheck failed' }
+          cargo test --release --target $env:TARGET -p jcode-desktop-ui-core --lib
+          if ($LASTEXITCODE) { throw 'jcode-desktop-ui-core tests failed' }
           cargo build --release --target $env:TARGET --bin jcode-desktop
           if ($LASTEXITCODE) { throw 'Desktop build failed' }
           New-Item dist -ItemType Directory -Force | Out-Null
