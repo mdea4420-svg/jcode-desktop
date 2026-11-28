@@ -3291,7 +3291,7 @@ impl Panel {
     /// The transcript remains the source of truth, so todo progress keeps
     /// working across live updates without duplicating state in `Workspace`.
     pub(crate) fn minimap_state(&self) -> MinimapSessionState {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
             || matches!(self.items.last(), Some(Item::Error(_)))
@@ -3380,8 +3380,16 @@ impl Panel {
         }
     }
 
+    fn lowercase_status(&self) -> std::borrow::Cow<'_, str> {
+        if self.status.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(self.status.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(self.status.as_str())
+        }
+    }
+
     pub(crate) fn activity_active(&self) -> bool {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error") || status.contains("crash") || status.starts_with("lost:") {
             return false;
         }
@@ -3392,7 +3400,7 @@ impl Panel {
             || self.connection_phase.trim() == "streaming"
             || activity_state::is_request_phase(&self.connection_phase)
             || matches!(
-                status.as_str(),
+                status.as_ref(),
                 "generating"
                     | "running"
                     | "busy"
@@ -6744,6 +6752,31 @@ mod tests {
             panel.apply(&status("idle"), cx);
         });
         assert_eq!(mode(vcx), None);
+    }
+
+    #[gpui::test]
+    fn lowercase_activity_status_borrows_normal_snapshots(cx: &mut gpui::TestAppContext) {
+        let panel = cx.update(|cx| {
+            cx.new(|cx| Panel::new("status-normalization".into(), None, None, crate::harness::spawn_inert(), cx))
+        });
+        panel.update(cx, |panel, _| {
+            panel.connection_phase.clear();
+            for (status, active, borrowed) in [
+                ("idle", false, true),
+                ("streaming", true, true),
+                ("RUNNING_TOOLS", true, false),
+                ("Error: disconnected", false, false),
+                ("CRASHED", false, false),
+                ("Lost: session", false, false),
+                ("café idle", false, true),
+            ] {
+                panel.status = status.into();
+                let normalized = panel.lowercase_status();
+                assert_eq!(normalized, status.to_ascii_lowercase());
+                assert_eq!(matches!(normalized, std::borrow::Cow::Borrowed(_)), borrowed);
+                assert_eq!(panel.activity_active(), active, "{status}");
+            }
+        });
     }
 
     #[gpui::test]

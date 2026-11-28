@@ -1,5 +1,6 @@
 //! A section menu for the top-left navigation, not the live sessions.
 use super::*;
+use crate::locale::{is_zh, tr};
 
 const COUNT: usize = 11;
 const STEP: f32 = 48.0;
@@ -24,6 +25,31 @@ const TABS: [(&str, &str, Option<SidebarView>); COUNT] = [
     ("open-gmail", "email", None),
     ("sidebar-new-session", "+", None),
 ];
+
+fn roller_display_label(label: &str) -> &'static str {
+    match label {
+        "chat" => tr("chat", "会话"),
+        "learn" => tr("learn", "指南"),
+        "files" => tr("files", "文件"),
+        "accounts" => tr("accounts", "账户"),
+        "theme" => tr("theme", "主题"),
+        "settings" => tr("settings", "设置"),
+        "orchestration" => tr("orchestration", "多代理编排"),
+        "todos" => tr("todos", "待办"),
+        "todoist" => tr("todoist", "Todoist"),
+        "email" => tr("email", "邮件"),
+        "+" => tr("new chat", "新建会话"),
+        _ => unreachable!("unknown sidebar menu label: {label}"),
+    }
+}
+
+fn roller_tooltip(label: &str) -> String {
+    if is_zh() {
+        format!("侧栏菜单 · {}。点击展开，或滚动滚轮切换分区。", roller_display_label(label))
+    } else {
+        format!("Sidebar menu · {label}. Click to open or scroll to switch sections.")
+    }
+}
 
 fn distance(index: usize, center: f32) -> f32 {
     (index as f32 - center + COUNT as f32 / 2.0).rem_euclid(COUNT as f32) - COUNT as f32 / 2.0
@@ -185,12 +211,18 @@ impl Workspace {
                     .text_size(px(12.0))
                     .text_color(Theme::global().TEXT)
                     .cursor_pointer()
+                    // The Windows caption drag region lies behind the header.
+                    // The pop-out bridge no longer occludes it, so the trigger
+                    // must, or Windows treats the menu button as title bar.
+                    // Occluding also hides the header's own listeners, so the
+                    // trigger repeats them.
+                    .occlude()
+                    .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
+                    .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
                     .hover(|el| el.bg(Theme::global().PANEL_BG))
                     .tooltip(move |_, cx| {
                         cx.new(|_| {
-                            remotes::HeaderTooltip(format!(
-                                "Sidebar menu · {label}. Click to open or scroll to switch sections."
-                            ).into())
+                            remotes::HeaderTooltip(roller_tooltip(label).into())
                         })
                         .into()
                     })
@@ -256,7 +288,7 @@ impl Workspace {
                             el.bg(Theme::global().HEADER_BG)
                                 .text_color(Theme::global().TEXT)
                         })
-                        .child(label)
+                        .child(roller_display_label(label))
                         .on_mouse_down(
                             gpui::MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
@@ -286,7 +318,7 @@ impl Workspace {
                         el.bg(Theme::global().HEADER_BG)
                             .text_color(Theme::global().TEXT)
                     })
-                    .child(if label == "+" { "new chat" } else { label })
+                    .child(roller_display_label(label))
                     // Fire on click, not mouse-down: the pop-out sits over the
                     // canvas, and closing it mid-press would hand the mouse-up
                     // to the panel underneath, refocusing it.
@@ -346,12 +378,12 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child("Sidebar")
+                            .child(tr("Sidebar", "侧栏"))
                             .child(
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(Theme::global().TEXT_DIM)
-                                    .child("Scroll to switch"),
+                                    .child(tr("Scroll to switch", "滚动切换")),
                             ),
                     )
                     .child(pages)
@@ -367,7 +399,7 @@ impl Workspace {
                                 div()
                                     .text_size(px(9.0))
                                     .text_color(Theme::global().TEXT_FAINT)
-                                    .child("Actions · click to open"),
+                                    .child(tr("Actions · click to open", "操作 · 点击打开")),
                             )
                             .child(actions),
                     ),
@@ -379,6 +411,39 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roller_display_localizes_labels_without_changing_tab_keys() {
+        let chinese = ["会话", "指南", "文件", "账户", "主题", "设置", "多代理编排", "待办", "Todoist", "邮件", "新建会话"];
+        for ((_, label, _), expected) in TABS.into_iter().zip(chinese) {
+            assert_eq!(roller_display_label(label), if label == "+" { "new chat" } else { label });
+            assert_eq!(crate::locale::with_zh(|| roller_display_label(label)), expected);
+        }
+        assert_eq!(roller_tooltip("chat"), "Sidebar menu · chat. Click to open or scroll to switch sections.");
+        assert_eq!(crate::locale::with_zh(|| roller_tooltip("chat")), "侧栏菜单 · 会话。点击展开，或滚动滚轮切换分区。");
+    }
+
+    #[gpui::test]
+    fn roller_trigger_still_scrolls_and_opens_on_hover(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            Workspace::for_test(learning::Coach::new(), cx)
+        });
+        vcx.run_until_parked();
+        let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
+        vcx.simulate_event(gpui::ScrollWheelEvent {
+            position: trigger.center(),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -1.0)),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(workspace.sidebar_view, SidebarView::Learn);
+        });
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.simulate_mouse_move(trigger.center(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_some());
+    }
 
     #[gpui::test]
     fn roller_popout_scrolls_live_and_leaves_layout_focus_and_actions_alone(
@@ -414,7 +479,7 @@ mod tests {
         ];
         for expected in pages
             .into_iter()
-            .chain(std::iter::repeat_n(SidebarView::Settings, 6))
+            .chain(std::iter::repeat_n(SidebarView::Settings, 5))
             .chain([SidebarView::Sessions])
         {
             vcx.simulate_event(gpui::ScrollWheelEvent {
@@ -553,7 +618,7 @@ mod tests {
         for (dx, dy, expected) in [
             (-48.0, 0.0, SidebarView::Learn),
             (0.0, -96.0, SidebarView::Accounts),
-            (-432.0, -1.0, SidebarView::Sessions),
+            (-384.0, -1.0, SidebarView::Sessions),
             (48.0, 1.0, SidebarView::Sessions),
             (0.0, 528.0, SidebarView::Sessions),
         ] {

@@ -644,6 +644,12 @@ fn persist_value_at(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
+    // Unrelated malformed sections in the shared config should not block
+    // Desktop settings. A previously valid file must still parse after editing.
+    let was_valid = parse(&text, standalone).is_ok();
+    // SSH target settings retain their existing strict validation policy.
+    let remote_preference = section_name == "workspace"
+        && matches!(key, "default_remote_host" | "remote_hosts");
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let section_index = lines.iter().position(|line| {
         line.split('#')
@@ -681,8 +687,10 @@ fn persist_value_at(
     }
     text = lines.join("\n");
     text.push('\n');
-    parse(&text, standalone)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if was_valid || remote_preference {
+        parse(&text, standalone)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -780,6 +788,30 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pinned_dir_saves_despite_unrelated_duplicate_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "[display.colors]\nforeground = \"#ffffff\"\n\n[display.colors]\nbackground = \"#000000\"\n";
+        assert!(super::parse(original, false).is_err());
+        std::fs::write(&path, original).unwrap();
+        super::persist_pinned_working_dir_at(&path, false, "/tmp/project").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, format!("{original}[desktop.workspace]\npinned_working_dir = \"/tmp/project\"\n"));
+    }
+
+    #[test]
+    fn persist_value_rejects_invalid_edit_to_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "[desktop.workspace]\npinned_working_dir = \"/tmp/project\"\n";
+        assert!(super::parse(original, false).is_ok());
+        std::fs::write(&path, original).unwrap();
+        let error = super::persist_value_at(&path, false, "workspace", "pinned_working_dir", "[").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
     #[test]
     fn display_settings_validate_every_supported_mode() {
         let defaults = super::DisplayConfig::default();

@@ -166,8 +166,11 @@ jobs:
           cargo test --release --target $env:TARGET -p jcode-plugins
           if ($LASTEXITCODE) { throw 'Plugin manager tests failed' }
           New-Item dist -ItemType Directory -Force | Out-Null
-          $sums = foreach ($exe in 'jcode-desktop.exe', 'jcode-plugins.exe') {
+          foreach ($exe in 'jcode-desktop.exe', 'jcode-plugins.exe') {
             Copy-Item "target/$env:TARGET/release/$exe" "dist/$exe"
+          }
+          Copy-Item "target/$env:TARGET/release/jcode-desktop.exe" "dist/jcode-desktop-zh-cn.exe"
+          $sums = foreach ($exe in 'jcode-desktop.exe', 'jcode-desktop-zh-cn.exe', 'jcode-plugins.exe') {
             "$((Get-FileHash "dist/$exe" -Algorithm SHA256).Hash.ToLower())  $exe"
           }
           $sums | Set-Content dist/SHA256SUMS
@@ -183,8 +186,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          notes="jcode-desktop.exe and jcode-plugins.exe built from \`$BRANCH\` on upstream \`$BASE\`. Copy both into your Jcode Desktop folder, or run scripts/fork/update-fork.ps1."
+          notes="jcode-desktop.exe and jcode-plugins.exe built from \`$BRANCH\` on upstream \`$BASE\`. Copy the desktop and plugin manager executables into your Jcode Desktop folder, or run scripts/fork/update-fork.ps1. jcode-desktop-zh-cn.exe opens in Simplified Chinese by default."
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$BRANCH" \
             --title "Jcode Desktop $VERSION (plugins)" --notes "$notes" --latest \
-            dist/jcode-desktop.exe dist/jcode-plugins.exe dist/SHA256SUMS
+            dist/jcode-desktop.exe dist/jcode-desktop-zh-cn.exe dist/jcode-plugins.exe dist/SHA256SUMS
