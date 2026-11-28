@@ -363,7 +363,11 @@ impl Panel {
         cx.notify();
     }
 
-    pub(super) fn close_extensions(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn has_open_extensions(&self) -> bool {
+        self.extensions.is_some()
+    }
+
+    pub(crate) fn close_extensions(&mut self, cx: &mut Context<Self>) {
         if let Some(state) = self.extensions.take() {
             LAST_TAB.with(|last| last.set(state.tab));
             cx.notify();

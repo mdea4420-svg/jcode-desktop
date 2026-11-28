@@ -194,6 +194,10 @@ impl Panel {
                     .children(
                         (window.viewport_size().width >= px(320.) || self.plan_mode)
                             .then(|| self.render_plan_mode_pill(cx)),
+                    )
+                    .children(
+                        (window.viewport_size().width >= px(380.) || self.extensions.is_some())
+                            .then(|| self.render_extensions_pill(cx)),
                     ),
             )
             .child(
@@ -341,6 +345,48 @@ impl Panel {
             } else {
                 crate::locale::tr("Code", "执行")
             })
+            .into_any_element()
+    }
+
+    fn render_extensions_pill(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let active = self.extensions.is_some();
+        let icon_color = if active { theme.PANEL_BG } else { theme.ACCENT };
+        composer_pill("panel-extensions")
+            .when(active, |pill| {
+                pill.bg(theme.ACCENT)
+                    .text_color(theme.PANEL_BG)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+            })
+            .when(!active, |pill| pill.text_color(theme.TEXT_DIM))
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    super::usage::MeterTooltip(
+                        crate::locale::tr(
+                            "Manage MCP servers, skills, and plugins visually",
+                            "打开扩展中心：可视化管理 MCP 服务器、技能与插件",
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                if this.extensions.is_some() {
+                    this.close_extensions(cx);
+                    this.focus_input(window, cx);
+                } else {
+                    this.open_extensions(crate::extensions::ExtensionTab::Last, cx);
+                }
+            }))
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/plug.svg") as &'static [u8])
+                    .size(px(11.))
+                    .text_color(icon_color),
+            )
+            .child(crate::locale::tr("Extensions", "扩展"))
             .into_any_element()
     }
 
@@ -918,5 +964,16 @@ mod tests {
                 "Escape closing DiffReview must never wipe composer draft"
             );
         });
+
+        // 5. Visual `panel-extensions` composer pill opens and toggles MCP/Skills/Plugins overlay
+        let ext_pill = vcx
+            .debug_bounds("panel-extensions")
+            .expect("visual Extensions pill is visible beneath composer");
+        vcx.simulate_click(ext_pill.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("extensions").is_some(),
+            "clicking panel-extensions opens visual MCP/Skills/Plugins manager"
+        );
     }
 }

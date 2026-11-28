@@ -882,7 +882,11 @@ impl Workspace {
                         button(
                             "machine-destination-local",
                             include_bytes!("../../../assets/icons/computer.svg"),
-                            "This computer · Use locally for new sessions".into(),
+                            crate::locale::tr(
+                                "This computer · Use locally for new sessions",
+                                "当前电脑 · 新建会话在本机运行",
+                            )
+                            .into(),
                             host.is_none(),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -894,7 +898,11 @@ impl Workspace {
                         button(
                             "machine-destination-cloud",
                             include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                            "Cloud · Use Jcode Cloud for new sessions".into(),
+                            crate::locale::tr(
+                                "Cloud · Use Jcode Cloud for new sessions",
+                                "云端 · 新建会话在 Jcode Cloud 运行",
+                            )
+                            .into(),
                             host.is_some_and(managed_destination),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -925,30 +933,52 @@ impl Workspace {
                         ),
                     )
                     .child(
-                        button(
-                            "sidebar-extensions",
-                            include_bytes!("../../../assets/icons/plug.svg"),
-                            crate::locale::tr("Extensions — MCP, skills, plugins", "扩展管理 — MCP、技能与插件").into(),
-                            false,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            let Some(panel) = this
-                                .slots
-                                .get(this.active)
-                                .filter(|slot| !slot.closing)
-                                .map(|slot| slot.panel.clone())
-                            else {
-                                return;
-                            };
-                            window.dispatch_action(
-                                Box::new(OpenExtensions {
-                                    source: panel.entity_id(),
-                                    tab: jcode_desktop_model::extensions::ExtensionTab::Last,
-                                }),
-                                cx,
-                            );
-                        })),
+                        div()
+                            .id("sidebar-extensions")
+                            .debug_selector(|| "sidebar-extensions".into())
+                            .flex_none()
+                            .h(px(24.0))
+                            .px_2()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .bg(theme.ACCENT_DIM)
+                            .text_color(theme.TEXT)
+                            .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.ACCENT))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| {
+                                    HeaderTooltip(
+                                        crate::locale::tr(
+                                            "Manage MCP servers, skills, and plugins",
+                                            "可视化管理 MCP 服务器、技能与插件",
+                                        )
+                                        .into(),
+                                    )
+                                })
+                                .into()
+                            })
+                            .child(
+                                gpui::svg()
+                                    .data(include_bytes!("../../../assets/icons/plug.svg"))
+                                    .size(px(13.0))
+                                    .text_color(theme.ACCENT),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(crate::locale::tr("Extensions", "扩展")),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.open_extensions_from_sidebar(
+                                    jcode_desktop_model::extensions::ExtensionTab::Last,
+                                    window,
+                                    cx,
+                                );
+                            })),
                     )
                     .child(self.render_default_directory_button(cx)),
             )

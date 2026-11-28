@@ -387,6 +387,54 @@ impl Workspace {
                 }),
             );
 
+        let open_extensions = div()
+            .id("sidebar-open-extensions")
+            .debug_selector(|| "sidebar-open-extensions".into())
+            .flex_none()
+            .h(px(30.0))
+            .px_2p5()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .rounded_full()
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .bg(Theme::global().TOOL_BG)
+            .text_color(Theme::global().TEXT_DIM)
+            .hover(|el| el.bg(Theme::global().PANEL_BG).text_color(Theme::global().TEXT))
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    remotes::HeaderTooltip(
+                        tr(
+                            "Manage MCP servers, skills, and plugins visually",
+                            "可视化管理 MCP 服务器、技能与插件（含 AI 写插件工坊）",
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/plug.svg"))
+                    .size(px(12.0))
+                    .text_color(Theme::global().ACCENT),
+            )
+            .child(tr("Plugins", "扩展"))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.open_extensions_from_sidebar(
+                        jcode_desktop_model::extensions::ExtensionTab::Last,
+                        window,
+                        cx,
+                    );
+                }),
+            );
+
         div()
             .flex_none()
             .w_full()
@@ -403,6 +451,7 @@ impl Workspace {
                     .gap_1()
                     .child(new_session)
                     .child(search_sessions)
+                    .child(open_extensions)
                     .child(hide_sidebar),
             )
             .into_any_element()

@@ -3436,6 +3436,49 @@ impl Workspace {
         source.update(cx, |panel, cx| panel.open_extensions(tab, cx));
     }
 
+    pub(super) fn open_extensions_from_sidebar(
+        &mut self,
+        tab: jcode_desktop_model::extensions::ExtensionTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_idx = self
+            .slots
+            .get(self.active)
+            .filter(|slot| !slot.closing && !slot.panel.read(cx).is_side_document())
+            .map(|_| self.active)
+            .or_else(|| {
+                self.slots.iter().enumerate().find_map(|(idx, slot)| {
+                    (!slot.closing && !slot.panel.read(cx).is_side_document()).then_some(idx)
+                })
+            });
+        let idx = match target_idx {
+            Some(idx) => idx,
+            None => {
+                self.open_new_session(cx);
+                self.active
+            }
+        };
+        if idx != self.active {
+            self.set_active(idx, cx);
+        }
+        if let Some(panel) = self.slots.get(idx).map(|s| s.panel.clone()) {
+            let already_open = panel.read(cx).has_open_extensions();
+            if already_open {
+                panel.update(cx, |panel, cx| panel.close_extensions(cx));
+                self.focus_active(window, cx);
+            } else {
+                window.dispatch_action(
+                    Box::new(OpenExtensions {
+                        source: panel.entity_id(),
+                        tab,
+                    }),
+                    cx,
+                );
+            }
+        }
+    }
+
     fn open_accounts(
         &mut self,
         request: &OpenAccounts,
