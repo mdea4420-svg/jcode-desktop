@@ -297,7 +297,7 @@ impl Panel {
                 )
             })
             .when(!pinned && !self.is_side_document(), |card| {
-                let prompt_copy = super::voice::tag::strip(text).0.to_owned();
+                let prompt_copy = super::voice::tag::strip(text).0.into_owned();
                 let turn_number = number;
                 let can_rewind = turn_number.is_some() && self.preview_state.is_none();
                 let hover_group: gpui::SharedString = format!("prompt-hover-{index}").into();

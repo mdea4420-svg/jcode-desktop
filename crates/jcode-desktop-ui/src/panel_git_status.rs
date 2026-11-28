@@ -271,6 +271,7 @@ impl Panel {
         let mut pills = Vec::new();
 
         if let Some((label, rules_path)) = summary.rules_file.clone() {
+            let tip_label = label.clone();
             pills.push(
                 div()
                     .id("composer-rules-pill")
@@ -290,9 +291,9 @@ impl Panel {
                         cx.new(|_| {
                             super::usage::MeterTooltip(
                                 if is_zh() {
-                                    format!("已加载项目规则 `{label}`（点击打开查看）")
+                                    format!("已加载项目规则 `{tip_label}`（点击打开查看）")
                                 } else {
-                                    format!("Project rules `{label}` active (click to view)")
+                                    format!("Project rules `{tip_label}` active (click to view)")
                                 },
                             )
                         })

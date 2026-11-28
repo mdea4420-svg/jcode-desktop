@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const CACHE_TTL: Duration = Duration::from_secs(15);
